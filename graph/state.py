@@ -23,8 +23,14 @@ class AgentState(TypedDict, total=False):
     # 当前订单类型，例如 room_service、restaurant、takeaway。
     current_order_type: str | None
 
+    # 当前订单生命周期：idle、collecting、confirming、submitted、cancelled。
+    order_status: str | None
+
     # 已从用户输入中提取出的结构化字段，例如 room_number、items、delivery_time。
     extracted_fields: dict[str, Any]
+
+    # 最近一次已提交的订单，供用户追问“刚才那个单号”时使用。
+    last_submitted_order: dict[str, Any]
 
     # 仍然缺失、需要继续追问用户的字段名。
     missing_fields: list[str]

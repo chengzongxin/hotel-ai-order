@@ -1,3 +1,5 @@
+import json
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
@@ -7,21 +9,21 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
 from pydantic import AliasChoices, BaseModel, Field
 
 from config.logging import trace_event
 from config.settings import settings
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
-from memory.sqlite_memory import SQLiteChatMemory
 
-PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "system.md"
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 MAX_RETRY_COUNT = 2
 
 REQUIRED_FIELDS_BY_ORDER_TYPE: dict[str, list[str]] = {
     "repair_order": ["room_number", "product", "fault", "area"],
 }
+
+ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
 
 
 class IntentResult(BaseModel):
@@ -52,8 +54,21 @@ class ExtractedFieldsResult(BaseModel):
 
 
 @lru_cache
-def load_system_prompt() -> str:
-    return PROMPT_PATH.read_text(encoding="utf-8")
+def load_prompt(relative_path: str) -> str:
+    return (PROMPTS_DIR / relative_path).read_text(encoding="utf-8")
+
+
+def render_prompt(relative_path: str, **variables: object) -> str:
+    prompt = load_prompt(relative_path)
+    for key, value in variables.items():
+        prompt = prompt.replace(f"{{{{{key}}}}}", to_prompt_text(value))
+    return prompt
+
+
+def to_prompt_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 @lru_cache
@@ -82,6 +97,26 @@ def get_last_human_message(messages: list[BaseMessage]) -> str:
     return ""
 
 
+def get_asked_questions(messages: list[BaseMessage]) -> list[str]:
+    return [
+        str(message.content)
+        for message in messages
+        if isinstance(message, AIMessage) and ("?" in str(message.content) or "？" in str(message.content))
+    ]
+
+
+def has_active_order(state: AgentState) -> bool:
+    return state.get("order_status") in ACTIVE_ORDER_STATUSES
+
+
+def get_extractor_history(state: AgentState) -> str:
+    """提交后的新报修默认只看最新输入，避免已提交订单被重新抽取。"""
+
+    if state.get("last_submitted_order") and not state.get("extracted_fields"):
+        return f"human: {get_last_human_message(state.get('messages', []))}"
+    return format_messages(state.get("messages", []))
+
+
 async def intent_node(state: AgentState) -> dict[str, str | None]:
     """识别用户当前维修意图和订单类型。"""
 
@@ -94,23 +129,31 @@ async def intent_node(state: AgentState) -> dict[str, str | None]:
     result = await llm.ainvoke(
         [
             SystemMessage(
-                content=(
-                    "你是酒店 AI 维修下单系统的意图识别器。\n"
-                    "请输出 JSON object，且只能输出符合 schema 的 JSON。\n"
-                    "请把用户意图归类为：create_repair_order、confirm_repair_order、cancel_repair_order、smalltalk、unknown。\n"
-                    "只要用户提到维修、报修、设备坏了、漏水、不亮、不制冷、打不开、堵塞等，都属于 create_repair_order。\n"
-                    "如果是维修相关请求，current_order_type 必须返回 repair_order。\n"
-                    "如果只是闲聊或完全无关，current_order_type 返回 null。"
+                content=render_prompt(
+                    "router/maintenance_intent_router.md",
+                    conversation_history=format_messages(state["messages"]),
+                    last_user_message=get_last_human_message(state["messages"]),
                 )
             ),
-            HumanMessage(content=format_messages(state["messages"])),
         ]
     )
 
+    current_order_type = result.current_order_type or (
+        "repair_order" if result.current_intent in {"create_repair_order", "confirm_repair_order"} else None
+    )
+    if result.current_intent in {"smalltalk", "unknown"} and has_active_order(state):
+        current_order_type = state.get("current_order_type")
+
+    order_status = state.get("order_status")
+    if result.current_intent in {"create_repair_order", "confirm_repair_order"}:
+        order_status = "collecting"
+    elif result.current_intent in {"smalltalk", "unknown"} and not has_active_order(state):
+        order_status = state.get("order_status") or "idle"
+
     output = {
         "current_intent": result.current_intent,
-        "current_order_type": result.current_order_type
-        or ("repair_order" if result.current_intent in {"create_repair_order", "confirm_repair_order"} else None),
+        "current_order_type": current_order_type,
+        "order_status": order_status,
         "current_step": "intent_node",
         "last_user_message": get_last_human_message(state["messages"]),
     }
@@ -131,19 +174,14 @@ async def extractor_node(state: AgentState) -> dict[str, object]:
     result = await llm.ainvoke(
         [
             SystemMessage(
-                content=(
-                    "你是酒店维修下单字段提取器。\n"
-                    "请输出 JSON object，且只能输出符合 schema 的 JSON。\n"
-                    "请只从对话中提取已经明确出现的信息，不要猜测。\n"
-                    "需要提取：room_number 房号、product 维修商品或设备、fault 故障、area 区域、urgency 紧急度。\n"
-                    "如果用户说厕所、浴室、洗手间，area 可以归一为卫生间。\n"
-                    "如果用户说空调不制冷，product 是空调，fault 是不制冷。\n"
-                    "如果用户说水龙头漏水，product 是水龙头，fault 是漏水。\n"
-                    "urgency 只能是 low、medium、high、urgent 或 null。\n"
-                    "如果用户明确表示确认订单，把 user_confirmed 设置为 true。"
+                content=render_prompt(
+                    "extractor/maintenance_order_extractor.md",
+                    conversation_history=get_extractor_history(state),
+                    user_input=get_last_human_message(state["messages"]),
+                    order_status=state.get("order_status") or "idle",
+                    last_submitted_order=state.get("last_submitted_order", {}),
                 )
             ),
-            HumanMessage(content=format_messages(state["messages"])),
         ]
     )
 
@@ -175,6 +213,7 @@ async def missing_field_node(state: AgentState) -> dict[str, object]:
     output = {
         "missing_fields": missing_fields,
         "retry_count": retry_count,
+        "order_status": "collecting" if missing_fields else "confirming",
         "current_step": "missing_field_node",
     }
     trace_event(
@@ -186,7 +225,7 @@ async def missing_field_node(state: AgentState) -> dict[str, object]:
     return output
 
 
-def build_missing_field_question(missing_fields: list[str]) -> str:
+def build_missing_field_fallback_question(missing_fields: list[str]) -> str:
     if not missing_fields:
         return "请确认是否提交维修单？"
 
@@ -201,43 +240,93 @@ def build_missing_field_question(missing_fields: list[str]) -> str:
     return questions.get(field, f"请补充{field}。")
 
 
+async def build_missing_field_question(state: AgentState) -> str:
+    missing_fields = state.get("missing_fields", [])
+    if not missing_fields:
+        return build_missing_field_fallback_question(missing_fields)
+
+    prompt = render_prompt(
+        "ask/maintenance_minimal_question.md",
+        extracted_fields=state.get("extracted_fields", {}),
+        missing_fields=missing_fields,
+        asked_questions=get_asked_questions(state.get("messages", [])),
+        last_user_message=get_last_human_message(state.get("messages", [])),
+    )
+    response = await get_llm().ainvoke([SystemMessage(content=prompt)])
+    question = str(response.content).strip()
+    return question or build_missing_field_fallback_question(missing_fields)
+
+
+async def build_topic_boundary_response(state: AgentState) -> str:
+    missing_fields = state.get("missing_fields", [])
+    active_order = has_active_order(state)
+    next_question = build_missing_field_fallback_question(missing_fields) if active_order else ""
+    if active_order and not missing_fields and not state.get("extracted_fields"):
+        next_question = "请说房号和故障。"
+    prompt = render_prompt(
+        "safety/topic_boundary_redirect.md",
+        last_user_message=get_last_human_message(state.get("messages", [])),
+        active_order=active_order,
+        order_status=state.get("order_status") or "idle",
+        extracted_fields=state.get("extracted_fields", {}) if active_order else {},
+        last_submitted_order=state.get("last_submitted_order", {}),
+        missing_fields=missing_fields,
+        next_question=next_question,
+        deviation_count=state.get("deviation_count", 0) + 1,
+        current_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+    response = await get_llm().ainvoke([SystemMessage(content=prompt)])
+    answer = str(response.content).strip()
+    return answer or render_prompt(
+        "ask/maintenance_unknown_intent.md",
+        next_question=next_question or "如果需要继续报修，请告诉我房号和故障。",
+    )
+
+
 async def ask_user_node(state: AgentState) -> dict[str, object]:
-    """暂停图执行，等待用户补充缺失信息。"""
+    """返回追问，让本轮语音对话自然结束。"""
 
     missing_fields = state.get("missing_fields", [])
     retry_count = state.get("retry_count", 0)
+    deviation_count = state.get("deviation_count", 0)
+    is_topic_deviation = state.get("current_intent") in {"unknown", "smalltalk"}
 
-    if state.get("current_intent") in {"unknown", "smalltalk"}:
-        question = "我可以帮您报修，请说房号和故障。"
+    if is_topic_deviation:
+        question = await build_topic_boundary_response(state)
+        deviation_count += 1
     elif retry_count > MAX_RETRY_COUNT:
-        question = (
-            "我还缺少关键信息，请补充："
-            f"{', '.join(missing_fields)}。"
+        question = render_prompt(
+            "ask/maintenance_retry_missing_fields.md",
+            missing_fields=", ".join(missing_fields),
         )
     else:
-        question = build_missing_field_question(missing_fields)
+        question = await build_missing_field_question(state)
 
     trace_event(
         "node.ask_user.output",
         question=question,
         missing_fields=missing_fields,
         retry_count=retry_count,
+        deviation_count=deviation_count,
         current_intent=state.get("current_intent"),
     )
 
-    interrupt(
-        {
-            "reason": "missing_required_fields",
-            "question": question,
-            "missing_fields": missing_fields,
-            "retry_count": retry_count,
-        }
-    )
-
-    return {
+    output = {
         "messages": [AIMessage(content=question)],
         "current_step": "ask_user_node",
+        "order_status": state.get("order_status") or "idle",
+        "deviation_count": deviation_count,
     }
+    if is_topic_deviation and not has_active_order(state):
+        output.update(
+            {
+                "current_order_type": None,
+                "extracted_fields": {},
+                "missing_fields": [],
+                "retry_count": 0,
+            }
+        )
+    return output
 
 
 async def confirm_node(state: AgentState) -> dict[str, object]:
@@ -252,15 +341,14 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
             "current_step": "confirm_node",
         }
 
-    confirmation_text = (
-        "请确认维修单信息：\n"
-        f"- 订单类型：{order_type}\n"
-        f"- 房号：{extracted_fields.get('room_number')}\n"
-        f"- 商品/设备：{extracted_fields.get('product')}\n"
-        f"- 故障：{extracted_fields.get('fault')}\n"
-        f"- 区域：{extracted_fields.get('area')}\n"
-        f"- 紧急度：{extracted_fields.get('urgency') or 'medium'}\n"
-        "如果无误，请回复“确认”；如果需要修改，请直接说明要改哪里。"
+    confirmation_text = render_prompt(
+        "confirm/maintenance_order_confirm.md",
+        order_type=order_type,
+        room_number=extracted_fields.get("room_number"),
+        product=extracted_fields.get("product"),
+        fault=extracted_fields.get("fault"),
+        area=extracted_fields.get("area"),
+        urgency=extracted_fields.get("urgency") or "medium",
     )
 
     trace_event(
@@ -269,17 +357,10 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
         extracted_fields=extracted_fields,
     )
 
-    interrupt(
-        {
-            "reason": "confirm_order",
-            "question": confirmation_text,
-            "extracted_fields": extracted_fields,
-        }
-    )
-
     return {
         "messages": [AIMessage(content=confirmation_text)],
         "current_step": "confirm_node",
+        "order_status": "confirming",
     }
 
 
@@ -291,16 +372,28 @@ async def submit_order_node(state: AgentState) -> dict[str, object]:
     """
 
     order_id = f"ORDER-{uuid4().hex[:8].upper()}"
-    answer = (
-        "维修单已提交成功。\n"
-        f"维修单号：{order_id}\n"
-        f"订单类型：{state.get('current_order_type')}\n"
-        f"维修单信息：{state.get('extracted_fields', {})}"
+    submitted_order = {
+        "order_id": order_id,
+        "order_type": state.get("current_order_type"),
+        **state.get("extracted_fields", {}),
+    }
+    answer = render_prompt(
+        "confirm/maintenance_order_submitted.md",
+        order_id=order_id,
+        order_type=state.get("current_order_type"),
+        extracted_fields=state.get("extracted_fields", {}),
     )
 
     output = {
         "messages": [AIMessage(content=answer)],
         "current_step": "submit_order_node",
+        "order_status": "submitted",
+        "last_submitted_order": submitted_order,
+        "current_order_type": None,
+        "extracted_fields": {},
+        "missing_fields": [],
+        "retry_count": 0,
+        "deviation_count": 0,
     }
     trace_event(
         "node.submit_order.output",
@@ -375,6 +468,8 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
 
 
 def get_interrupt_answer(result: dict[str, object]) -> str | None:
+    """兼容旧 checkpoint 中可能残留的 interrupt 结果。"""
+
     interrupts = result.get("__interrupt__")
     if not interrupts:
         return None
@@ -388,57 +483,95 @@ def get_interrupt_answer(result: dict[str, object]) -> str | None:
     return str(payload)
 
 
+def get_graph_config(session_id: str) -> dict[str, object]:
+    return {
+        "configurable": {"thread_id": session_id},
+        "run_name": "repair_order_graph",
+        "tags": [
+            "hotel-ai-order",
+            "repair-order",
+            settings.app_env,
+        ],
+        "metadata": {
+            "session_id": session_id,
+            "app_env": settings.app_env,
+        },
+    }
+
+
+def checkpoint_path() -> Path:
+    db_path = Path(settings.sqlite_memory_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return db_path
+
+
+def message_to_item(message: BaseMessage) -> dict[str, str]:
+    role_map = {
+        "human": "human",
+        "ai": "ai",
+        "system": "system",
+    }
+    return {
+        "role": role_map.get(message.type, message.type),
+        "content": str(message.content),
+    }
+
+
+async def get_checkpoint_state(session_id: str) -> AgentState:
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+        await checkpointer.setup()
+        graph = build_graph(checkpointer)
+        snapshot = await graph.aget_state(get_graph_config(session_id))
+    return snapshot.values or {}
+
+
+async def get_checkpoint_messages(session_id: str) -> list[dict[str, str]]:
+    state = await get_checkpoint_state(session_id)
+    return [message_to_item(message) for message in state.get("messages", [])]
+
+
+async def clear_checkpoint_session(session_id: str) -> None:
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+        await checkpointer.setup()
+        await checkpointer.adelete_thread(session_id)
+
+
 async def run_agent(
     user_message: str,
     session_id: str | None,
-    memory: SQLiteChatMemory,
 ) -> dict[str, str]:
     active_session_id = session_id or str(uuid4())
-    await memory.init()
-
-    history = await memory.get_langchain_messages(active_session_id)
-    conversation_summary = await memory.maybe_update_summary(active_session_id)
 
     trace_event(
         "agent.run.start",
         session_id=active_session_id,
         user_message=user_message,
-        history_count=len(history),
-        has_conversation_summary=bool(conversation_summary),
     )
 
     initial_state: AgentState = {
         "conversation_id": active_session_id,
-        "messages": [*history, HumanMessage(content=user_message)],
+        "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
-        "retry_count": 0,
-        "deviation_count": 0,
-        "conversation_summary": conversation_summary,
     }
 
-    db_path = Path(settings.sqlite_memory_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
-        result = await build_graph(checkpointer).ainvoke(
+        graph = build_graph(checkpointer)
+        config = get_graph_config(active_session_id)
+        result = await graph.ainvoke(
             initial_state,
-            config={
-                "configurable": {"thread_id": active_session_id},
-                "run_name": "repair_order_graph",
-                "tags": [
-                    "hotel-ai-order",
-                    "repair-order",
-                    settings.app_env,
-                ],
-                "metadata": {
-                    "session_id": active_session_id,
-                    "app_env": settings.app_env,
-                    "message_count": len(initial_state["messages"]),
-                    "has_conversation_summary": bool(conversation_summary),
-                },
-            },
+            config=config,
         )
-    answer = get_interrupt_answer(result) or result["messages"][-1].content
+        answer = get_interrupt_answer(result) or result["messages"][-1].content
+        state_messages = result.get("messages", [])
+        last_message = state_messages[-1] if state_messages else None
+        if not isinstance(last_message, AIMessage) or last_message.content != answer:
+            await graph.aupdate_state(
+                config,
+                {"messages": [AIMessage(content=answer)]},
+                as_node="ask_user_node",
+            )
+
     trace_event(
         "agent.run.end",
         session_id=active_session_id,
@@ -450,9 +583,6 @@ async def run_agent(
         missing_fields=result.get("missing_fields"),
     )
 
-    await memory.append_message(active_session_id, "human", user_message)
-    await memory.append_message(active_session_id, "ai", answer)
-    await memory.maybe_update_summary(active_session_id)
     await save_conversation_log(active_session_id, "human", user_message)
     await save_conversation_log(active_session_id, "ai", answer)
 

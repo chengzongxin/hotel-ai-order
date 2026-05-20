@@ -18,37 +18,30 @@ interface PreOrder {
   urgency: 'low' | 'medium' | 'high' | 'urgent' | null
 }
 
-const sessionId = ref(localStorage.getItem('repair_voice_session_id') || crypto.randomUUID())
+interface SessionSummary {
+  id: string
+  title: string
+  status: string
+  time: string
+}
+
+const SESSION_KEY = 'repair_voice_session_id'
+const HISTORY_KEY = 'repair_voice_history_sessions'
+
+const sessionId = ref(localStorage.getItem(SESSION_KEY) || crypto.randomUUID())
 const inputText = ref('')
 const isListening = ref(false)
 const isSending = ref(false)
 const errorMessage = ref('')
 const chatBodyRef = ref<HTMLElement | null>(null)
 
-const messages = ref<ChatMessage[]>([
-  {
-    id: 1,
-    role: 'assistant',
-    content: '您好，我是维修下单助手。请按住麦克风说出房号和故障。',
-    time: currentTime(),
-  },
-])
+const messages = ref<ChatMessage[]>([createWelcomeMessage()])
+const preOrder = ref<PreOrder>(createEmptyOrder())
+const historySessions = ref<SessionSummary[]>(loadHistorySessions())
 
-const preOrder = ref<PreOrder>({
-  roomNumber: null,
-  product: null,
-  fault: null,
-  area: null,
-  urgency: null,
-})
+localStorage.setItem(SESSION_KEY, sessionId.value)
 
-const historySessions = ref([
-  { id: '1208', title: '1208 空调不制冷', status: '待确认', time: '09:42' },
-  { id: '0816', title: '0816 水龙头漏水', status: '已派单', time: '昨天' },
-  { id: '0321', title: '0321 门锁打不开', status: '已完成', time: '周日' },
-])
-
-localStorage.setItem('repair_voice_session_id', sessionId.value)
+const shortSessionId = computed(() => sessionId.value.slice(0, 8).toUpperCase())
 
 const orderCompleteness = computed(() => {
   const values = Object.values(preOrder.value)
@@ -65,6 +58,44 @@ function currentTime() {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date())
+}
+
+function createWelcomeMessage(): ChatMessage {
+  return {
+    id: Date.now(),
+    role: 'assistant',
+    content: '您好，我是维修下单助手。请告诉我房号、设备和故障情况，我会同步整理成预下单卡片。',
+    time: currentTime(),
+  }
+}
+
+function createEmptyOrder(): PreOrder {
+  return {
+    roomNumber: null,
+    product: null,
+    fault: null,
+    area: null,
+    urgency: null,
+  }
+}
+
+function loadHistorySessions(): SessionSummary[] {
+  const fallback = [
+    { id: '1208', title: '1208 空调不制冷', status: '待确认', time: '09:42' },
+    { id: '0816', title: '0816 水龙头漏水', status: '已派单', time: '昨天' },
+    { id: '0321', title: '0321 门锁打不开', status: '已完成', time: '周日' },
+  ]
+
+  try {
+    const saved = localStorage.getItem(HISTORY_KEY)
+    return saved ? JSON.parse(saved) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function persistHistory() {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(historySessions.value.slice(0, 8)))
 }
 
 function appendMessage(role: Role, content: string) {
@@ -138,7 +169,7 @@ async function sendMessage(text = inputText.value) {
     const data = await response.json()
     if (data.session_id) {
       sessionId.value = data.session_id
-      localStorage.setItem('repair_voice_session_id', data.session_id)
+      localStorage.setItem(SESSION_KEY, data.session_id)
     }
     appendMessage('assistant', data.answer || '我已收到，会继续为您处理。')
   } catch (error) {
@@ -185,36 +216,121 @@ function toggleListening() {
 }
 
 function resetOrder() {
-  preOrder.value = {
-    roomNumber: null,
-    product: null,
-    fault: null,
-    area: null,
-    urgency: null,
+  preOrder.value = createEmptyOrder()
+}
+
+function summarizeCurrentSession() {
+  const userMessage = messages.value.find((message) => message.role === 'user')
+  if (!userMessage) return
+
+  const title = [
+    preOrder.value.roomNumber,
+    preOrder.value.product,
+    preOrder.value.fault,
+  ].filter(Boolean).join(' ') || userMessage.content.slice(0, 18)
+
+  historySessions.value = [
+    {
+      id: sessionId.value,
+      title,
+      status: canSubmit.value ? '待确认' : '信息待补充',
+      time: currentTime(),
+    },
+    ...historySessions.value.filter((item) => item.id !== sessionId.value),
+  ].slice(0, 8)
+  persistHistory()
+}
+
+function createNewSession() {
+  summarizeCurrentSession()
+  sessionId.value = crypto.randomUUID()
+  localStorage.setItem(SESSION_KEY, sessionId.value)
+  inputText.value = ''
+  errorMessage.value = ''
+  isListening.value = false
+  isSending.value = false
+  messages.value = [createWelcomeMessage()]
+  resetOrder()
+
+  nextTick(() => {
+    chatBodyRef.value?.scrollTo({ top: 0 })
+  })
+}
+
+function urgencyLabel(urgency: PreOrder['urgency']) {
+  const map = {
+    low: '低',
+    medium: '普通',
+    high: '较急',
+    urgent: '紧急',
   }
+  return urgency ? map[urgency] : '待判断'
 }
 </script>
 
 <template>
-  <main class="grain relative min-h-screen overflow-hidden bg-ink text-porcelain">
-    <div class="absolute left-[-12rem] top-[-12rem] h-[34rem] w-[34rem] rounded-full bg-signal/20 blur-3xl"></div>
-    <div class="absolute bottom-[-18rem] right-[-10rem] h-[40rem] w-[40rem] rounded-full bg-copper/20 blur-3xl"></div>
+  <main class="grain relative min-h-screen overflow-hidden bg-[#f5efe4] text-[#243022]">
+    <div class="absolute left-[-10rem] top-[-12rem] h-[30rem] w-[30rem] rounded-full bg-[#d8ad78]/35 blur-3xl"></div>
+    <div class="absolute bottom-[-16rem] right-[-8rem] h-[34rem] w-[34rem] rounded-full bg-[#8bb8a8]/40 blur-3xl"></div>
 
-    <section class="relative z-10 mx-auto grid min-h-screen max-w-7xl gap-6 px-5 py-6 lg:grid-cols-[1.25fr_0.75fr]">
-      <div class="flex min-h-[calc(100vh-3rem)] flex-col rounded-[2rem] border border-white/10 bg-white/[0.06] p-5 shadow-2xl backdrop-blur-xl">
-        <header class="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
+    <section class="relative z-10 mx-auto grid min-h-screen max-w-7xl gap-5 px-4 py-5 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:px-6">
+      <aside class="hidden rounded-[2rem] border border-[#d8cbb8] bg-white/65 p-4 shadow-xl shadow-[#a6815f]/10 backdrop-blur-xl lg:flex lg:flex-col">
+        <div class="rounded-[1.5rem] bg-[#263422] p-5 text-[#fffaf0]">
+          <p class="text-xs uppercase tracking-[0.32em] text-[#d7b98a]">Hotel Desk</p>
+          <h1 class="mt-3 font-display text-3xl font-semibold leading-tight">AI 语音维修下单</h1>
+          <p class="mt-3 text-sm leading-6 text-white/70">为客房维修场景快速收集房号、设备、故障和紧急度。</p>
+        </div>
+
+        <button
+          class="mt-4 rounded-2xl bg-[#c77943] px-4 py-3 text-left font-semibold text-white shadow-lg shadow-[#c77943]/20 transition hover:-translate-y-0.5 hover:bg-[#b96c38]"
+          @click="createNewSession"
+        >
+          + 新建会话
+          <span class="mt-1 block text-xs font-normal text-white/70">清空当前对话并生成新的 Session</span>
+        </button>
+
+        <div class="mt-6 flex items-center justify-between text-sm">
+          <span class="font-semibold text-[#59624f]">历史会话</span>
+          <span class="rounded-full bg-[#efe4d3] px-2.5 py-1 text-xs text-[#8a6c4c]">{{ historySessions.length }} 条</span>
+        </div>
+
+        <div class="mt-3 space-y-2 overflow-y-auto pr-1">
+          <button
+            v-for="item in historySessions"
+            :key="item.id"
+            class="w-full rounded-2xl border border-[#e7dac7] bg-[#fffaf2]/80 p-3 text-left transition hover:border-[#c77943]/50 hover:bg-white"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <p class="truncate font-semibold text-[#283422]">{{ item.title }}</p>
+              <span class="shrink-0 text-xs text-[#9a866d]">{{ item.time }}</span>
+            </div>
+            <p class="mt-1 text-xs text-[#c77943]">{{ item.status }}</p>
+          </button>
+        </div>
+      </aside>
+
+      <div class="flex min-h-[calc(100vh-2.5rem)] flex-col rounded-[2rem] border border-[#d8cbb8] bg-[#fffaf2]/85 p-4 shadow-2xl shadow-[#a6815f]/15 backdrop-blur-xl md:p-5">
+        <header class="flex flex-wrap items-center justify-between gap-3 border-b border-[#eadbc7] pb-4">
           <div>
-            <p class="text-xs uppercase tracking-[0.45em] text-signal/80">Voice Repair Desk</p>
-            <h1 class="mt-3 font-display text-4xl font-semibold tracking-tight md:text-5xl">
-              AI 语音维修下单
-            </h1>
+            <p class="text-xs uppercase tracking-[0.35em] text-[#b9854c]">Repair Conversation</p>
+            <h2 class="mt-2 font-display text-3xl font-semibold tracking-tight text-[#263422] md:text-4xl">
+              当前维修会话
+            </h2>
           </div>
-          <div class="rounded-full border border-signal/30 bg-signal/10 px-4 py-2 text-sm text-signal">
-            Session {{ sessionId.slice(0, 8) }}
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="rounded-full border border-[#d7c5ad] bg-white/80 px-4 py-2 text-sm text-[#6f5a43]">
+              Session {{ shortSessionId }}
+            </span>
+            <button
+              class="rounded-full bg-[#263422] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#35472d] lg:hidden"
+              @click="createNewSession"
+            >
+              新建会话
+            </button>
           </div>
         </header>
 
-        <div ref="chatBodyRef" class="mt-5 flex-1 space-y-4 overflow-y-auto pr-2">
+        <div ref="chatBodyRef" class="mt-5 flex-1 space-y-4 overflow-y-auto rounded-[1.5rem] bg-[#f8eddd]/70 p-3">
           <article
             v-for="message in messages"
             :key="message.id"
@@ -222,11 +338,11 @@ function resetOrder() {
             :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
           >
             <div
-              class="max-w-[82%] rounded-[1.5rem] px-5 py-4 shadow-lg"
+              class="max-w-[84%] rounded-[1.4rem] px-5 py-4 shadow-sm"
               :class="
                 message.role === 'user'
-                  ? 'bg-signal text-ink'
-                  : 'border border-white/10 bg-black/20 text-porcelain'
+                  ? 'bg-[#2f614d] text-white'
+                  : 'border border-[#e7d5bd] bg-white text-[#283422]'
               "
             >
               <p class="whitespace-pre-wrap leading-7">{{ message.content }}</p>
@@ -235,31 +351,36 @@ function resetOrder() {
           </article>
         </div>
 
-        <div class="mt-5 rounded-[1.75rem] border border-white/10 bg-black/25 p-4">
-          <div class="mb-4 flex items-center justify-center gap-2" :class="{ 'opacity-100': isListening, 'opacity-30': !isListening }">
-            <span v-for="bar in 5" :key="bar" class="voice-bar h-10 w-2 rounded-full bg-signal"></span>
+        <div class="mt-4 rounded-[1.75rem] border border-[#e1d1bc] bg-white/85 p-4 shadow-lg shadow-[#a6815f]/10">
+          <div class="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-[#263422]">语音或文字输入</p>
+              <p class="text-xs text-[#86745d]">Enter 发送，Shift + Enter 换行</p>
+            </div>
+            <div class="flex items-end gap-1.5" :class="{ 'opacity-100': isListening, 'opacity-30': !isListening }">
+              <span v-for="bar in 5" :key="bar" class="voice-bar h-7 w-1.5 rounded-full bg-[#c77943]"></span>
+            </div>
           </div>
 
           <div class="grid gap-3 md:grid-cols-[auto_1fr_auto]">
             <button
-              class="group relative h-20 w-20 rounded-full border border-signal/40 bg-signal/15 shadow-glow transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-60"
-              :class="{ 'bg-signal text-ink': isListening }"
+              class="group relative h-16 w-16 rounded-2xl border border-[#d5b083] bg-[#fbefe0] text-2xl shadow-inner transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-60"
+              :class="{ 'bg-[#c77943] text-white shadow-lg shadow-[#c77943]/25': isListening }"
               :disabled="isSending"
               @click="toggleListening"
             >
-              <span class="absolute inset-2 rounded-full border border-white/20"></span>
-              <span class="relative text-3xl">{{ isListening ? '■' : '🎙' }}</span>
+              <span class="relative">{{ isListening ? '■' : '🎙' }}</span>
             </button>
 
             <textarea
               v-model="inputText"
-              class="min-h-20 resize-none rounded-[1.25rem] border border-white/10 bg-white/[0.06] px-4 py-3 text-base outline-none transition placeholder:text-white/35 focus:border-signal/60"
-              placeholder="也可以输入：1208 房间空调不制冷，比较急"
-              @keydown.enter.prevent="sendMessage()"
+              class="min-h-16 resize-none rounded-2xl border border-[#e0cdb5] bg-[#fffdf8] px-4 py-3 text-base text-[#263422] outline-none transition placeholder:text-[#a7937c] focus:border-[#c77943] focus:ring-4 focus:ring-[#c77943]/10"
+              placeholder="例如：1208 房间空调不制冷，比较急"
+              @keydown.enter.exact.prevent="sendMessage()"
             ></textarea>
 
             <button
-              class="rounded-[1.25rem] bg-copper px-6 py-3 font-semibold text-ink transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              class="rounded-2xl bg-[#c77943] px-7 py-3 font-semibold text-white shadow-lg shadow-[#c77943]/20 transition hover:-translate-y-0.5 hover:bg-[#b96c38] disabled:cursor-not-allowed disabled:opacity-50"
               :disabled="isSending || !inputText.trim()"
               @click="sendMessage()"
             >
@@ -267,85 +388,71 @@ function resetOrder() {
             </button>
           </div>
 
-          <p v-if="errorMessage" class="mt-3 text-sm text-copper">{{ errorMessage }}</p>
+          <p v-if="errorMessage" class="mt-3 rounded-xl bg-[#fff1e7] px-3 py-2 text-sm text-[#b3542e]">{{ errorMessage }}</p>
         </div>
       </div>
 
-      <aside class="grid gap-6">
-        <section class="rounded-[2rem] border border-white/10 bg-porcelain p-5 text-ink shadow-2xl">
+      <aside class="grid gap-5">
+        <section class="rounded-[2rem] border border-[#d8cbb8] bg-white/80 p-5 shadow-xl shadow-[#a6815f]/10 backdrop-blur-xl">
           <div class="flex items-start justify-between gap-4">
             <div>
-              <p class="text-xs uppercase tracking-[0.35em] text-copper">Draft Order</p>
-              <h2 class="mt-2 font-display text-3xl font-semibold">预下单卡片</h2>
+              <p class="text-xs uppercase tracking-[0.32em] text-[#b9854c]">Draft Order</p>
+              <h2 class="mt-2 font-display text-3xl font-semibold text-[#263422]">预下单卡片</h2>
             </div>
-            <div class="rounded-full bg-ink px-3 py-1 text-sm text-porcelain">{{ orderCompleteness }}%</div>
+            <div class="rounded-full bg-[#263422] px-3 py-1 text-sm text-white">{{ orderCompleteness }}%</div>
           </div>
 
-          <div class="mt-5 h-2 overflow-hidden rounded-full bg-ink/10">
-            <div class="h-full rounded-full bg-copper transition-all" :style="{ width: `${orderCompleteness}%` }"></div>
+          <div class="mt-5 h-2 overflow-hidden rounded-full bg-[#eee1cf]">
+            <div class="h-full rounded-full bg-[#c77943] transition-all" :style="{ width: `${orderCompleteness}%` }"></div>
           </div>
 
           <dl class="mt-6 grid gap-3">
-            <div class="rounded-2xl bg-ink/[0.06] p-4">
-              <dt class="text-xs text-ink/50">房号</dt>
-              <dd class="mt-1 text-lg font-semibold">{{ preOrder.roomNumber || '待识别' }}</dd>
+            <div class="rounded-2xl bg-[#f6ebdc] p-4">
+              <dt class="text-xs text-[#8d7a62]">房号</dt>
+              <dd class="mt-1 text-lg font-semibold text-[#263422]">{{ preOrder.roomNumber || '待识别' }}</dd>
             </div>
-            <div class="rounded-2xl bg-ink/[0.06] p-4">
-              <dt class="text-xs text-ink/50">商品/设备</dt>
-              <dd class="mt-1 text-lg font-semibold">{{ preOrder.product || '待识别' }}</dd>
+            <div class="rounded-2xl bg-[#f6ebdc] p-4">
+              <dt class="text-xs text-[#8d7a62]">商品/设备</dt>
+              <dd class="mt-1 text-lg font-semibold text-[#263422]">{{ preOrder.product || '待识别' }}</dd>
             </div>
-            <div class="rounded-2xl bg-ink/[0.06] p-4">
-              <dt class="text-xs text-ink/50">故障</dt>
-              <dd class="mt-1 text-lg font-semibold">{{ preOrder.fault || '待识别' }}</dd>
+            <div class="rounded-2xl bg-[#f6ebdc] p-4">
+              <dt class="text-xs text-[#8d7a62]">故障</dt>
+              <dd class="mt-1 text-lg font-semibold text-[#263422]">{{ preOrder.fault || '待识别' }}</dd>
             </div>
             <div class="grid grid-cols-2 gap-3">
-              <div class="rounded-2xl bg-ink/[0.06] p-4">
-                <dt class="text-xs text-ink/50">区域</dt>
-                <dd class="mt-1 font-semibold">{{ preOrder.area || '待补充' }}</dd>
+              <div class="rounded-2xl bg-[#f6ebdc] p-4">
+                <dt class="text-xs text-[#8d7a62]">区域</dt>
+                <dd class="mt-1 font-semibold text-[#263422]">{{ preOrder.area || '待补充' }}</dd>
               </div>
-              <div class="rounded-2xl bg-ink/[0.06] p-4">
-                <dt class="text-xs text-ink/50">紧急度</dt>
-                <dd class="mt-1 font-semibold">{{ preOrder.urgency || '待判断' }}</dd>
+              <div class="rounded-2xl bg-[#f6ebdc] p-4">
+                <dt class="text-xs text-[#8d7a62]">紧急度</dt>
+                <dd class="mt-1 font-semibold text-[#263422]">{{ urgencyLabel(preOrder.urgency) }}</dd>
               </div>
             </div>
           </dl>
 
           <div class="mt-6 grid grid-cols-2 gap-3">
             <button
-              class="rounded-2xl bg-ink px-4 py-3 font-semibold text-porcelain disabled:opacity-40"
+              class="rounded-2xl bg-[#263422] px-4 py-3 font-semibold text-white transition hover:bg-[#35472d] disabled:opacity-40"
               :disabled="!canSubmit"
             >
               确认预下单
             </button>
-            <button class="rounded-2xl border border-ink/15 px-4 py-3 font-semibold" @click="resetOrder">
+            <button
+              class="rounded-2xl border border-[#d5b083] bg-white px-4 py-3 font-semibold text-[#6f4d2f] transition hover:bg-[#fbefe0]"
+              @click="resetOrder"
+            >
               清空
             </button>
           </div>
         </section>
 
-        <section class="rounded-[2rem] border border-white/10 bg-white/[0.06] p-5 backdrop-blur-xl">
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="text-xs uppercase tracking-[0.35em] text-signal/70">History</p>
-              <h2 class="mt-2 font-display text-3xl font-semibold">历史对话</h2>
-            </div>
-            <span class="rounded-full border border-white/10 px-3 py-1 text-sm text-white/60">
-              {{ historySessions.length }} 条
-            </span>
-          </div>
-
-          <div class="mt-5 space-y-3">
-            <button
-              v-for="item in historySessions"
-              :key="item.id"
-              class="w-full rounded-2xl border border-white/10 bg-black/20 p-4 text-left transition hover:border-signal/40 hover:bg-signal/10"
-            >
-              <div class="flex items-center justify-between gap-3">
-                <p class="font-semibold">{{ item.title }}</p>
-                <span class="text-xs text-white/45">{{ item.time }}</span>
-              </div>
-              <p class="mt-2 text-sm text-signal/75">{{ item.status }}</p>
-            </button>
+        <section class="rounded-[2rem] border border-[#d8cbb8] bg-[#263422] p-5 text-white shadow-xl shadow-[#263422]/15">
+          <p class="text-xs uppercase tracking-[0.32em] text-[#d7b98a]">Tips</p>
+          <h2 class="mt-2 font-display text-2xl font-semibold">推荐描述格式</h2>
+          <div class="mt-4 space-y-3 text-sm leading-6 text-white/75">
+            <p class="rounded-2xl bg-white/10 p-3">“1208 房间，卫生间水龙头漏水，比较急。”</p>
+            <p class="rounded-2xl bg-white/10 p-3">“B栋 301 门锁打不开，客人在门外。”</p>
           </div>
         </section>
       </aside>

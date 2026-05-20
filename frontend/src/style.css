@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 :root {
-  color: #f7f2e8;
-  background: #10151f;
+  color: #243022;
+  background: #f5efe4;
   font-family: "LXGW WenKai", "PingFang SC", sans-serif;
 }
 
@@ -20,17 +20,17 @@ input {
   font: inherit;
 }
 
-/* 细颗粒背景，让深色界面更像酒店夜间工作台，而不是纯黑屏。 */
+/* 细颗粒背景，给浅色酒店服务台增加一点纸张和织物质感。 */
 .grain::before {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
   content: "";
-  opacity: 0.16;
+  opacity: 0.22;
   background-image:
-    radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px),
-    radial-gradient(circle at 80% 40%, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px);
+    radial-gradient(circle at 20% 20%, rgba(115, 84, 54, 0.12) 0 1px, transparent 1px),
+    radial-gradient(circle at 80% 40%, rgba(38, 52, 34, 0.08) 0 1px, transparent 1px);
   background-size: 28px 28px, 34px 34px;
 }
 
