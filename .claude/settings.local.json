@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__ide__getDiagnostics",
+      "Bash(pkill -f \"vite.*5174\")",
+      "Bash(npm uninstall *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Read(//tmp/**)",
+      "Bash(open http://localhost:5175)",
+      "Bash(screencapture /tmp/ui3.png)"
+    ]
+  }
+}

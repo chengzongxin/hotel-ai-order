@@ -14,11 +14,8 @@
     "vue": "latest"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.0",
-    "autoprefixer": "latest",
-    "postcss": "latest",
-    "tailwindcss": "latest",
     "typescript": "latest",
+    "unocss": "^66.6.8",
     "vue-tsc": "latest"
   }
 }
