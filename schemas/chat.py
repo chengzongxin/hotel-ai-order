@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +19,7 @@ class ChatResponse(BaseModel):
     session_id: str
     conversation_id: str
     answer: str
+    order_preview: dict[str, Any] | None = None
 
 
 class MessageItem(BaseModel):

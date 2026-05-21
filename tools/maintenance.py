@@ -27,6 +27,9 @@ class CreateOrderInput(BaseModel):
     fault: str = Field(..., min_length=1, description="故障描述")
     area: str | None = Field(default=None, description="故障区域")
     urgency: str | None = Field(default=None, description="紧急度：low、medium、high、urgent")
+    service_product_code: str | None = Field(default=None, description="服务商品编码，来自服务商品召回")
+    service_product_name: str | None = Field(default=None, description="服务商品名称，来自服务商品召回")
+    service_order_type: str | None = Field(default=None, description="服务下单类型，例如单次维修服务、单次安装")
 
 
 class CheckPackageInput(BaseModel):
@@ -89,6 +92,9 @@ async def _create_order(payload: CreateOrderInput) -> ToolResult:
             "fault": payload.fault,
             "area": payload.area,
             "urgency": payload.urgency or "medium",
+            "service_product_code": payload.service_product_code,
+            "service_product_name": payload.service_product_name,
+            "service_order_type": payload.service_order_type,
         },
     )
 
@@ -134,6 +140,9 @@ async def create_order_tool(
     fault: str,
     area: str | None = None,
     urgency: str | None = None,
+    service_product_code: str | None = None,
+    service_product_name: str | None = None,
+    service_order_type: str | None = None,
 ) -> ToolResult:
     """创建维修工单，返回标准 JSON。"""
 
@@ -143,6 +152,9 @@ async def create_order_tool(
         fault=fault,
         area=area,
         urgency=urgency,
+        service_product_code=service_product_code,
+        service_product_name=service_product_name,
+        service_order_type=service_order_type,
     )
     return await run_with_timeout(
         action=lambda: _create_order(payload),

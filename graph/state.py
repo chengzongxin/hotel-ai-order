@@ -32,6 +32,18 @@ class AgentState(TypedDict, total=False):
     # 最近一次已提交的订单，供用户追问“刚才那个单号”时使用。
     last_submitted_order: dict[str, Any]
 
+    # 当前匹配到的真实服务商品，来自服务商品 RAG 召回。
+    matched_service_product: dict[str, Any]
+
+    # 服务商品候选列表，低置信度时可给前端或人工选择。
+    service_product_candidates: list[dict[str, Any]]
+
+    # 服务商品召回状态：skipped、success、no_match、error。
+    service_product_recall_status: str | None
+
+    # 本轮用于服务商品召回的查询文本。
+    service_product_recall_query: str | None
+
     # 仍然缺失、需要继续追问用户的字段名。
     missing_fields: list[str]
 

@@ -5,4 +5,6 @@
 - 故障：{{fault}}
 - 区域：{{area}}
 - 紧急度：{{urgency}}
+- 匹配服务商品：{{service_product_name}}
+- 服务商品编码：{{service_product_code}}
 如果无误，请回复“确认”；如果需要修改，请直接说明要改哪里。

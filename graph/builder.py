@@ -1,4 +1,5 @@
 import json
+import asyncio
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,7 @@ from config.logging import trace_event
 from config.settings import settings
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
+from tools.service_product import recall_service_product_tool
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 MAX_RETRY_COUNT = 2
@@ -26,7 +28,7 @@ REQUIRED_FIELDS_BY_ORDER_TYPE: dict[str, list[str]] = {
 ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
 
 
-class IntentResult(BaseModel):
+class UnderstandingResult(BaseModel):
     current_intent: str = Field(
         description="用户当前意图",
         validation_alias=AliasChoices("current_intent", "intent"),
@@ -36,9 +38,6 @@ class IntentResult(BaseModel):
         description="订单类型",
         validation_alias=AliasChoices("current_order_type", "order_type"),
     )
-
-
-class ExtractedFieldsResult(BaseModel):
     room_number: str | None = None
     product: str | None = Field(
         default=None,
@@ -117,22 +116,25 @@ def get_extractor_history(state: AgentState) -> str:
     return format_messages(state.get("messages", []))
 
 
-async def intent_node(state: AgentState) -> dict[str, str | None]:
-    """识别用户当前维修意图和订单类型。"""
+async def understand_node(state: AgentState) -> dict[str, object]:
+    """一次性完成意图识别和维修字段抽取。"""
 
     trace_event(
-        "node.intent.input",
+        "node.understand.input",
         last_user_message=get_last_human_message(state["messages"]),
         message_count=len(state["messages"]),
+        order_status=state.get("order_status"),
     )
-    llm = get_llm().with_structured_output(IntentResult)
+    llm = get_llm().with_structured_output(UnderstandingResult)
     result = await llm.ainvoke(
         [
             SystemMessage(
                 content=render_prompt(
-                    "router/maintenance_intent_router.md",
-                    conversation_history=format_messages(state["messages"]),
-                    last_user_message=get_last_human_message(state["messages"]),
+                    "router/maintenance_understanding.md",
+                    conversation_history=get_extractor_history(state),
+                    user_input=get_last_human_message(state["messages"]),
+                    order_status=state.get("order_status") or "idle",
+                    last_submitted_order=state.get("last_submitted_order", {}),
                 )
             ),
         ]
@@ -150,47 +152,95 @@ async def intent_node(state: AgentState) -> dict[str, str | None]:
     elif result.current_intent in {"smalltalk", "unknown"} and not has_active_order(state):
         order_status = state.get("order_status") or "idle"
 
-    output = {
+    detected_fields = {
+        "room_number": result.room_number,
+        "product": result.product,
+        "fault": result.fault,
+        "area": result.area,
+        "urgency": result.urgency,
+        "user_confirmed": result.user_confirmed,
+    }
+    existing_fields = state.get("extracted_fields", {}) if has_active_order(state) else {}
+    if result.current_intent in {"smalltalk", "unknown"}:
+        fields = existing_fields if has_active_order(state) else {}
+    else:
+        fields = {
+            **existing_fields,
+            **{
+                key: value
+                for key, value in detected_fields.items()
+                if value is not None
+            },
+        }
+        fields["user_confirmed"] = result.user_confirmed
+    output: dict[str, object] = {
         "current_intent": result.current_intent,
         "current_order_type": current_order_type,
         "order_status": order_status,
-        "current_step": "intent_node",
+        "extracted_fields": fields,
+        "current_step": "understand_node",
         "last_user_message": get_last_human_message(state["messages"]),
     }
-    trace_event("node.intent.output", **output)
+    trace_event("node.understand.output", **output)
     return output
 
 
-async def extractor_node(state: AgentState) -> dict[str, object]:
-    """从多轮对话中提取维修下单需要的结构化字段。"""
+async def recall_service_product_node(state: AgentState) -> dict[str, object]:
+    """根据已抽取的商品和故障，尽早召回真实可下单服务商品。"""
 
-    trace_event(
-        "node.extractor.input",
-        current_intent=state.get("current_intent"),
-        current_order_type=state.get("current_order_type"),
-        last_user_message=get_last_human_message(state["messages"]),
-    )
-    llm = get_llm().with_structured_output(ExtractedFieldsResult)
-    result = await llm.ainvoke(
-        [
-            SystemMessage(
-                content=render_prompt(
-                    "extractor/maintenance_order_extractor.md",
-                    conversation_history=get_extractor_history(state),
-                    user_input=get_last_human_message(state["messages"]),
-                    order_status=state.get("order_status") or "idle",
-                    last_submitted_order=state.get("last_submitted_order", {}),
-                )
-            ),
-        ]
-    )
+    extracted_fields = state.get("extracted_fields", {})
+    product = extracted_fields.get("product")
+    fault = extracted_fields.get("fault")
+    area = extracted_fields.get("area")
 
-    fields = result.model_dump()
+    recall_query = " ".join(
+        str(value)
+        for value in [product, fault, area]
+        if value
+    )
+    if not product and not fault:
+        output = {
+            "matched_service_product": {},
+            "service_product_candidates": [],
+            "service_product_recall_status": "skipped",
+            "service_product_recall_query": recall_query,
+            "current_step": "recall_service_product_node",
+        }
+        trace_event("node.recall_service_product.skipped", **output)
+        return output
+
+    result = await asyncio.to_thread(
+        recall_service_product_tool.invoke,
+        {
+            "query": recall_query,
+            "product": product,
+            "fault": fault,
+            "area": area,
+            "top_k": 3,
+            "threshold": None,
+        },
+    )
+    data = result.get("data", {})
+    candidates = data.get("candidates") or []
+    best_match = data.get("best_match") or {}
+    status = "success" if best_match else "no_match"
+    if result.get("status") != "success":
+        status = "error"
+
     output = {
-        "extracted_fields": fields,
-        "current_step": "extractor_node",
+        "matched_service_product": best_match,
+        "service_product_candidates": candidates,
+        "service_product_recall_status": status,
+        "service_product_recall_query": recall_query,
+        "current_step": "recall_service_product_node",
     }
-    trace_event("node.extractor.output", **output)
+    trace_event(
+        "node.recall_service_product.output",
+        tool_status=result.get("status"),
+        tool_error_code=result.get("error_code"),
+        tool_message=result.get("message"),
+        **output,
+    )
     return output
 
 
@@ -334,6 +384,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
 
     extracted_fields = state.get("extracted_fields", {})
     order_type = state.get("current_order_type")
+    matched_service_product = state.get("matched_service_product", {})
 
     if extracted_fields.get("user_confirmed"):
         trace_event("node.confirm.skip", reason="user_confirmed")
@@ -349,6 +400,8 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
         fault=extracted_fields.get("fault"),
         area=extracted_fields.get("area"),
         urgency=extracted_fields.get("urgency") or "medium",
+        service_product_name=matched_service_product.get("service_product_name") or "未匹配到标准服务商品",
+        service_product_code=matched_service_product.get("service_product_code") or "无",
     )
 
     trace_event(
@@ -372,16 +425,22 @@ async def submit_order_node(state: AgentState) -> dict[str, object]:
     """
 
     order_id = f"ORDER-{uuid4().hex[:8].upper()}"
+    matched_service_product = state.get("matched_service_product", {})
     submitted_order = {
         "order_id": order_id,
         "order_type": state.get("current_order_type"),
         **state.get("extracted_fields", {}),
+        "service_product_code": matched_service_product.get("service_product_code"),
+        "service_product_name": matched_service_product.get("service_product_name"),
+        "service_order_type": matched_service_product.get("service_order_type"),
+        "matched_service_product": matched_service_product,
     }
     answer = render_prompt(
         "confirm/maintenance_order_submitted.md",
         order_id=order_id,
         order_type=state.get("current_order_type"),
         extracted_fields=state.get("extracted_fields", {}),
+        matched_service_product=matched_service_product,
     )
 
     output = {
@@ -391,6 +450,10 @@ async def submit_order_node(state: AgentState) -> dict[str, object]:
         "last_submitted_order": submitted_order,
         "current_order_type": None,
         "extracted_fields": {},
+        "matched_service_product": {},
+        "service_product_candidates": [],
+        "service_product_recall_status": None,
+        "service_product_recall_query": None,
         "missing_fields": [],
         "retry_count": 0,
         "deviation_count": 0,
@@ -403,10 +466,10 @@ async def submit_order_node(state: AgentState) -> dict[str, object]:
     return output
 
 
-def route_after_intent(state: AgentState) -> str:
+def route_after_understand(state: AgentState) -> str:
     intent = state.get("current_intent")
     if intent in {"create_repair_order", "confirm_repair_order", "create_order", "confirm_order"}:
-        return "extractor_node"
+        return "recall_service_product_node"
     return "ask_user_node"
 
 
@@ -425,23 +488,23 @@ def route_after_confirm(state: AgentState) -> str:
 
 def build_graph(checkpointer: AsyncSqliteSaver | None = None):
     graph = StateGraph(AgentState)
-    graph.add_node("intent_node", intent_node)
-    graph.add_node("extractor_node", extractor_node)
+    graph.add_node("understand_node", understand_node)
+    graph.add_node("recall_service_product_node", recall_service_product_node)
     graph.add_node("missing_field_node", missing_field_node)
     graph.add_node("ask_user_node", ask_user_node)
     graph.add_node("confirm_node", confirm_node)
     graph.add_node("submit_order_node", submit_order_node)
 
-    graph.add_edge(START, "intent_node")
+    graph.add_edge(START, "understand_node")
     graph.add_conditional_edges(
-        "intent_node",
-        route_after_intent,
+        "understand_node",
+        route_after_understand,
         {
-            "extractor_node": "extractor_node",
+            "recall_service_product_node": "recall_service_product_node",
             "ask_user_node": "ask_user_node",
         },
     )
-    graph.add_edge("extractor_node", "missing_field_node")
+    graph.add_edge("recall_service_product_node", "missing_field_node")
     graph.add_conditional_edges(
         "missing_field_node",
         route_after_missing_field_check,
@@ -536,10 +599,29 @@ async def clear_checkpoint_session(session_id: str) -> None:
         await checkpointer.adelete_thread(session_id)
 
 
+def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
+    extracted_fields = state.get("extracted_fields") or {}
+    matched_service_product = state.get("matched_service_product") or {}
+    candidates = state.get("service_product_candidates") or []
+    if not extracted_fields and not matched_service_product and not candidates:
+        return None
+
+    return {
+        "order_type": state.get("current_order_type"),
+        "order_status": state.get("order_status"),
+        "extracted_fields": extracted_fields,
+        "matched_service_product": matched_service_product,
+        "service_product_candidates": candidates,
+        "service_product_recall_status": state.get("service_product_recall_status"),
+        "service_product_recall_query": state.get("service_product_recall_query"),
+        "missing_fields": state.get("missing_fields") or [],
+    }
+
+
 async def run_agent(
     user_message: str,
     session_id: str | None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     active_session_id = session_id or str(uuid4())
 
     trace_event(
@@ -590,4 +672,5 @@ async def run_agent(
         "session_id": active_session_id,
         "conversation_id": active_session_id,
         "answer": answer,
+        "order_preview": build_order_preview(result),
     }
