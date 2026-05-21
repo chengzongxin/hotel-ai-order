@@ -26,6 +26,7 @@ REQUIRED_FIELDS_BY_ORDER_TYPE: dict[str, list[str]] = {
 }
 
 ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
+CANCEL_ORDER_KEYWORDS = ("取消", "不用了", "不提交", "先算了", "撤销", "放弃", "不要了")
 
 
 class UnderstandingResult(BaseModel):
@@ -50,6 +51,7 @@ class UnderstandingResult(BaseModel):
     area: str | None = None
     urgency: str | None = None
     user_confirmed: bool = False
+    user_cancelled: bool = False
 
 
 @lru_cache
@@ -108,6 +110,11 @@ def has_active_order(state: AgentState) -> bool:
     return state.get("order_status") in ACTIVE_ORDER_STATUSES
 
 
+def is_cancel_request(text: str) -> bool:
+    normalized_text = text.strip().lower()
+    return any(keyword in normalized_text for keyword in CANCEL_ORDER_KEYWORDS)
+
+
 def get_extractor_history(state: AgentState) -> str:
     """提交后的新报修默认只看最新输入，避免已提交订单被重新抽取。"""
 
@@ -140,16 +147,20 @@ async def understand_node(state: AgentState) -> dict[str, object]:
         ]
     )
 
+    last_user_message = get_last_human_message(state["messages"])
+    user_cancelled = result.user_cancelled or (has_active_order(state) and is_cancel_request(last_user_message))
+    current_intent = "cancel_repair_order" if user_cancelled else result.current_intent
+
     current_order_type = result.current_order_type or (
-        "repair_order" if result.current_intent in {"create_repair_order", "confirm_repair_order"} else None
+        "repair_order" if current_intent in {"create_repair_order", "confirm_repair_order"} else None
     )
-    if result.current_intent in {"smalltalk", "unknown"} and has_active_order(state):
+    if current_intent in {"smalltalk", "unknown", "cancel_repair_order"} and has_active_order(state):
         current_order_type = state.get("current_order_type")
 
     order_status = state.get("order_status")
-    if result.current_intent in {"create_repair_order", "confirm_repair_order"}:
+    if current_intent in {"create_repair_order", "confirm_repair_order"}:
         order_status = "collecting"
-    elif result.current_intent in {"smalltalk", "unknown"} and not has_active_order(state):
+    elif current_intent in {"smalltalk", "unknown"} and not has_active_order(state):
         order_status = state.get("order_status") or "idle"
 
     detected_fields = {
@@ -159,10 +170,13 @@ async def understand_node(state: AgentState) -> dict[str, object]:
         "area": result.area,
         "urgency": result.urgency,
         "user_confirmed": result.user_confirmed,
+        "user_cancelled": user_cancelled,
     }
     existing_fields = state.get("extracted_fields", {}) if has_active_order(state) else {}
-    if result.current_intent in {"smalltalk", "unknown"}:
+    if current_intent in {"smalltalk", "unknown", "cancel_repair_order"}:
         fields = existing_fields if has_active_order(state) else {}
+        if current_intent == "cancel_repair_order":
+            fields = {**fields, "user_confirmed": False, "user_cancelled": True}
     else:
         fields = {
             **existing_fields,
@@ -173,13 +187,14 @@ async def understand_node(state: AgentState) -> dict[str, object]:
             },
         }
         fields["user_confirmed"] = result.user_confirmed
+        fields["user_cancelled"] = user_cancelled
     output: dict[str, object] = {
-        "current_intent": result.current_intent,
+        "current_intent": current_intent,
         "current_order_type": current_order_type,
         "order_status": order_status,
         "extracted_fields": fields,
         "current_step": "understand_node",
-        "last_user_message": get_last_human_message(state["messages"]),
+        "last_user_message": last_user_message,
     }
     trace_event("node.understand.output", **output)
     return output
@@ -417,6 +432,34 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
     }
 
 
+async def cancel_order_node(state: AgentState) -> dict[str, object]:
+    """取消当前预下单，避免旧维修单继续参与后续对话。"""
+
+    answer = "已取消本次维修单。"
+    output = {
+        "messages": [AIMessage(content=answer)],
+        "current_step": "cancel_order_node",
+        "current_intent": "cancel_repair_order",
+        "current_order_type": None,
+        "order_status": "cancelled",
+        "extracted_fields": {},
+        "matched_service_product": {},
+        "service_product_candidates": [],
+        "service_product_recall_status": None,
+        "service_product_recall_query": None,
+        "missing_fields": [],
+        "retry_count": 0,
+        "deviation_count": 0,
+    }
+    trace_event(
+        "node.cancel_order.output",
+        answer=answer,
+        previous_order_status=state.get("order_status"),
+        previous_extracted_fields=state.get("extracted_fields", {}),
+    )
+    return output
+
+
 async def submit_order_node(state: AgentState) -> dict[str, object]:
     """提交订单。
 
@@ -468,6 +511,9 @@ async def submit_order_node(state: AgentState) -> dict[str, object]:
 
 def route_after_understand(state: AgentState) -> str:
     intent = state.get("current_intent")
+    extracted_fields = state.get("extracted_fields", {})
+    if intent == "cancel_repair_order" or extracted_fields.get("user_cancelled"):
+        return "cancel_order_node"
     if intent in {"create_repair_order", "confirm_repair_order", "create_order", "confirm_order"}:
         return "recall_service_product_node"
     return "ask_user_node"
@@ -493,6 +539,7 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
     graph.add_node("missing_field_node", missing_field_node)
     graph.add_node("ask_user_node", ask_user_node)
     graph.add_node("confirm_node", confirm_node)
+    graph.add_node("cancel_order_node", cancel_order_node)
     graph.add_node("submit_order_node", submit_order_node)
 
     graph.add_edge(START, "understand_node")
@@ -500,6 +547,7 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
         "understand_node",
         route_after_understand,
         {
+            "cancel_order_node": "cancel_order_node",
             "recall_service_product_node": "recall_service_product_node",
             "ask_user_node": "ask_user_node",
         },
@@ -522,6 +570,7 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
         },
     )
     graph.add_edge("ask_user_node", END)
+    graph.add_edge("cancel_order_node", END)
     graph.add_edge("submit_order_node", END)
 
     if checkpointer is None:

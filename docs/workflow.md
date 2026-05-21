@@ -4,6 +4,7 @@
 flowchart TD
     START([START]) --> understand_node[understand_node<br/>识别意图并抽取维修字段]
 
+    understand_node -->|cancel_repair_order| cancel_order_node[cancel_order_node<br/>取消并清空预下单]
     understand_node -->|create_repair_order / confirm_repair_order| recall_service_product_node[recall_service_product_node<br/>召回标准服务商品]
     understand_node -->|unknown / smalltalk| ask_user_node[ask_user_node<br/>友好回应或追问]
 
@@ -16,5 +17,6 @@ flowchart TD
     confirm_node -->|未确认| END([END])
 
     ask_user_node --> END
+    cancel_order_node --> END
     submit_order_node --> END
 ```
