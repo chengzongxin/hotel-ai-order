@@ -63,10 +63,10 @@ Graph run 的 metadata 里会带：
 
 节点输入和输出里可以看到 State 的变化，例如：
 
-- `current_intent`
-- `current_order_type`
-- `extracted_fields`
-- `missing_fields`
+- `intent`
+- `service_type`
+- `order_info`
+- `missing_info`
 - `retry_count`
 - `conversation_summary`
 
@@ -94,11 +94,11 @@ Graph run 的 metadata 里会带：
 
 ### Tool
 
-当前维修工作流主要是显式节点流程，RAG 和维修 Tool 已注册在 `tools/registry.py`。
+当前下单工作流主要是显式节点流程，RAG 和下单 Tool 已注册在 `tools/registry.py`。
 
 当后续把 ToolNode 或工具调用接入主图后，LangSmith 会显示工具 run，例如：
 
-- `recall_service_product_tool`
+- `match_product_tool`
 - `search_product_tool`
 - `create_order_tool`
 - `check_package_tool`
@@ -109,8 +109,8 @@ Graph run 的 metadata 里会带：
 
 ```text
 hotel-ai-order
-repair-order
+order
 local
 ```
 
-你可以在 LangSmith 里按 tag 筛选维修下单链路。
+你可以在 LangSmith 里按 tag 筛选下单链路。

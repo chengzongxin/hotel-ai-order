@@ -74,7 +74,7 @@ uv run langgraph dev
 启动后打开终端提示的 Studio 地址，选择：
 
 ```text
-repair_order_graph
+order_graph
 ```
 
 Studio 里输入的是 LangGraph State，不是 FastAPI 请求体。示例：
@@ -89,7 +89,7 @@ Studio 里输入的是 LangGraph State，不是 FastAPI 请求体。示例：
     }
   ],
   "retry_count": 0,
-  "deviation_count": 0,
+  "off_topic_count": 0,
   "conversation_summary": "",
   "last_user_message": "1208房间空调不制冷，比较急"
 }

@@ -1,10 +1,10 @@
-# 服务商品 Embedding 召回系统
+# 商品 Embedding 匹配系统
 
 ## 目标
 
-该模块从 `assets/spu.xlsx` 读取服务商品数据，并使用 Qwen text-embedding 做语义召回。
+该模块从 `assets/spu.xlsx` 读取商品数据，并使用 Qwen text-embedding 做语义匹配。
 
-召回目标不是简单商品名，而是最终下单需要的标准服务商品参数：
+匹配目标不是简单商品名，而是最终下单需要的标准商品参数：
 
 - `服务商品编码`
 - `服务商品名称`
@@ -21,7 +21,7 @@
 
 ## 检索字段
 
-每条服务商品只生成两组 embedding 文本：
+每条商品只生成两组 embedding 文本：
 
 - `name_text`：只使用 `服务商品名称`。
 - `fault_text`：只使用 `关联故障现象`。
@@ -44,18 +44,18 @@ EMBEDDING_CACHE_DIR=data/embedding_cache
 QWEN_EMBEDDING_MODEL=text-embedding-v4
 QWEN_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_EMBEDDING_API_KEY=
-SERVICE_PRODUCT_RECALL_THRESHOLD=0.55
-SERVICE_PRODUCT_NAME_WEIGHT=0.55
-SERVICE_PRODUCT_FAULT_WEIGHT=0.45
+PRODUCT_MATCH_THRESHOLD=0.55
+PRODUCT_NAME_WEIGHT=0.55
+PRODUCT_FAULT_WEIGHT=0.45
 SERVICE_TYPE_MATCH_BONUS=0.08
 SERVICE_TYPE_MISMATCH_PENALTY=0.05
 ```
 
 ## Tool
 
-### recall_service_product_tool
+### match_product_tool
 
-根据用户输入召回可下单服务商品。
+根据用户输入匹配可下单商品。
 
 输入：
 
@@ -102,7 +102,7 @@ SERVICE_TYPE_MISMATCH_PENALTY=0.05
 
 `threshold` 越高，结果越少但更精确。
 
-如果没有结果，可以临时降低 `SERVICE_PRODUCT_RECALL_THRESHOLD`，或者检查用户描述里是否缺少商品、故障或区域。
+如果没有结果，可以临时降低 `PRODUCT_MATCH_THRESHOLD`，或者检查用户描述里是否缺少商品、故障或区域。
 
 ## 缓存
 

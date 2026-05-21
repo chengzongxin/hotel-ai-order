@@ -22,7 +22,7 @@ SERVICE_TYPE_KEYWORDS: dict[str, list[str]] = {
 
 
 @dataclass(frozen=True)
-class ServiceProductRecallResult:
+class ProductMatchResult:
     final_score: float
     name_score: float
     fault_score: float
@@ -42,8 +42,8 @@ class ServiceProductRecallResult:
         return payload
 
 
-class ServiceProductRetriever:
-    """基于 Qwen embedding 的服务商品多维度召回器。"""
+class ProductMatcher:
+    """基于 Qwen embedding 的商品匹配器。"""
 
     def __init__(
         self,
@@ -79,19 +79,19 @@ class ServiceProductRetriever:
         name_scores = self.embeddings("name") @ query_embedding
         fault_scores = self.embeddings("fault") @ query_embedding
 
-        results: list[ServiceProductRecallResult] = []
-        min_score = threshold if threshold is not None else settings.service_product_recall_threshold
+        results: list[ProductMatchResult] = []
+        min_score = threshold if threshold is not None else settings.product_match_threshold
         for index, record in enumerate(self.records):
             adjustment = self._service_type_adjustment(record, normalized_hint)
             final_score = (
-                settings.service_product_name_weight * float(name_scores[index])
-                + settings.service_product_fault_weight * float(fault_scores[index])
+                settings.product_name_weight * float(name_scores[index])
+                + settings.product_fault_weight * float(fault_scores[index])
                 + adjustment
             )
             if final_score < min_score:
                 continue
             results.append(
-                ServiceProductRecallResult(
+                ProductMatchResult(
                     final_score=final_score,
                     name_score=float(name_scores[index]),
                     fault_score=float(fault_scores[index]),
@@ -161,10 +161,10 @@ class ServiceProductRetriever:
         digest = hashlib.sha256(
             (
                 f"{self.excel_path.resolve()}:{settings.qwen_embedding_model}:"
-                f"{kind}:service-product-name-fault-v1"
+                f"{kind}:product-name-fault-v1"
             ).encode("utf-8")
         ).hexdigest()[:16]
-        return self.cache_dir / f"service_product_{kind}_{digest}.npy"
+        return self.cache_dir / f"product_{kind}_{digest}.npy"
 
     def _cache_metadata(self, kind: str) -> dict[str, Any]:
         stat = self.excel_path.stat()
@@ -175,7 +175,7 @@ class ServiceProductRetriever:
             "excel_size": stat.st_size,
             "embedding_model": settings.qwen_embedding_model,
             "record_count": len(self.records),
-            "text_builder_version": "service-product-name-fault-v1",
+            "text_builder_version": "product-name-fault-v1",
         }
 
     def _build_query(
@@ -197,5 +197,5 @@ class ServiceProductRetriever:
 
 
 @lru_cache
-def get_service_product_retriever() -> ServiceProductRetriever:
-    return ServiceProductRetriever()
+def get_product_matcher() -> ProductMatcher:
+    return ProductMatcher()

@@ -10,44 +10,29 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel
 
 from config.logging import trace_event
 from config.settings import settings
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
-from tools.service_product import recall_service_product_tool
+from tools.product_match import match_product_tool
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 MAX_RETRY_COUNT = 2
 
-REQUIRED_FIELDS_BY_ORDER_TYPE: dict[str, list[str]] = {
-    "repair_order": ["room_number", "product", "fault", "area"],
-}
+REQUIRED_ORDER_INFO = ["room_number", "product", "fault", "area"]
 
 ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
 CANCEL_ORDER_KEYWORDS = ("取消", "不用了", "不提交", "先算了", "撤销", "放弃", "不要了")
 
 
-class UnderstandingResult(BaseModel):
-    current_intent: str = Field(
-        description="用户当前意图",
-        validation_alias=AliasChoices("current_intent", "intent"),
-    )
-    current_order_type: str | None = Field(
-        default=None,
-        description="订单类型",
-        validation_alias=AliasChoices("current_order_type", "order_type"),
-    )
+class IntentResult(BaseModel):
+    intent: str
+    service_type: str | None = None
     room_number: str | None = None
-    product: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("product", "item", "equipment"),
-    )
-    fault: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("fault", "fault_description", "problem"),
-    )
+    product: str | None = None
+    fault: str | None = None
     area: str | None = None
     urgency: str | None = None
     user_confirmed: bool = False
@@ -107,7 +92,7 @@ def get_asked_questions(messages: list[BaseMessage]) -> list[str]:
 
 
 def has_active_order(state: AgentState) -> bool:
-    return state.get("order_status") in ACTIVE_ORDER_STATUSES
+    return state.get("status") in ACTIVE_ORDER_STATUSES
 
 
 def is_cancel_request(text: str) -> bool:
@@ -116,32 +101,32 @@ def is_cancel_request(text: str) -> bool:
 
 
 def get_extractor_history(state: AgentState) -> str:
-    """提交后的新报修默认只看最新输入，避免已提交订单被重新抽取。"""
+    """提交后的新订单默认只看最新输入，避免已提交订单被重新抽取。"""
 
-    if state.get("last_submitted_order") and not state.get("extracted_fields"):
+    if state.get("last_order") and not state.get("order_info"):
         return f"human: {get_last_human_message(state.get('messages', []))}"
     return format_messages(state.get("messages", []))
 
 
-async def understand_node(state: AgentState) -> dict[str, object]:
-    """一次性完成意图识别和维修字段抽取。"""
+async def intent_node(state: AgentState) -> dict[str, object]:
+    """一次性完成意图识别和订单信息抽取。"""
 
     trace_event(
-        "node.understand.input",
+        "node.intent.input",
         last_user_message=get_last_human_message(state["messages"]),
         message_count=len(state["messages"]),
-        order_status=state.get("order_status"),
+        status=state.get("status"),
     )
-    llm = get_llm().with_structured_output(UnderstandingResult)
+    llm = get_llm().with_structured_output(IntentResult)
     result = await llm.ainvoke(
         [
             SystemMessage(
                 content=render_prompt(
-                    "router/maintenance_understanding.md",
+                    "router/order_intent.md",
                     conversation_history=get_extractor_history(state),
                     user_input=get_last_human_message(state["messages"]),
-                    order_status=state.get("order_status") or "idle",
-                    last_submitted_order=state.get("last_submitted_order", {}),
+                    status=state.get("status") or "idle",
+                    last_order=state.get("last_order", {}),
                 )
             ),
         ]
@@ -149,19 +134,15 @@ async def understand_node(state: AgentState) -> dict[str, object]:
 
     last_user_message = get_last_human_message(state["messages"])
     user_cancelled = result.user_cancelled or (has_active_order(state) and is_cancel_request(last_user_message))
-    current_intent = "cancel_repair_order" if user_cancelled else result.current_intent
+    intent = "cancel_order" if user_cancelled else result.intent
 
-    current_order_type = result.current_order_type or (
-        "repair_order" if current_intent in {"create_repair_order", "confirm_repair_order"} else None
-    )
-    if current_intent in {"smalltalk", "unknown", "cancel_repair_order"} and has_active_order(state):
-        current_order_type = state.get("current_order_type")
+    service_type = result.service_type or state.get("service_type")
 
-    order_status = state.get("order_status")
-    if current_intent in {"create_repair_order", "confirm_repair_order"}:
-        order_status = "collecting"
-    elif current_intent in {"smalltalk", "unknown"} and not has_active_order(state):
-        order_status = state.get("order_status") or "idle"
+    status = state.get("status")
+    if intent in {"create_order", "confirm_order"}:
+        status = "collecting"
+    elif intent in {"smalltalk", "unknown"} and not has_active_order(state):
+        status = state.get("status") or "idle"
 
     detected_fields = {
         "room_number": result.room_number,
@@ -172,41 +153,41 @@ async def understand_node(state: AgentState) -> dict[str, object]:
         "user_confirmed": result.user_confirmed,
         "user_cancelled": user_cancelled,
     }
-    existing_fields = state.get("extracted_fields", {}) if has_active_order(state) else {}
-    if current_intent in {"smalltalk", "unknown", "cancel_repair_order"}:
-        fields = existing_fields if has_active_order(state) else {}
-        if current_intent == "cancel_repair_order":
-            fields = {**fields, "user_confirmed": False, "user_cancelled": True}
+    existing_order_info = state.get("order_info", {}) if has_active_order(state) else {}
+    if intent in {"smalltalk", "unknown", "cancel_order"}:
+        order_info = existing_order_info if has_active_order(state) else {}
+        if intent == "cancel_order":
+            order_info = {**order_info, "user_confirmed": False, "user_cancelled": True}
     else:
-        fields = {
-            **existing_fields,
+        order_info = {
+            **existing_order_info,
             **{
                 key: value
                 for key, value in detected_fields.items()
                 if value is not None
             },
         }
-        fields["user_confirmed"] = result.user_confirmed
-        fields["user_cancelled"] = user_cancelled
+        order_info["user_confirmed"] = result.user_confirmed
+        order_info["user_cancelled"] = user_cancelled
     output: dict[str, object] = {
-        "current_intent": current_intent,
-        "current_order_type": current_order_type,
-        "order_status": order_status,
-        "extracted_fields": fields,
-        "current_step": "understand_node",
+        "intent": intent,
+        "service_type": service_type,
+        "status": status,
+        "order_info": order_info,
+        "step": "intent_node",
         "last_user_message": last_user_message,
     }
-    trace_event("node.understand.output", **output)
+    trace_event("node.intent.output", **output)
     return output
 
 
-async def recall_service_product_node(state: AgentState) -> dict[str, object]:
-    """根据已抽取的商品和故障，尽早召回真实可下单服务商品。"""
+async def match_product_node(state: AgentState) -> dict[str, object]:
+    """根据已抽取的商品和问题，尽早匹配真实可下单商品。"""
 
-    extracted_fields = state.get("extracted_fields", {})
-    product = extracted_fields.get("product")
-    fault = extracted_fields.get("fault")
-    area = extracted_fields.get("area")
+    order_info = state.get("order_info", {})
+    product = order_info.get("product")
+    fault = order_info.get("fault")
+    area = order_info.get("area")
 
     recall_query = " ".join(
         str(value)
@@ -215,22 +196,23 @@ async def recall_service_product_node(state: AgentState) -> dict[str, object]:
     )
     if not product and not fault:
         output = {
-            "matched_service_product": {},
-            "service_product_candidates": [],
-            "service_product_recall_status": "skipped",
-            "service_product_recall_query": recall_query,
-            "current_step": "recall_service_product_node",
+            "matched_product": {},
+            "product_candidates": [],
+            "product_match_status": "skipped",
+            "product_match_query": recall_query,
+            "step": "match_product_node",
         }
-        trace_event("node.recall_service_product.skipped", **output)
+        trace_event("node.match_product.skipped", **output)
         return output
 
     result = await asyncio.to_thread(
-        recall_service_product_tool.invoke,
+        match_product_tool.invoke,
         {
             "query": recall_query,
             "product": product,
             "fault": fault,
             "area": area,
+            "service_type_hint": state.get("service_type"),
             "top_k": 3,
             "threshold": None,
         },
@@ -243,14 +225,15 @@ async def recall_service_product_node(state: AgentState) -> dict[str, object]:
         status = "error"
 
     output = {
-        "matched_service_product": best_match,
-        "service_product_candidates": candidates,
-        "service_product_recall_status": status,
-        "service_product_recall_query": recall_query,
-        "current_step": "recall_service_product_node",
+        "matched_product": best_match,
+        "product_candidates": candidates,
+        "product_match_status": status,
+        "product_match_query": recall_query,
+        "service_type": best_match.get("service_order_type") or state.get("service_type"),
+        "step": "match_product_node",
     }
     trace_event(
-        "node.recall_service_product.output",
+        "node.match_product.output",
         tool_status=result.get("status"),
         tool_error_code=result.get("error_code"),
         tool_message=result.get("message"),
@@ -259,42 +242,40 @@ async def recall_service_product_node(state: AgentState) -> dict[str, object]:
     return output
 
 
-async def missing_field_node(state: AgentState) -> dict[str, object]:
+async def validate_order_node(state: AgentState) -> dict[str, object]:
     """根据维修订单类型检查缺失字段，并记录重试次数。"""
 
-    order_type = state.get("current_order_type")
-    required_fields = REQUIRED_FIELDS_BY_ORDER_TYPE.get(order_type or "", [])
-    extracted_fields = state.get("extracted_fields", {})
-    missing_fields = [
+    order_info = state.get("order_info", {})
+    missing_info = [
         field
-        for field in required_fields
-        if not extracted_fields.get(field)
+        for field in REQUIRED_ORDER_INFO
+        if not order_info.get(field)
     ]
 
     retry_count = state.get("retry_count", 0)
-    if missing_fields:
+    if missing_info:
         retry_count += 1
 
     output = {
-        "missing_fields": missing_fields,
+        "missing_info": missing_info,
         "retry_count": retry_count,
-        "order_status": "collecting" if missing_fields else "confirming",
-        "current_step": "missing_field_node",
+        "status": "collecting" if missing_info else "confirming",
+        "step": "validate_order_node",
     }
     trace_event(
-        "node.missing_field.output",
-        current_order_type=order_type,
-        extracted_fields=extracted_fields,
+        "node.validate_order.output",
+        service_type=state.get("service_type"),
+        order_info=order_info,
         **output,
     )
     return output
 
 
-def build_missing_field_fallback_question(missing_fields: list[str]) -> str:
-    if not missing_fields:
-        return "请确认是否提交维修单？"
+def build_missing_info_fallback_question(missing_info: list[str]) -> str:
+    if not missing_info:
+        return "请确认是否提交订单？"
 
-    field = missing_fields[0]
+    field = missing_info[0]
     questions = {
         "room_number": "请问您住哪个房间？",
         "product": "是哪样东西坏了？",
@@ -305,39 +286,39 @@ def build_missing_field_fallback_question(missing_fields: list[str]) -> str:
     return questions.get(field, f"请补充{field}。")
 
 
-async def build_missing_field_question(state: AgentState) -> str:
-    missing_fields = state.get("missing_fields", [])
-    if not missing_fields:
-        return build_missing_field_fallback_question(missing_fields)
+async def build_missing_info_question(state: AgentState) -> str:
+    missing_info = state.get("missing_info", [])
+    if not missing_info:
+        return build_missing_info_fallback_question(missing_info)
 
     prompt = render_prompt(
-        "ask/maintenance_minimal_question.md",
-        extracted_fields=state.get("extracted_fields", {}),
-        missing_fields=missing_fields,
+        "ask/ask_missing_info.md",
+        order_info=state.get("order_info", {}),
+        missing_info=missing_info,
         asked_questions=get_asked_questions(state.get("messages", [])),
         last_user_message=get_last_human_message(state.get("messages", [])),
     )
     response = await get_llm().ainvoke([SystemMessage(content=prompt)])
     question = str(response.content).strip()
-    return question or build_missing_field_fallback_question(missing_fields)
+    return question or build_missing_info_fallback_question(missing_info)
 
 
 async def build_topic_boundary_response(state: AgentState) -> str:
-    missing_fields = state.get("missing_fields", [])
+    missing_info = state.get("missing_info", [])
     active_order = has_active_order(state)
-    next_question = build_missing_field_fallback_question(missing_fields) if active_order else ""
-    if active_order and not missing_fields and not state.get("extracted_fields"):
+    next_question = build_missing_info_fallback_question(missing_info) if active_order else ""
+    if active_order and not missing_info and not state.get("order_info"):
         next_question = "请说房号和故障。"
     prompt = render_prompt(
-        "safety/topic_boundary_redirect.md",
+        "safety/off_topic_redirect.md",
         last_user_message=get_last_human_message(state.get("messages", [])),
         active_order=active_order,
-        order_status=state.get("order_status") or "idle",
-        extracted_fields=state.get("extracted_fields", {}) if active_order else {},
-        last_submitted_order=state.get("last_submitted_order", {}),
-        missing_fields=missing_fields,
+        status=state.get("status") or "idle",
+        order_info=state.get("order_info", {}) if active_order else {},
+        last_order=state.get("last_order", {}),
+        missing_info=missing_info,
         next_question=next_question,
-        deviation_count=state.get("deviation_count", 0) + 1,
+        off_topic_count=state.get("off_topic_count", 0) + 1,
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
     response = await get_llm().ainvoke([SystemMessage(content=prompt)])
@@ -348,46 +329,46 @@ async def build_topic_boundary_response(state: AgentState) -> str:
     )
 
 
-async def ask_user_node(state: AgentState) -> dict[str, object]:
+async def ask_node(state: AgentState) -> dict[str, object]:
     """返回追问，让本轮语音对话自然结束。"""
 
-    missing_fields = state.get("missing_fields", [])
+    missing_info = state.get("missing_info", [])
     retry_count = state.get("retry_count", 0)
-    deviation_count = state.get("deviation_count", 0)
-    is_topic_deviation = state.get("current_intent") in {"unknown", "smalltalk"}
+    off_topic_count = state.get("off_topic_count", 0)
+    is_topic_deviation = state.get("intent") in {"unknown", "smalltalk"}
 
     if is_topic_deviation:
         question = await build_topic_boundary_response(state)
-        deviation_count += 1
+        off_topic_count += 1
     elif retry_count > MAX_RETRY_COUNT:
         question = render_prompt(
-            "ask/maintenance_retry_missing_fields.md",
-            missing_fields=", ".join(missing_fields),
+            "ask/retry_missing_info.md",
+            missing_info=", ".join(missing_info),
         )
     else:
-        question = await build_missing_field_question(state)
+        question = await build_missing_info_question(state)
 
     trace_event(
-        "node.ask_user.output",
+        "node.ask.output",
         question=question,
-        missing_fields=missing_fields,
+        missing_info=missing_info,
         retry_count=retry_count,
-        deviation_count=deviation_count,
-        current_intent=state.get("current_intent"),
+        off_topic_count=off_topic_count,
+        intent=state.get("intent"),
     )
 
     output = {
         "messages": [AIMessage(content=question)],
-        "current_step": "ask_user_node",
-        "order_status": state.get("order_status") or "idle",
-        "deviation_count": deviation_count,
+        "step": "ask_node",
+        "status": state.get("status") or "idle",
+        "off_topic_count": off_topic_count,
     }
     if is_topic_deviation and not has_active_order(state):
         output.update(
             {
-                "current_order_type": None,
-                "extracted_fields": {},
-                "missing_fields": [],
+                "service_type": None,
+                "order_info": {},
+                "missing_info": [],
                 "retry_count": 0,
             }
         )
@@ -395,169 +376,169 @@ async def ask_user_node(state: AgentState) -> dict[str, object]:
 
 
 async def confirm_node(state: AgentState) -> dict[str, object]:
-    """让用户确认维修订单信息。"""
+    """让用户确认订单信息。"""
 
-    extracted_fields = state.get("extracted_fields", {})
-    order_type = state.get("current_order_type")
-    matched_service_product = state.get("matched_service_product", {})
+    order_info = state.get("order_info", {})
+    service_type = state.get("service_type")
+    matched_product = state.get("matched_product", {})
 
-    if extracted_fields.get("user_confirmed"):
+    if order_info.get("user_confirmed"):
         trace_event("node.confirm.skip", reason="user_confirmed")
         return {
-            "current_step": "confirm_node",
+            "step": "confirm_node",
         }
 
     confirmation_text = render_prompt(
-        "confirm/maintenance_order_confirm.md",
-        order_type=order_type,
-        room_number=extracted_fields.get("room_number"),
-        product=extracted_fields.get("product"),
-        fault=extracted_fields.get("fault"),
-        area=extracted_fields.get("area"),
-        urgency=extracted_fields.get("urgency") or "medium",
-        service_product_name=matched_service_product.get("service_product_name") or "未匹配到标准服务商品",
-        service_product_code=matched_service_product.get("service_product_code") or "无",
+        "confirm/order_confirm.md",
+        service_type=service_type,
+        room_number=order_info.get("room_number"),
+        product=order_info.get("product"),
+        fault=order_info.get("fault"),
+        area=order_info.get("area"),
+        urgency=order_info.get("urgency") or "medium",
+        product_name=matched_product.get("service_product_name") or "未匹配到标准商品",
+        product_code=matched_product.get("service_product_code") or "无",
     )
 
     trace_event(
         "node.confirm.output",
         confirmation_text=confirmation_text,
-        extracted_fields=extracted_fields,
+        order_info=order_info,
     )
 
     return {
         "messages": [AIMessage(content=confirmation_text)],
-        "current_step": "confirm_node",
-        "order_status": "confirming",
+        "step": "confirm_node",
+        "status": "confirming",
     }
 
 
-async def cancel_order_node(state: AgentState) -> dict[str, object]:
-    """取消当前预下单，避免旧维修单继续参与后续对话。"""
+async def cancel_node(state: AgentState) -> dict[str, object]:
+    """取消当前预下单，避免旧订单继续参与后续对话。"""
 
-    answer = "已取消本次维修单。"
+    answer = "已取消本次订单。"
     output = {
         "messages": [AIMessage(content=answer)],
-        "current_step": "cancel_order_node",
-        "current_intent": "cancel_repair_order",
-        "current_order_type": None,
-        "order_status": "cancelled",
-        "extracted_fields": {},
-        "matched_service_product": {},
-        "service_product_candidates": [],
-        "service_product_recall_status": None,
-        "service_product_recall_query": None,
-        "missing_fields": [],
+        "step": "cancel_node",
+        "intent": "cancel_order",
+        "service_type": None,
+        "status": "cancelled",
+        "order_info": {},
+        "matched_product": {},
+        "product_candidates": [],
+        "product_match_status": None,
+        "product_match_query": None,
+        "missing_info": [],
         "retry_count": 0,
-        "deviation_count": 0,
+        "off_topic_count": 0,
     }
     trace_event(
-        "node.cancel_order.output",
+        "node.cancel.output",
         answer=answer,
-        previous_order_status=state.get("order_status"),
-        previous_extracted_fields=state.get("extracted_fields", {}),
+        previous_status=state.get("status"),
+        previous_order_info=state.get("order_info", {}),
     )
     return output
 
 
-async def submit_order_node(state: AgentState) -> dict[str, object]:
+async def submit_node(state: AgentState) -> dict[str, object]:
     """提交订单。
 
-    真实项目中这里通常会调用维修工单系统 API。
+    真实项目中这里通常会调用下单系统 API。
     当前骨架先返回一个稳定的订单号，方便本地直接运行和测试流程。
     """
 
     order_id = f"ORDER-{uuid4().hex[:8].upper()}"
-    matched_service_product = state.get("matched_service_product", {})
+    matched_product = state.get("matched_product", {})
     submitted_order = {
         "order_id": order_id,
-        "order_type": state.get("current_order_type"),
-        **state.get("extracted_fields", {}),
-        "service_product_code": matched_service_product.get("service_product_code"),
-        "service_product_name": matched_service_product.get("service_product_name"),
-        "service_order_type": matched_service_product.get("service_order_type"),
-        "matched_service_product": matched_service_product,
+        "service_type": state.get("service_type"),
+        **state.get("order_info", {}),
+        "product_code": matched_product.get("service_product_code"),
+        "product_name": matched_product.get("service_product_name"),
+        "product_order_type": matched_product.get("service_order_type"),
+        "matched_product": matched_product,
     }
     answer = render_prompt(
-        "confirm/maintenance_order_submitted.md",
+        "confirm/order_submitted.md",
         order_id=order_id,
-        order_type=state.get("current_order_type"),
-        extracted_fields=state.get("extracted_fields", {}),
-        matched_service_product=matched_service_product,
+        service_type=state.get("service_type"),
+        order_info=state.get("order_info", {}),
+        matched_product=matched_product,
     )
 
     output = {
         "messages": [AIMessage(content=answer)],
-        "current_step": "submit_order_node",
-        "order_status": "submitted",
-        "last_submitted_order": submitted_order,
-        "current_order_type": None,
-        "extracted_fields": {},
-        "matched_service_product": {},
-        "service_product_candidates": [],
-        "service_product_recall_status": None,
-        "service_product_recall_query": None,
-        "missing_fields": [],
+        "step": "submit_node",
+        "status": "submitted",
+        "last_order": submitted_order,
+        "service_type": None,
+        "order_info": {},
+        "matched_product": {},
+        "product_candidates": [],
+        "product_match_status": None,
+        "product_match_query": None,
+        "missing_info": [],
         "retry_count": 0,
-        "deviation_count": 0,
+        "off_topic_count": 0,
     }
     trace_event(
-        "node.submit_order.output",
+        "node.submit.output",
         answer=answer,
-        extracted_fields=state.get("extracted_fields", {}),
+        order_info=state.get("order_info", {}),
     )
     return output
 
 
-def route_after_understand(state: AgentState) -> str:
-    intent = state.get("current_intent")
-    extracted_fields = state.get("extracted_fields", {})
-    if intent == "cancel_repair_order" or extracted_fields.get("user_cancelled"):
-        return "cancel_order_node"
-    if intent in {"create_repair_order", "confirm_repair_order", "create_order", "confirm_order"}:
-        return "recall_service_product_node"
-    return "ask_user_node"
+def route_after_intent(state: AgentState) -> str:
+    intent = state.get("intent")
+    order_info = state.get("order_info", {})
+    if intent == "cancel_order" or order_info.get("user_cancelled"):
+        return "cancel_node"
+    if intent in {"create_order", "confirm_order"}:
+        return "match_product_node"
+    return "ask_node"
 
 
-def route_after_missing_field_check(state: AgentState) -> str:
-    if state.get("missing_fields"):
-        return "ask_user_node"
+def route_after_validation(state: AgentState) -> str:
+    if state.get("missing_info"):
+        return "ask_node"
     return "confirm_node"
 
 
 def route_after_confirm(state: AgentState) -> str:
-    extracted_fields = state.get("extracted_fields", {})
-    if extracted_fields.get("user_confirmed"):
-        return "submit_order_node"
+    order_info = state.get("order_info", {})
+    if order_info.get("user_confirmed"):
+        return "submit_node"
     return END
 
 
 def build_graph(checkpointer: AsyncSqliteSaver | None = None):
     graph = StateGraph(AgentState)
-    graph.add_node("understand_node", understand_node)
-    graph.add_node("recall_service_product_node", recall_service_product_node)
-    graph.add_node("missing_field_node", missing_field_node)
-    graph.add_node("ask_user_node", ask_user_node)
+    graph.add_node("intent_node", intent_node)
+    graph.add_node("match_product_node", match_product_node)
+    graph.add_node("validate_order_node", validate_order_node)
+    graph.add_node("ask_node", ask_node)
     graph.add_node("confirm_node", confirm_node)
-    graph.add_node("cancel_order_node", cancel_order_node)
-    graph.add_node("submit_order_node", submit_order_node)
+    graph.add_node("cancel_node", cancel_node)
+    graph.add_node("submit_node", submit_node)
 
-    graph.add_edge(START, "understand_node")
+    graph.add_edge(START, "intent_node")
     graph.add_conditional_edges(
-        "understand_node",
-        route_after_understand,
+        "intent_node",
+        route_after_intent,
         {
-            "cancel_order_node": "cancel_order_node",
-            "recall_service_product_node": "recall_service_product_node",
-            "ask_user_node": "ask_user_node",
+            "cancel_node": "cancel_node",
+            "match_product_node": "match_product_node",
+            "ask_node": "ask_node",
         },
     )
-    graph.add_edge("recall_service_product_node", "missing_field_node")
+    graph.add_edge("match_product_node", "validate_order_node")
     graph.add_conditional_edges(
-        "missing_field_node",
-        route_after_missing_field_check,
+        "validate_order_node",
+        route_after_validation,
         {
-            "ask_user_node": "ask_user_node",
+            "ask_node": "ask_node",
             "confirm_node": "confirm_node",
         },
     )
@@ -565,13 +546,13 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
         "confirm_node",
         route_after_confirm,
         {
-            "submit_order_node": "submit_order_node",
+            "submit_node": "submit_node",
             END: END,
         },
     )
-    graph.add_edge("ask_user_node", END)
-    graph.add_edge("cancel_order_node", END)
-    graph.add_edge("submit_order_node", END)
+    graph.add_edge("ask_node", END)
+    graph.add_edge("cancel_node", END)
+    graph.add_edge("submit_node", END)
 
     if checkpointer is None:
         return graph.compile()
@@ -598,10 +579,10 @@ def get_interrupt_answer(result: dict[str, object]) -> str | None:
 def get_graph_config(session_id: str) -> dict[str, object]:
     return {
         "configurable": {"thread_id": session_id},
-        "run_name": "repair_order_graph",
+        "run_name": "order_graph",
         "tags": [
             "hotel-ai-order",
-            "repair-order",
+            "order",
             settings.app_env,
         ],
         "metadata": {
@@ -649,21 +630,21 @@ async def clear_checkpoint_session(session_id: str) -> None:
 
 
 def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
-    extracted_fields = state.get("extracted_fields") or {}
-    matched_service_product = state.get("matched_service_product") or {}
-    candidates = state.get("service_product_candidates") or []
-    if not extracted_fields and not matched_service_product and not candidates:
+    order_info = state.get("order_info") or {}
+    matched_product = state.get("matched_product") or {}
+    candidates = state.get("product_candidates") or []
+    if not order_info and not matched_product and not candidates:
         return None
 
     return {
-        "order_type": state.get("current_order_type"),
-        "order_status": state.get("order_status"),
-        "extracted_fields": extracted_fields,
-        "matched_service_product": matched_service_product,
-        "service_product_candidates": candidates,
-        "service_product_recall_status": state.get("service_product_recall_status"),
-        "service_product_recall_query": state.get("service_product_recall_query"),
-        "missing_fields": state.get("missing_fields") or [],
+        "service_type": state.get("service_type"),
+        "status": state.get("status"),
+        "order_info": order_info,
+        "matched_product": matched_product,
+        "product_candidates": candidates,
+        "product_match_status": state.get("product_match_status"),
+        "product_match_query": state.get("product_match_query"),
+        "missing_info": state.get("missing_info") or [],
     }
 
 
@@ -700,18 +681,18 @@ async def run_agent(
             await graph.aupdate_state(
                 config,
                 {"messages": [AIMessage(content=answer)]},
-                as_node="ask_user_node",
+                as_node="ask_node",
             )
 
     trace_event(
         "agent.run.end",
         session_id=active_session_id,
         answer=answer,
-        current_step=result.get("current_step"),
-        current_intent=result.get("current_intent"),
-        current_order_type=result.get("current_order_type"),
-        extracted_fields=result.get("extracted_fields"),
-        missing_fields=result.get("missing_fields"),
+        step=result.get("step"),
+        intent=result.get("intent"),
+        service_type=result.get("service_type"),
+        order_info=result.get("order_info"),
+        missing_info=result.get("missing_info"),
     )
 
     await save_conversation_log(active_session_id, "human", user_message)

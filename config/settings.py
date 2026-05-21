@@ -73,9 +73,9 @@ class Settings(BaseSettings):
     qwen_embedding_batch_size: int = 10
     qwen_embedding_timeout_seconds: float = 30.0
 
-    service_product_recall_threshold: float = 0.55
-    service_product_name_weight: float = 0.55
-    service_product_fault_weight: float = 0.45
+    product_match_threshold: float = 0.55
+    product_name_weight: float = 0.55
+    product_fault_weight: float = 0.45
     service_type_match_bonus: float = 0.08
     service_type_mismatch_penalty: float = 0.05
 

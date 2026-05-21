@@ -3,11 +3,11 @@ from typing import Any
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from rag.service_product_retriever import get_service_product_retriever
+from rag.product_matcher import get_product_matcher
 from tools.protocol import ToolErrorCode, ToolResult, error_response, success_response
 
 
-class ServiceProductRecallInput(BaseModel):
+class ProductMatchInput(BaseModel):
     query: str = Field(..., min_length=1, description="用户完整维修、安装、测量或托管服务描述")
     product: str | None = Field(default=None, description="已抽取出的商品或设备")
     fault: str | None = Field(default=None, description="已抽取出的故障现象")
@@ -20,8 +20,8 @@ class ServiceProductRecallInput(BaseModel):
     threshold: float | None = Field(default=None, ge=0, le=1, description="最终融合分数阈值")
 
 
-@tool(args_schema=ServiceProductRecallInput)
-def recall_service_product_tool(
+@tool(args_schema=ProductMatchInput)
+def match_product_tool(
     query: str,
     product: str | None = None,
     fault: str | None = None,
@@ -30,15 +30,15 @@ def recall_service_product_tool(
     top_k: int = 5,
     threshold: float | None = None,
 ) -> ToolResult:
-    """召回可下单服务商品，返回服务商品编码和服务类型等标准下单参数。"""
+    """匹配可下单商品，返回商品编码和订单类型等标准下单参数。"""
 
     inferred_hint: str | None = None
     try:
-        retriever = get_service_product_retriever()
-        inferred_hint = service_type_hint or retriever.infer_service_type_hint(
+        matcher = get_product_matcher()
+        inferred_hint = service_type_hint or matcher.infer_service_type_hint(
             " ".join(value for value in [query, product, fault, area] if value)
         )
-        candidates = retriever.search(
+        candidates = matcher.search(
             query=query,
             product=product,
             fault=fault,
@@ -59,7 +59,7 @@ def recall_service_product_tool(
     except Exception as exc:
         return error_response(
             error_code=ToolErrorCode.UPSTREAM_ERROR,
-            message=f"service product recall failed: {exc}",
+            message=f"product match failed: {exc}",
             data={
                 "query": query,
                 "service_type_hint": inferred_hint,

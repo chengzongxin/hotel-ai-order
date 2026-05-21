@@ -17,24 +17,24 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 3.0
 
 
 class SearchProductInput(BaseModel):
-    keyword: str = Field(..., min_length=1, description="维修商品、设备或物品关键词")
-    area: str | None = Field(default=None, description="故障区域，例如卫生间、卧室、客厅")
+    keyword: str = Field(..., min_length=1, description="商品、设备或物品关键词")
+    area: str | None = Field(default=None, description="问题区域，例如卫生间、卧室、客厅")
 
 
 class CreateOrderInput(BaseModel):
     room_number: str = Field(..., min_length=1, description="房号")
-    product: str = Field(..., min_length=1, description="维修商品、设备或物品")
-    fault: str = Field(..., min_length=1, description="故障描述")
-    area: str | None = Field(default=None, description="故障区域")
+    product: str = Field(..., min_length=1, description="商品、设备或物品")
+    fault: str = Field(..., min_length=1, description="问题描述")
+    area: str | None = Field(default=None, description="问题区域")
     urgency: str | None = Field(default=None, description="紧急度：low、medium、high、urgent")
-    service_product_code: str | None = Field(default=None, description="服务商品编码，来自服务商品召回")
-    service_product_name: str | None = Field(default=None, description="服务商品名称，来自服务商品召回")
-    service_order_type: str | None = Field(default=None, description="服务下单类型，例如单次维修服务、单次安装")
+    service_product_code: str | None = Field(default=None, description="商品编码，来自商品匹配")
+    service_product_name: str | None = Field(default=None, description="商品名称，来自商品匹配")
+    service_order_type: str | None = Field(default=None, description="下单类型，例如单次维修服务、单次安装")
 
 
 class CheckPackageInput(BaseModel):
     room_number: str = Field(..., min_length=1, description="房号")
-    product: str = Field(..., min_length=1, description="维修商品、设备或物品")
+    product: str = Field(..., min_length=1, description="商品、设备或物品")
 
 
 async def _search_product(keyword: str, area: str | None) -> ToolResult:
@@ -61,7 +61,7 @@ async def _search_product(keyword: str, area: str | None) -> ToolResult:
 
     if not matched_products:
         return fallback_response(
-            message="未找到精确匹配的维修商品，已使用人工兜底分类",
+            message="未找到精确匹配的商品，已使用人工兜底分类",
             fallback={
                 "fallback_type": "manual_product_classification",
                 "next_action": "ask_staff_to_classify_product",
@@ -82,9 +82,9 @@ async def _create_order(payload: CreateOrderInput) -> ToolResult:
             data={"urgency": payload.urgency},
         )
 
-    order_id = f"REPAIR-{uuid4().hex[:10].upper()}"
+    order_id = f"ORDER-{uuid4().hex[:10].upper()}"
     return success_response(
-        message="repair order created",
+        message="order created",
         data={
             "order_id": order_id,
             "room_number": payload.room_number,
@@ -117,7 +117,7 @@ async def _check_package(room_number: str, product: str) -> ToolResult:
 
 @tool(args_schema=SearchProductInput)
 async def search_product_tool(keyword: str, area: str | None = None) -> ToolResult:
-    """查询维修商品或设备，返回标准 JSON。"""
+    """查询商品或设备，返回标准 JSON。"""
 
     return await run_with_timeout(
         action=lambda: _search_product(keyword=keyword, area=area),
@@ -162,7 +162,7 @@ async def create_order_tool(
         fallback=lambda: fallback_response(
             message="创建维修工单超时，已生成待人工处理任务",
             fallback={
-                "fallback_type": "manual_repair_order",
+                "fallback_type": "manual_order",
                 "next_action": "staff_create_order_manually",
             },
             data=payload.model_dump(),

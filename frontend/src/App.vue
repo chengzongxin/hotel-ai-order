@@ -16,6 +16,24 @@ interface PreOrder {
   fault: string | null
   area: string | null
   urgency: 'low' | 'medium' | 'high' | 'urgent' | null
+  matchedProductName: string | null
+  matchedProductCode: string | null
+  status: string | null
+}
+
+interface OrderPreview {
+  status?: string | null
+  order_info?: {
+    room_number?: string | null
+    product?: string | null
+    fault?: string | null
+    area?: string | null
+    urgency?: PreOrder['urgency']
+  }
+  matched_product?: {
+    service_product_name?: string | null
+    service_product_code?: string | null
+  }
 }
 
 interface SessionSummary {
@@ -25,8 +43,8 @@ interface SessionSummary {
   time: string
 }
 
-const SESSION_KEY = 'repair_voice_session_id'
-const HISTORY_KEY = 'repair_voice_history_sessions'
+const SESSION_KEY = 'order_voice_session_id'
+const HISTORY_KEY = 'order_voice_history_sessions'
 
 const sessionId = ref(localStorage.getItem(SESSION_KEY) || crypto.randomUUID())
 const inputText = ref('')
@@ -46,7 +64,9 @@ localStorage.setItem(SESSION_KEY, sessionId.value)
 const shortSessionId = computed(() => sessionId.value.slice(0, 8).toUpperCase())
 const hasUserMessage = computed(() => messages.value.some((m) => m.role === 'user'))
 
-const filledCount = computed(() => Object.values(preOrder.value).filter(Boolean).length)
+const filledCount = computed(() =>
+  [preOrder.value.roomNumber, preOrder.value.product, preOrder.value.fault, preOrder.value.area, preOrder.value.urgency].filter(Boolean).length
+)
 const orderCompleteness = computed(() => Math.round((filledCount.value / 5) * 100))
 
 const canSubmit = computed(() =>
@@ -65,8 +85,8 @@ const urgencyConfig = computed(() => {
 
 const orderFields = computed(() => [
   { key: 'roomNumber', icon: '🏠', label: '房间号', value: preOrder.value.roomNumber },
-  { key: 'product',   icon: '🔧', label: '故障设备', value: preOrder.value.product },
-  { key: 'fault',     icon: '⚡', label: '故障描述', value: preOrder.value.fault },
+  { key: 'product',   icon: '🔧', label: '商品/设备', value: preOrder.value.product },
+  { key: 'fault',     icon: '⚡', label: '问题描述', value: preOrder.value.fault },
   { key: 'area',      icon: '📍', label: '所在区域', value: preOrder.value.area },
 ])
 
@@ -88,7 +108,16 @@ function currentTime() {
 }
 
 function createEmptyOrder(): PreOrder {
-  return { roomNumber: null, product: null, fault: null, area: null, urgency: null }
+  return {
+    roomNumber: null,
+    product: null,
+    fault: null,
+    area: null,
+    urgency: null,
+    matchedProductName: null,
+    matchedProductCode: null,
+    status: null,
+  }
 }
 
 function loadHistorySessions(): SessionSummary[] {
@@ -134,6 +163,19 @@ function inferPreOrder(text: string) {
   else if (!preOrder.value.urgency) preOrder.value.urgency = 'medium'
 }
 
+function applyOrderPreview(preview?: OrderPreview | null) {
+  if (!preview) return
+  const orderInfo = preview.order_info || {}
+  preOrder.value.roomNumber = orderInfo.room_number ?? preOrder.value.roomNumber
+  preOrder.value.product = orderInfo.product ?? preOrder.value.product
+  preOrder.value.fault = orderInfo.fault ?? preOrder.value.fault
+  preOrder.value.area = orderInfo.area ?? preOrder.value.area
+  preOrder.value.urgency = orderInfo.urgency ?? preOrder.value.urgency
+  preOrder.value.status = preview.status ?? preOrder.value.status
+  preOrder.value.matchedProductName = preview.matched_product?.service_product_name ?? preOrder.value.matchedProductName
+  preOrder.value.matchedProductCode = preview.matched_product?.service_product_code ?? preOrder.value.matchedProductCode
+}
+
 async function sendMessage(text = inputText.value) {
   const content = text.trim()
   if (!content || isSending.value) return
@@ -156,6 +198,7 @@ async function sendMessage(text = inputText.value) {
     if (!res.ok) throw new Error(`请求失败 ${res.status}`)
     const data = await res.json()
     if (data.session_id) { sessionId.value = data.session_id; localStorage.setItem(SESSION_KEY, data.session_id) }
+    applyOrderPreview(data.order_preview)
     appendMessage('assistant', data.answer || '我已收到，会继续为您处理。')
   } catch (err) {
     errorMessage.value = err instanceof Error ? err.message : '网络请求失败'
@@ -232,7 +275,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
       <div class="flex items-center gap-2.5">
         <div class="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-600 text-sm font-bold text-white shadow-sm shadow-indigo-600/30">H</div>
         <div class="leading-none">
-          <p class="text-[13px] font-semibold text-slate-800">AI 维修助手</p>
+          <p class="text-[13px] font-semibold text-slate-800">AI 下单助手</p>
           <p class="text-[10px] text-slate-400">Hotel Desk</p>
         </div>
       </div>
@@ -315,8 +358,8 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
               <div class="mb-8 flex items-start gap-4">
                 <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-base font-bold text-white shadow-md shadow-indigo-600/25">H</div>
                 <div>
-                  <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">维修助手</p>
-                  <p class="mt-1 text-[15px] leading-7 text-slate-700">您好！我是酒店 AI 维修下单助手。请告诉我房间号、设备和故障情况，我会帮您快速整理下单信息。</p>
+                  <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
+                  <p class="mt-1 text-[15px] leading-7 text-slate-700">您好！我是酒店 AI 下单助手。请告诉我房间号、商品和问题，我会帮您快速整理下单信息。</p>
                 </div>
               </div>
 
@@ -342,7 +385,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 <div v-if="message.role === 'assistant'" class="flex items-start gap-3.5">
                   <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
                   <div class="min-w-0 flex-1">
-                    <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">维修助手</p>
+                    <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
                     <p class="text-[15px] leading-7 text-slate-700 whitespace-pre-wrap">{{ message.content }}</p>
                     <p class="mt-2 text-[11px] text-slate-400">{{ message.time }}</p>
                   </div>
@@ -391,7 +434,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 class="flex-1 resize-none border-none bg-transparent text-[15px] leading-6 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-50"
                 style="min-height:24px; max-height:160px; overflow-y:auto;"
                 rows="1"
-                placeholder="描述房间号、设备和故障情况…"
+                placeholder="描述房间号、商品和问题…"
                 :disabled="isSending"
                 @keydown.enter.exact.prevent="sendMessage()"
                 @input="autoGrow"
@@ -503,6 +546,21 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 <p class="mt-0.5 text-[13px] font-medium" :class="preOrder.urgency ? urgencyConfig.color : 'text-slate-300'">
                   {{ urgencyConfig.label }}
                 </p>
+              </div>
+            </div>
+
+            <!-- Matched product -->
+            <div
+              class="flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
+              :class="preOrder.matchedProductCode ? 'border-indigo-100 bg-indigo-50/60' : 'border-slate-100 bg-slate-50/60'"
+            >
+              <span class="shrink-0 text-[15px] leading-none">📦</span>
+              <div class="min-w-0 flex-1">
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">匹配商品</p>
+                <p class="mt-0.5 truncate text-[13px] font-medium" :class="preOrder.matchedProductName ? 'text-slate-800' : 'text-slate-300'">
+                  {{ preOrder.matchedProductName || '待匹配' }}
+                </p>
+                <p v-if="preOrder.matchedProductCode" class="mt-0.5 truncate text-[11px] text-slate-400">{{ preOrder.matchedProductCode }}</p>
               </div>
             </div>
 

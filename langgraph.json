@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "repair_order_graph": "./graph/studio.py:graph"
+    "order_graph": "./graph/studio.py:graph"
   },
   "env": ".env"
 }

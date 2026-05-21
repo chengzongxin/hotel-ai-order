@@ -1,7 +1,7 @@
 [project]
 name = "hotel-ai-order-cursor"
 version = "0.1.0"
-description = "LangGraph + FastAPI hotel repair order agent"
+description = "LangGraph + FastAPI hotel order agent"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
