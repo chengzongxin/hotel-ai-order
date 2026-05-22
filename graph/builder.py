@@ -6,8 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
+from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.config import get_stream_writer
@@ -62,8 +62,9 @@ def to_prompt_text(value: object) -> str:
 
 @lru_cache
 def get_llm() -> BaseChatModel:
-    return ChatOpenAI(
+    return init_chat_model(
         model=settings.openai_model,
+        model_provider="openai",
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
         temperature=settings.openai_temperature,
