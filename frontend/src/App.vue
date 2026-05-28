@@ -1,5 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({ breaks: true })
+
+function renderMarkdown(content: string): string {
+  return DOMPurify.sanitize(marked.parse(content) as string)
+}
 
 type Role = 'user' | 'assistant'
 
@@ -397,6 +406,25 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
       <!-- Separator -->
       <div class="h-6 w-px bg-slate-200"></div>
 
+      <!-- Nav tabs -->
+      <nav class="flex items-center gap-1">
+        <RouterLink
+          to="/"
+          class="rounded-lg px-3 py-1.5 text-[12px] font-medium transition"
+          active-class="bg-indigo-50 text-indigo-700"
+          :class="$route.path === '/' ? '' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'"
+        >下单对话</RouterLink>
+        <RouterLink
+          to="/products"
+          class="rounded-lg px-3 py-1.5 text-[12px] font-medium transition"
+          active-class="bg-indigo-50 text-indigo-700"
+          :class="$route.path === '/products' ? '' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'"
+        >商品库</RouterLink>
+      </nav>
+
+      <!-- Separator -->
+      <div class="h-6 w-px bg-slate-200"></div>
+
       <!-- Session badge -->
       <div class="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
         <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
@@ -500,7 +528,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                   <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
                   <div class="min-w-0 flex-1">
                     <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
-                    <p v-if="message.content" class="text-[15px] leading-7 text-slate-700 whitespace-pre-wrap">{{ message.content }}</p>
+                    <div v-if="message.content" class="prose prose-sm" v-html="renderMarkdown(message.content)"></div>
                     <p v-else class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-[12px] text-indigo-600">
                       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500"></span>
                       {{ streamStatus || '正在处理您的请求...' }}
