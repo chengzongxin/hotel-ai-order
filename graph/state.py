@@ -26,7 +26,8 @@ class AgentState(TypedDict, total=False):
     # 当前订单生命周期：idle、collecting、confirming、submitted、cancelled。
     status: str | None
 
-    # 已从用户输入中提取出的结构化订单信息，例如 room_number、product、fault。
+    # 已从用户输入中提取出的结构化订单信息，例如 room_number、product、fault、
+    # expected_start_time、goods_arrival_status、managed_repair_scope。
     order_info: dict[str, Any]
 
     # 最近一次已提交的订单，供用户追问“刚才那个单号”时使用。
@@ -43,6 +44,9 @@ class AgentState(TypedDict, total=False):
 
     # 本轮用于商品匹配的查询文本。
     product_match_query: str | None
+
+    # 商品匹配成功后给用户看的反馈文案。
+    product_match_feedback: str | None
 
     # 仍然缺失、需要继续追问用户的订单信息名。
     missing_info: list[str]

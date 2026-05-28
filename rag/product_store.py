@@ -14,6 +14,7 @@ from rag.spu_loader import SpuExcelLoader
 PROJECT_ROOT = Path(__file__).parent.parent
 PERSIST_DIR = str(PROJECT_ROOT / "data/chroma_db")
 METADATA_FILE = str(PROJECT_ROOT / "data/chroma_db/build_metadata.json")
+INDEX_TEXT_VERSION = "product-name-fault-v2"
 
 
 class QwenEmbeddings(Embeddings):
@@ -43,6 +44,9 @@ class ProductVectorStore:
         return self.vector_store.as_retriever(search_kwargs={"k": k})
 
     def search(self, query: str, top_k: int = 5, threshold: float | None = None) -> list[dict]:
+        query = query.strip()
+        if not query:
+            return []
         min_score = threshold if threshold is not None else settings.product_match_threshold
         results = self.vector_store.similarity_search_with_relevance_scores(query, k=top_k)
         output = []
@@ -51,6 +55,13 @@ class ProductVectorStore:
                 continue
             output.append({"score": round(float(score), 4), **doc.metadata})
         return output
+
+    def build_product_index_text(self, record) -> str:
+        """商品名 + 故障现象作为向量索引文本。安装/测量类商品无故障现象，只用商品名。"""
+        parts = [record.service_product_name]
+        if record.fault_phenomenon:
+            parts.append(record.fault_phenomenon)
+        return " ".join(parts)
 
     def load_products(self):
         """
@@ -62,6 +73,7 @@ class ProductVectorStore:
             "excel_mtime": excel_path.stat().st_mtime,
             "excel_size": excel_path.stat().st_size,
             "embedding_model": settings.qwen_embedding_model,
+            "index_text_version": INDEX_TEXT_VERSION,
         }
 
         metadata_path = Path(METADATA_FILE)
@@ -74,7 +86,7 @@ class ProductVectorStore:
         records = SpuExcelLoader(excel_path).load()
         documents = [
             Document(
-                page_content=r.service_product_name,
+                page_content=self.build_product_index_text(r),
                 metadata=asdict(r),
             )
             for r in records
@@ -89,6 +101,9 @@ class ProductVectorStore:
             encoding="utf-8",
         )
         print(f"[商品向量库] 构建完成，共 {len(documents)} 件商品")
+
+    def _join_text(self, values: list[str]) -> str:
+        return " ".join(value.strip() for value in values if value and value.strip())
 
 
 @lru_cache

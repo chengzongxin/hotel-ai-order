@@ -1,5 +1,6 @@
 import json
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from datetime import datetime
 from functools import lru_cache
@@ -24,20 +25,60 @@ from tools.product_match import match_product_tool
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 MAX_RETRY_COUNT = 2
 
-REQUIRED_ORDER_INFO = ["room_number", "product", "fault", "area"]
-
 ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
 CANCEL_ORDER_KEYWORDS = ("取消", "不用了", "不提交", "先算了", "撤销", "放弃", "不要了")
+PUBLIC_AREA_KEYWORDS = (
+    "公区",
+    "公共区域",
+    "大厅",
+    "大堂",
+    "接待区",
+    "公区卫生间",
+    "公共厕所",
+    "布草间",
+    "办公室",
+    "洗衣房",
+    "员工区",
+    "走廊",
+    "过道",
+    "电梯",
+    "电梯厅",
+    "前台",
+    "餐厅",
+    "会议室",
+    "楼梯间",
+    "楼顶",
+    "健身房",
+    "停车场",
+    "仓库",
+    "设备间",
+)
+GUEST_ROOM_KEYWORDS = (
+    "客房",
+    "房间",
+    "房里",
+    "屋内",
+    "住客区",
+    "维修房",
+    "客房楼层",
+    "卫生间",
+    "淋浴间",
+)
+VALID_GOODS_ARRIVAL_STATUSES = {"未到场", "已到场", "已到物流站"}
+VALID_MANAGED_REPAIR_SCOPES = {"客房", "公区"}
+DEFAULT_URGENCY = "medium"
 
 
 class IntentResult(BaseModel):
     intent: str
-    service_type: str | None = None
     room_number: str | None = None
     product: str | None = None
     fault: str | None = None
     area: str | None = None
     urgency: str | None = None
+    expected_start_time: str | None = None
+    goods_arrival_status: str | None = None
+    managed_repair_scope: str | None = None
     user_confirmed: bool = False
     user_cancelled: bool = False
 
@@ -124,6 +165,167 @@ def is_cancel_request(text: str) -> bool:
     return any(keyword in normalized_text for keyword in CANCEL_ORDER_KEYWORDS)
 
 
+def is_public_area_text(text: str | None) -> bool:
+    if not text:
+        return False
+    return any(keyword in text for keyword in PUBLIC_AREA_KEYWORDS)
+
+
+def is_guest_room_text(text: str | None) -> bool:
+    if not text:
+        return False
+    return any(keyword in text for keyword in GUEST_ROOM_KEYWORDS)
+
+
+def extract_room_number(text: str | None) -> str | None:
+    if not text:
+        return None
+    patterns = (
+        r"([A-Za-z]栋\s*\d{2,5})",
+        r"(\d{2,5})\s*(?:房间|房|号)",
+        r"房间\s*(\d{2,5})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).replace(" ", "")
+    return None
+
+
+def normalize_goods_arrival_status(value: str | None) -> str | None:
+    if not value:
+        return None
+    if value in VALID_GOODS_ARRIVAL_STATUSES:
+        return value
+
+    text = value.strip()
+    if any(keyword in text for keyword in ("货没到", "还没到", "在路上")):
+        return "未到场"
+    if any(keyword in text for keyword in ("货到了", "已收到", "货物在酒店")):
+        return "已到场"
+    if any(keyword in text for keyword in ("到物流站", "在物流点", "待配送")):
+        return "已到物流站"
+    return None
+
+
+def looks_like_expected_start_time(value: str | None) -> bool:
+    if not value:
+        return False
+    time_keywords = (
+        "今天",
+        "明天",
+        "后天",
+        "上午",
+        "中午",
+        "下午",
+        "晚上",
+        "下周",
+        "本周",
+        "周一",
+        "周二",
+        "周三",
+        "周四",
+        "周五",
+        "周六",
+        "周日",
+        "星期",
+        "月",
+        "日",
+        "号",
+        "点",
+    )
+    return any(keyword in value for keyword in time_keywords)
+
+
+def format_service_type(service_type: str | None, order_info: dict[str, object]) -> str | None:
+    if service_type != "托管维修":
+        return service_type
+    scope = order_info.get("managed_repair_scope")
+    if scope in VALID_MANAGED_REPAIR_SCOPES:
+        return f"托管维修（{scope}）"
+    return service_type
+
+
+def format_urgency(value: object) -> str:
+    labels = {
+        "low": "低优先级",
+        "medium": "普通",
+        "high": "较急",
+        "urgent": "紧急",
+    }
+    return labels.get(str(value), str(value or "普通"))
+
+
+def build_product_match_feedback(
+    order_info: dict[str, object],
+    matched_product: dict[str, object],
+    service_type: str | None,
+) -> str | None:
+    product_name = matched_product.get("service_product_name")
+    if not product_name:
+        return None
+
+    described_issue = order_info.get("fault") or order_info.get("product") or "需求"
+    service_type_text = format_service_type(service_type, order_info) or "待确认"
+    return f"根据您描述的【{described_issue}】，已为您匹配到【{product_name}】，服务类型为【{service_type_text}】。"
+
+
+def normalize_order_defaults(
+    service_type: str | None,
+    order_info: dict[str, object],
+    last_user_message: str = "",
+) -> dict[str, object]:
+    normalized = dict(order_info)
+
+    if service_type in {"托管维修", "单次维修服务"} and not normalized.get("urgency"):
+        normalized["urgency"] = DEFAULT_URGENCY
+
+    if normalized.get("goods_arrival_status"):
+        normalized_status = normalize_goods_arrival_status(str(normalized.get("goods_arrival_status")))
+        if normalized_status:
+            normalized["goods_arrival_status"] = normalized_status
+        else:
+            normalized.pop("goods_arrival_status", None)
+
+    if service_type == "托管维修":
+        if not normalized.get("room_number"):
+            inferred_room_number = extract_room_number(last_user_message)
+            if inferred_room_number:
+                normalized["room_number"] = inferred_room_number
+
+        room_number = str(normalized.get("room_number") or "").strip()
+        area = str(normalized.get("area") or "")
+        scope = normalized.get("managed_repair_scope")
+        if room_number and room_number != "/":
+            normalized["managed_repair_scope"] = "客房"
+            normalized["area"] = "客房"
+        elif scope == "客房" or is_guest_room_text(area) or is_guest_room_text(last_user_message):
+            normalized["managed_repair_scope"] = "客房"
+            normalized["area"] = "客房"
+        elif scope == "公区" or is_public_area_text(area) or is_public_area_text(last_user_message):
+            normalized["managed_repair_scope"] = "公区"
+            normalized["area"] = "公区"
+            normalized["room_number"] = "/"
+        elif scope not in VALID_MANAGED_REPAIR_SCOPES:
+            normalized.pop("managed_repair_scope", None)
+
+    return normalized
+
+
+def get_required_order_fields(service_type: str | None, order_info: dict[str, object]) -> list[str]:
+    if service_type == "托管维修":
+        if order_info.get("managed_repair_scope") == "公区":
+            return ["area", "product", "fault"]
+        return ["area", "room_number", "product", "fault"]
+    if service_type == "单次维修服务":
+        return ["product", "fault", "expected_start_time"]
+    if service_type == "单次安装":
+        return ["product", "expected_start_time", "goods_arrival_status"]
+    if service_type == "单次测量":
+        return ["product", "expected_start_time"]
+    return ["product", "fault"]
+
+
 def get_extractor_history(state: AgentState) -> str:
     """提交后的新订单默认只看最新输入，避免已提交订单被重新抽取。"""
 
@@ -163,10 +365,6 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     intent = "cancel_order" if user_cancelled else result.intent
     emit_status("intent_node", f"已识别意图：{intent}")
 
-    service_type = result.service_type or state.get("service_type")
-    if service_type:
-        emit_status("intent_node", f"已识别服务类型：{service_type}")
-
     status = state.get("status")
     if intent in {"create_order", "confirm_order"}:
         status = "collecting"
@@ -183,6 +381,11 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "fault": result.fault,
         "area": result.area,
         "urgency": result.urgency,
+        "expected_start_time": result.expected_start_time,
+        "goods_arrival_status": normalize_goods_arrival_status(result.goods_arrival_status),
+        "managed_repair_scope": result.managed_repair_scope
+        if result.managed_repair_scope in VALID_MANAGED_REPAIR_SCOPES
+        else None,
         "user_confirmed": result.user_confirmed,
         "user_cancelled": user_cancelled,
     }
@@ -204,7 +407,6 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         order_info["user_cancelled"] = user_cancelled
     output: dict[str, object] = {
         "intent": intent,
-        "service_type": service_type,
         "status": status,
         "order_info": order_info,
         "step": "intent_node",
@@ -222,19 +424,19 @@ async def match_product_node(state: AgentState) -> dict[str, object]:
     order_info = state.get("order_info", {})
     product = order_info.get("product")
     fault = order_info.get("fault")
-    area = order_info.get("area")
 
     recall_query = " ".join(
         str(value)
-        for value in [product, fault, area]
+        for value in [product, fault]
         if value
     )
-    if not product and not fault:
+    if not recall_query:
         output = {
             "matched_product": {},
             "product_candidates": [],
             "product_match_status": "skipped",
             "product_match_query": recall_query,
+            "product_match_feedback": None,
             "step": "match_product_node",
         }
         trace_event("node.match_product.skipped", **output)
@@ -246,7 +448,7 @@ async def match_product_node(state: AgentState) -> dict[str, object]:
             "query": recall_query,
             "product": product,
             "fault": fault,
-            "area": area,
+            "area": order_info.get("area"),
             "service_type_hint": state.get("service_type"),
             "top_k": 3,
             "threshold": None,
@@ -259,12 +461,29 @@ async def match_product_node(state: AgentState) -> dict[str, object]:
     if result.get("status") != "success":
         status = "error"
 
+    # service_type 完全由匹配到的商品决定，匹配失败则置 null
+    service_type = best_match.get("service_order_type") or None
+    if service_type:
+        emit_status("match_product_node", f"已确定服务类型：{service_type}")
+    normalized_order_info = normalize_order_defaults(
+        service_type=service_type,
+        order_info=order_info,
+        last_user_message=state.get("last_user_message", ""),
+    )
+    product_match_feedback = build_product_match_feedback(
+        order_info=normalized_order_info,
+        matched_product=best_match,
+        service_type=service_type,
+    )
+
     output = {
         "matched_product": best_match,
         "product_candidates": candidates,
         "product_match_status": status,
         "product_match_query": recall_query,
-        "service_type": best_match.get("service_order_type") or state.get("service_type"),
+        "product_match_feedback": product_match_feedback,
+        "service_type": service_type,
+        "order_info": normalized_order_info,
         "step": "match_product_node",
     }
     trace_event(
@@ -278,14 +497,25 @@ async def match_product_node(state: AgentState) -> dict[str, object]:
 
 
 async def validate_order_node(state: AgentState) -> dict[str, object]:
-    """根据维修订单类型检查缺失字段，并记录重试次数。"""
+    """按订单类型检查缺失字段，并记录重试次数。"""
 
-    order_info = state.get("order_info", {})
+    service_type = state.get("service_type")
+    order_info = normalize_order_defaults(
+        service_type=service_type,
+        order_info=state.get("order_info", {}),
+        last_user_message=state.get("last_user_message", ""),
+    )
+    required_fields = get_required_order_fields(service_type, order_info)
     missing_info = [
         field
-        for field in REQUIRED_ORDER_INFO
+        for field in required_fields
         if not order_info.get(field)
     ]
+    if "expected_start_time" in required_fields and order_info.get("expected_start_time"):
+        if not looks_like_expected_start_time(str(order_info["expected_start_time"])):
+            order_info.pop("expected_start_time", None)
+            if "expected_start_time" not in missing_info:
+                missing_info.append("expected_start_time")
 
     retry_count = state.get("retry_count", 0)
     if missing_info:
@@ -293,14 +523,15 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
 
     output = {
         "missing_info": missing_info,
+        "order_info": order_info,
         "retry_count": retry_count,
         "status": "collecting" if missing_info else "confirming",
         "step": "validate_order_node",
     }
     trace_event(
         "node.validate_order.output",
-        service_type=state.get("service_type"),
-        order_info=order_info,
+        service_type=service_type,
+        required_fields=required_fields,
         **output,
     )
     return output
@@ -315,8 +546,9 @@ def build_missing_info_fallback_question(missing_info: list[str]) -> str:
         "room_number": "请问您住哪个房间？",
         "product": "是哪样东西坏了？",
         "fault": "具体是什么故障呢？",
-        "area": "是在房间哪里呢？",
-        "urgency": "这个情况着急吗？",
+        "area": "请问是客房还是公区？",
+        "expected_start_time": "请问具体什么时间？比如明天上午或3月20日",
+        "goods_arrival_status": "请问货物是否到场？",
     }
     return questions.get(field, f"请补充{field}。")
 
@@ -362,6 +594,10 @@ async def build_missing_info_question(state: AgentState) -> str:
     missing_info = state.get("missing_info", [])
     if not missing_info:
         return build_missing_info_fallback_question(missing_info)
+    if missing_info[0] == "expected_start_time":
+        return build_missing_info_fallback_question(missing_info)
+    if missing_info[0] == "goods_arrival_status":
+        return build_missing_info_fallback_question(missing_info)
 
     prompt = render_prompt(
         "ask/ask_missing_info.md",
@@ -406,6 +642,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     retry_count = state.get("retry_count", 0)
     off_topic_count = state.get("off_topic_count", 0)
     is_topic_deviation = state.get("intent") in {"unknown", "smalltalk"}
+    product_match_feedback = state.get("product_match_feedback")
 
     if is_topic_deviation:
         question = await build_topic_boundary_response(state)
@@ -415,6 +652,9 @@ async def ask_node(state: AgentState) -> dict[str, object]:
             "ask/retry_missing_info.md",
             missing_info=", ".join(missing_info),
         )
+        await emit_token_text(question, step="ask_node")
+    elif product_match_feedback and missing_info:
+        question = f"{product_match_feedback}\n{build_missing_info_fallback_question(missing_info)}"
         await emit_token_text(question, step="ask_node")
     else:
         question = await build_missing_info_question(state)
@@ -508,15 +748,20 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
 
     confirmation_text = render_prompt(
         "confirm/order_confirm.md",
-        service_type=service_type,
+        service_type=format_service_type(service_type, order_info),
         room_number=order_info.get("room_number"),
         product=order_info.get("product"),
         fault=order_info.get("fault"),
         area=order_info.get("area"),
-        urgency=order_info.get("urgency") or "medium",
+        urgency=format_urgency(order_info.get("urgency") or DEFAULT_URGENCY),
+        expected_start_time=order_info.get("expected_start_time") or "无",
+        goods_arrival_status=order_info.get("goods_arrival_status") or "无",
         product_name=matched_product.get("service_product_name") or "未匹配到标准商品",
         product_code=matched_product.get("service_product_code") or "无",
     )
+    product_match_feedback = state.get("product_match_feedback")
+    if product_match_feedback:
+        confirmation_text = f"{product_match_feedback}\n\n{confirmation_text}"
     await emit_token_text(confirmation_text, step="confirm_node")
 
     trace_event(
@@ -548,6 +793,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "product_candidates": [],
         "product_match_status": None,
         "product_match_query": None,
+        "product_match_feedback": None,
         "missing_info": [],
         "retry_count": 0,
         "off_topic_count": 0,
@@ -572,7 +818,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
     matched_product = state.get("matched_product", {})
     submitted_order = {
         "order_id": order_id,
-        "service_type": state.get("service_type"),
+        "service_type": format_service_type(state.get("service_type"), state.get("order_info", {})),
         **state.get("order_info", {}),
         "product_code": matched_product.get("service_product_code"),
         "product_name": matched_product.get("service_product_name"),
@@ -582,7 +828,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
     answer = render_prompt(
         "confirm/order_submitted.md",
         order_id=order_id,
-        service_type=state.get("service_type"),
+        service_type=format_service_type(state.get("service_type"), state.get("order_info", {})),
         order_info=state.get("order_info", {}),
         matched_product=matched_product,
     )
@@ -599,6 +845,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "product_candidates": [],
         "product_match_status": None,
         "product_match_query": None,
+        "product_match_feedback": None,
         "missing_info": [],
         "retry_count": 0,
         "off_topic_count": 0,
@@ -764,12 +1011,14 @@ def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
 
     return {
         "service_type": state.get("service_type"),
+        "service_type_display": format_service_type(state.get("service_type"), order_info),
         "status": state.get("status"),
         "order_info": order_info,
         "matched_product": matched_product,
         "product_candidates": candidates,
         "product_match_status": state.get("product_match_status"),
         "product_match_query": state.get("product_match_query"),
+        "product_match_feedback": state.get("product_match_feedback"),
         "missing_info": state.get("missing_info") or [],
     }
 

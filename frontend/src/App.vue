@@ -20,17 +20,23 @@ interface ChatMessage {
 }
 
 interface PreOrder {
+  serviceType: string | null
   roomNumber: string | null
   product: string | null
   fault: string | null
   area: string | null
   urgency: 'low' | 'medium' | 'high' | 'urgent' | null
+  expectedStartTime: string | null
+  goodsArrivalStatus: string | null
   matchedProductName: string | null
   matchedProductCode: string | null
   status: string | null
+  missingInfo: string[]
 }
 
 interface OrderPreview {
+  service_type?: string | null
+  service_type_display?: string | null
   status?: string | null
   order_info?: {
     room_number?: string | null
@@ -38,11 +44,14 @@ interface OrderPreview {
     fault?: string | null
     area?: string | null
     urgency?: PreOrder['urgency']
+    expected_start_time?: string | null
+    goods_arrival_status?: string | null
   }
   matched_product?: {
     service_product_name?: string | null
     service_product_code?: string | null
   }
+  missing_info?: string[]
 }
 
 interface StreamEvent {
@@ -86,13 +95,12 @@ const shortSessionId = computed(() => sessionId.value.slice(0, 8).toUpperCase())
 const hasUserMessage = computed(() => messages.value.some((m) => m.role === 'user'))
 const hasPendingAssistantMessage = computed(() => messages.value.some((m) => m.role === 'assistant' && !m.content))
 
-const filledCount = computed(() =>
-  [preOrder.value.roomNumber, preOrder.value.product, preOrder.value.fault, preOrder.value.area, preOrder.value.urgency].filter(Boolean).length
-)
-const orderCompleteness = computed(() => Math.round((filledCount.value / 5) * 100))
+const filledCount = computed(() => orderFields.value.filter((field) => Boolean(field.value)).length)
+const totalFieldCount = computed(() => Math.max(orderFields.value.length, 1))
+const orderCompleteness = computed(() => Math.round((filledCount.value / totalFieldCount.value) * 100))
 
 const canSubmit = computed(() =>
-  Boolean(preOrder.value.roomNumber && preOrder.value.product && preOrder.value.fault)
+  preOrder.value.status === 'confirming' && preOrder.value.missingInfo.length === 0
 )
 
 const urgencyConfig = computed(() => {
@@ -105,12 +113,42 @@ const urgencyConfig = computed(() => {
   }[preOrder.value.urgency]
 })
 
-const orderFields = computed(() => [
-  { key: 'roomNumber', icon: '🏠', label: '房间号', value: preOrder.value.roomNumber },
-  { key: 'product',   icon: '🔧', label: '商品/设备', value: preOrder.value.product },
-  { key: 'fault',     icon: '⚡', label: '问题描述', value: preOrder.value.fault },
-  { key: 'area',      icon: '📍', label: '所在区域', value: preOrder.value.area },
-])
+const orderFields = computed(() => {
+  const base = [
+    { key: 'serviceType', icon: '📋', label: '订单类型', value: preOrder.value.serviceType },
+    { key: 'product', icon: '🔧', label: '商品/设备', value: preOrder.value.product },
+  ]
+
+  if (preOrder.value.serviceType?.includes('单次安装')) {
+    return [
+      ...base,
+      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: preOrder.value.expectedStartTime },
+      { key: 'goodsArrivalStatus', icon: '🚚', label: '货物是否到场', value: preOrder.value.goodsArrivalStatus },
+    ]
+  }
+
+  if (preOrder.value.serviceType?.includes('单次测量')) {
+    return [
+      ...base,
+      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: preOrder.value.expectedStartTime },
+    ]
+  }
+
+  if (preOrder.value.serviceType?.includes('单次维修')) {
+    return [
+      ...base,
+      { key: 'fault', icon: '⚡', label: '问题描述', value: preOrder.value.fault },
+      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: preOrder.value.expectedStartTime },
+    ]
+  }
+
+  return [
+    ...base,
+    { key: 'fault', icon: '⚡', label: '问题描述', value: preOrder.value.fault },
+    { key: 'area', icon: '📍', label: '所在区域', value: preOrder.value.area },
+    { key: 'roomNumber', icon: '🏠', label: '房间号', value: preOrder.value.roomNumber },
+  ]
+})
 
 const progressR = 32
 const progressCircumference = computed(() => +(2 * Math.PI * progressR).toFixed(2))
@@ -131,14 +169,18 @@ function currentTime() {
 
 function createEmptyOrder(): PreOrder {
   return {
+    serviceType: null,
     roomNumber: null,
     product: null,
     fault: null,
     area: null,
     urgency: null,
+    expectedStartTime: null,
+    goodsArrivalStatus: null,
     matchedProductName: null,
     matchedProductCode: null,
     status: null,
+    missingInfo: [],
   }
 }
 
@@ -197,17 +239,28 @@ function inferPreOrder(text: string) {
   else if (/尽快|比较急/.test(text)) preOrder.value.urgency = 'high'
   else if (/不急|有空/.test(text)) preOrder.value.urgency = 'low'
   else if (!preOrder.value.urgency) preOrder.value.urgency = 'medium'
+
+  const timeMatch = text.match(/(今天|明天|后天|本周[一二三四五六日天]?|下周[一二三四五六日天]?|\d{1,2}月\d{1,2}[日号]?)(上午|中午|下午|晚上|\d{1,2}点)?/)
+  if (timeMatch) preOrder.value.expectedStartTime = timeMatch[0]
+
+  if (/货没到|还没到|在路上/.test(text)) preOrder.value.goodsArrivalStatus = '未到场'
+  else if (/货到了|已收到|货物在酒店/.test(text)) preOrder.value.goodsArrivalStatus = '已到场'
+  else if (/到物流站|在物流点|待配送/.test(text)) preOrder.value.goodsArrivalStatus = '已到物流站'
 }
 
 function applyOrderPreview(preview?: OrderPreview | null) {
   if (!preview) return
   const orderInfo = preview.order_info || {}
+  preOrder.value.serviceType = preview.service_type_display ?? preview.service_type ?? preOrder.value.serviceType
   preOrder.value.roomNumber = orderInfo.room_number ?? preOrder.value.roomNumber
   preOrder.value.product = orderInfo.product ?? preOrder.value.product
   preOrder.value.fault = orderInfo.fault ?? preOrder.value.fault
   preOrder.value.area = orderInfo.area ?? preOrder.value.area
   preOrder.value.urgency = orderInfo.urgency ?? preOrder.value.urgency
+  preOrder.value.expectedStartTime = orderInfo.expected_start_time ?? preOrder.value.expectedStartTime
+  preOrder.value.goodsArrivalStatus = orderInfo.goods_arrival_status ?? preOrder.value.goodsArrivalStatus
   preOrder.value.status = preview.status ?? preOrder.value.status
+  preOrder.value.missingInfo = preview.missing_info ?? preOrder.value.missingInfo
   preOrder.value.matchedProductName = preview.matched_product?.service_product_name ?? preOrder.value.matchedProductName
   preOrder.value.matchedProductCode = preview.matched_product?.service_product_code ?? preOrder.value.matchedProductCode
 }
@@ -583,7 +636,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 class="flex-1 resize-none border-none bg-transparent text-[15px] leading-6 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-50"
                 style="min-height:24px; max-height:160px; overflow-y:auto;"
                 rows="1"
-                placeholder="描述房间号、商品和问题…"
+                placeholder="描述商品和故障，例如：1208 房空调不制冷…"
                 :disabled="isSending"
                 @keydown.enter.exact.prevent="sendMessage()"
                 @input="autoGrow"
@@ -653,7 +706,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
             <div class="min-w-0 flex-1">
               <p class="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Draft Order</p>
               <h2 class="mt-0.5 text-sm font-semibold text-slate-800">预下单卡片</h2>
-              <p class="mt-1 text-xs text-slate-500">已填写 <span class="font-semibold text-slate-700">{{ filledCount }}</span> / 5 项</p>
+              <p class="mt-1 text-xs text-slate-500">已填写 <span class="font-semibold text-slate-700">{{ filledCount }}</span> / {{ totalFieldCount }} 项</p>
             </div>
           </div>
 
@@ -715,8 +768,14 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
 
             <!-- Tip -->
             <div class="mt-1 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3.5 py-3">
-              <p class="text-[10px] font-semibold uppercase tracking-wide text-indigo-400">示例格式</p>
-              <p class="mt-1.5 text-[12px] leading-5 text-indigo-700/70">"1208 房，卫生间水龙头漏水，比较急。"</p>
+              <p class="text-[10px] font-semibold uppercase tracking-wide text-indigo-400">示例语句</p>
+              <ul class="mt-1.5 space-y-1 text-[12px] leading-5 text-indigo-700/70">
+                <li>"1208 房卫生间水龙头漏水，比较急。"</li>
+                <li>"大堂空调噪音很大，麻烦来看一下。"</li>
+                <li>"帮我安装洗衣机，明天上午，货已经到了。"</li>
+                <li>"我要测量 306 房窗帘尺寸，本周五上午。"</li>
+                <li>"空调不制冷，下周一来修，货在路上。"</li>
+              </ul>
             </div>
           </div>
 

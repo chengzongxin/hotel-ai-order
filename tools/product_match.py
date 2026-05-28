@@ -32,7 +32,7 @@ def match_product_tool(
 ) -> ToolResult:
     """匹配可下单商品，返回商品编码和订单类型等标准下单参数。"""
 
-    search_query = " ".join(v for v in [query, product, fault, area] if v)
+    search_query = " ".join(v for v in [product, fault] if v) or query
     try:
         store = get_product_store()
         candidates = store.search(query=search_query, top_k=top_k, threshold=threshold)
