@@ -395,8 +395,19 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         if intent == "cancel_order":
             order_info = {**order_info, "user_confirmed": False, "user_cancelled": True}
     else:
+        # 新输入明确了公区，清除旧单遗留的房号和区域，避免 normalize 时房号优先级覆盖公区判断
+        cleaned_existing = dict(existing_order_info)
+        if detected_fields.get("managed_repair_scope") == "公区":
+            cleaned_existing.pop("room_number", None)
+            cleaned_existing.pop("area", None)
+            cleaned_existing.pop("managed_repair_scope", None)
+        # 新输入明确了房号（客房），清除旧单遗留的公区信息
+        elif detected_fields.get("room_number") or detected_fields.get("managed_repair_scope") == "客房":
+            cleaned_existing.pop("managed_repair_scope", None)
+            cleaned_existing.pop("area", None)
+
         order_info = {
-            **existing_order_info,
+            **cleaned_existing,
             **{
                 key: value
                 for key, value in detected_fields.items()
