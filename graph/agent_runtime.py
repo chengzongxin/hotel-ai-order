@@ -17,9 +17,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from config.logging import trace_event
 from config.settings import settings
-from tools.check_package import check_package_tool
-from tools.current_time import current_time
-from tools.product_search import search_product_tool
+from tools.registry import get_tools
 
 
 @lru_cache
@@ -93,15 +91,12 @@ def get_assist_agent():
 
     return create_agent(
         model=get_agent_llm(),
-        tools=[
-            current_time,
-            search_product_tool,
-            check_package_tool,
-        ],
+        tools=get_tools(),
         system_prompt=(
             "你是酒店 AI 下单助手的辅助 Agent。"
             "你可以回答用户的简单问题，也可以在需要时调用工具查询。"
-            "如果用户询问某个商品或设备是否有维修服务，可以调用 search_product_tool 查询商品库。"
+            "如果用户询问商品或设备相关信息，可调用 search_product_tool 查询商品库，"
+            "商品库涵盖维修、安装、测量、托管维修等服务类型。"
             "不要直接提交订单；如果用户要下单，请引导用户提供房号、商品和问题。"
         ),
         middleware=[
