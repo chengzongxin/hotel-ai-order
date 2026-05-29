@@ -1,38 +1,51 @@
-# 商品 Embedding 匹配系统
+# 商品向量检索系统
 
 ## 目标
 
-该模块从 `assets/spu.xlsx` 读取商品数据，并使用 Qwen text-embedding 做语义匹配。
-
-匹配目标不是简单商品名，而是最终下单需要的标准商品参数：
-
-- `服务商品编码`
-- `服务商品名称`
-- `所属服务类型`
-- 归一后的 `service_order_type`，例如 `单次维修服务`、`单次安装`、`单次测量`、`托管维修`
-- 关联品类、区域、故障现象等辅助字段
+从 `assets/spu.xlsx` 读取商品数据，构建向量库，并根据用户描述的商品和故障现象语义检索最匹配的标准商品。匹配结果同时确定订单的服务类型（`service_order_type`）。
 
 ## 技术
 
 - Qwen `text-embedding-v4`：生成文本向量。
-- `numpy`：计算 cosine similarity。
+- Chroma：向量存储与相似度检索（持久化到 `data/chroma_db/`）。
 - `openpyxl`：读取 Excel。
-- 本地 `.npy` 缓存：避免每次启动重复生成向量。
 
-## 检索字段
+## 索引文本构建
 
-每条商品只生成两组 embedding 文本：
-
-- `name_text`：只使用 `服务商品名称`。
-- `fault_text`：只使用 `关联故障现象`。
-
-检索时融合两类分数：
+每条商品的向量索引文本：
 
 ```text
-final_score = name_score * 0.55 + fault_score * 0.45
+{服务商品名称} {关联故障现象}
 ```
 
-服务类型不会参与向量文本，只作为输出字段保留。若用户表达了“安装”“测量”“维修”“托管”，系统仍会用规则给匹配的服务类型做轻量加权。
+- 安装、测量类商品的 `关联故障现象` 通常为空，索引文本只有商品名。
+- 维修类商品索引文本包含商品名和故障现象，例如：`空调 不制冷 噪音大`。
+
+## 检索流程
+
+1. 检索 query = `用户说的商品 + 故障现象`。
+2. 安装/测量场景无故障现象时，query 退化为只有商品名。
+3. Chroma 余弦相似度召回 Top-K，过滤低于阈值的候选。
+4. `best_match.service_order_type` 作为本次订单的 `service_type`。
+
+## 向量库生命周期
+
+向量库构建状态记录在 `data/chroma_db/build_metadata.json`：
+
+```json
+{
+  "excel_mtime": 1234567890.0,
+  "excel_size": 12345,
+  "embedding_model": "text-embedding-v4",
+  "index_text_version": "product-name-fault-v2"
+}
+```
+
+当以下任一条件变化时，启动时自动重建：
+
+- Excel 文件的修改时间或大小
+- Embedding 模型名称
+- `index_text_version`（代码版本号）
 
 ## 配置
 
@@ -40,15 +53,10 @@ final_score = name_score * 0.55 + fault_score * 0.45
 
 ```env
 SPU_EXCEL_PATH=assets/spu.xlsx
-EMBEDDING_CACHE_DIR=data/embedding_cache
 QWEN_EMBEDDING_MODEL=text-embedding-v4
 QWEN_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_EMBEDDING_API_KEY=
 PRODUCT_MATCH_THRESHOLD=0.55
-PRODUCT_NAME_WEIGHT=0.55
-PRODUCT_FAULT_WEIGHT=0.45
-SERVICE_TYPE_MATCH_BONUS=0.08
-SERVICE_TYPE_MISMATCH_PENALTY=0.05
 ```
 
 ## Tool
@@ -61,13 +69,11 @@ SERVICE_TYPE_MISMATCH_PENALTY=0.05
 
 ```json
 {
-  "query": "888房马桶堵了",
+  "query": "马桶堵了",
   "product": "马桶",
   "fault": "堵塞",
-  "area": "卫生间",
-  "service_type_hint": "单次维修服务",
-  "top_k": 5,
-  "threshold": 0.55
+  "top_k": 3,
+  "threshold": null
 }
 ```
 
@@ -76,40 +82,23 @@ SERVICE_TYPE_MISMATCH_PENALTY=0.05
 ```json
 {
   "status": "success",
-  "error_code": null,
-  "message": "ok",
   "data": {
-    "query": "888房马桶堵了",
-    "service_type_hint": "单次维修服务",
-    "count": 1,
+    "query": "马桶 堵塞",
     "best_match": {
       "score": 0.8231,
       "service_product_code": "FWSP00001",
       "service_product_name": "马桶疏通",
       "service_order_type": "单次维修服务",
-      "raw_service_type": "维修",
-      "related_category": "马桶",
-      "related_area": "卫生间",
       "fault_phenomenon": "堵塞"
     },
-    "candidates": []
-  },
-  "fallback": null
+    "candidates": [],
+    "count": 1
+  }
 }
 ```
 
 ## 阈值过滤
 
-`threshold` 越高，结果越少但更精确。
+`PRODUCT_MATCH_THRESHOLD` 越高，结果越少但更精确，默认 `0.55`。
 
-如果没有结果，可以临时降低 `PRODUCT_MATCH_THRESHOLD`，或者检查用户描述里是否缺少商品、故障或区域。
-
-## 缓存
-
-首次调用会请求 Qwen embedding 并生成向量，速度较慢。系统会把向量缓存到：
-
-```text
-data/embedding_cache/
-```
-
-当 Excel 文件大小、修改时间、模型名称或文本构建版本变化时，会自动重建缓存。
+如果没有结果，可以临时降低阈值，或检查用户描述里是否包含商品名称。

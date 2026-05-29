@@ -34,11 +34,10 @@ B栋 301 门锁打不开
 
 1. 识别用户意图：创建订单、确认订单、取消订单、闲聊或未知。
 2. 抽取订单信息：房号、商品/设备、问题描述、区域、紧急程度。
-3. 判断服务类型：单次安装、单次测量、单次维修服务、托管维修。
-4. 匹配标准商品：从 `assets/spu.xlsx` 中找到最合适的商品编码和商品名称。
-5. 追问缺失信息：一次只问一个最关键问题。
-6. 展示预下单信息：让用户确认、修改或取消。
-7. 提交订单：当前项目用本地模拟订单号，后续可替换为真实工单 API。
+3. 匹配标准商品：用 `商品名 + 故障现象` 向量检索 `assets/spu.xlsx` 中的商品，匹配结果同时确定服务类型。
+4. 按服务类型校验必填字段，追问缺失信息：一次只问一个最关键问题。
+5. 展示预下单信息：让用户确认、修改或取消。
+6. 提交订单：当前项目用本地模拟订单号，后续可替换为真实工单 API。
 
 ## 业务流程
 
@@ -67,9 +66,9 @@ flowchart TD
 
 节点职责：
 
-- `intent_node`：识别 `intent`，并抽取 `order_info`。
-- `match_product_node`：调用 `match_product_tool` 匹配标准商品。
-- `validate_order_node`：检查必填订单信息是否完整。
+- `intent_node`：识别 `intent`，并抽取 `order_info`（product、fault、room_number、area、urgency、expected_start_time、goods_arrival_status 等）。不提取 `service_type`，由商品匹配结果决定。
+- `match_product_node`：用 `product + fault` 向量检索标准商品，匹配成功后从商品的 `service_order_type` 确定 `service_type`；匹配失败则 `service_type` 为 null。
+- `validate_order_node`：按 `service_type` 取对应必填字段清单，与 `order_info` 对比，计算 `missing_info`。
 - `ask_node`：追问缺失信息，或处理闲聊/偏题。
 - `confirm_node`：展示预下单信息，等待用户确认。
 - `cancel_node`：取消当前订单并清空预下单状态。
@@ -115,8 +114,8 @@ FastAPI API 层
 LangGraph 订单状态机
     |
     |-- LLM：意图识别、订单信息抽取、追问、偏题回应
-    |-- ProductMatcher：Qwen embedding 商品匹配
-    |-- Tools：商品查询、订单创建、包内检查等工具
+    |-- ProductVectorStore：Chroma 向量库商品匹配
+    |-- Tools：商品查询、订单创建等工具
     |
     v
 SQLite Checkpoint
@@ -133,7 +132,7 @@ SQLite Checkpoint
 | `graph/agent_runtime.py` | 基于 `create_agent` 的辅助 Agent 和 middleware |
 | `graph/studio.py` | LangGraph Studio 入口 |
 | `prompts/` | 文件化 Prompt |
-| `rag/product_matcher.py` | 商品 embedding 匹配核心逻辑 |
+| `rag/product_store.py` | Chroma 向量库封装，商品检索主路径 |
 | `rag/qwen_embedding.py` | Qwen text-embedding 客户端 |
 | `rag/spu_loader.py` | Excel SPU 数据加载和服务类型归一化 |
 | `tools/product_match.py` | `match_product_tool` |
@@ -198,37 +197,60 @@ SQLite Checkpoint
 - `服务商品名称`
 - `所属服务类型`
 - `商品类型`
-- `关联品类`
 - `关联区域`
 - `关联故障现象`
 - `备注`
 
-匹配流程：
+**向量库构建**（`rag/product_store.py`）：
 
 1. `SpuExcelLoader` 读取 Excel，过滤下架商品。
-2. `ProductMatcher` 为每个商品生成两组向量：
-   - `name`：基于服务商品名称。
-   - `fault`：基于关联故障现象。
-3. 使用 Qwen `text-embedding-v4` 生成 embedding。
-4. 使用 NumPy 计算 cosine similarity。
-5. 融合分数：
+2. 每条商品生成索引文本：`服务商品名称 + 关联故障现象`。安装、测量类商品无故障现象，只用商品名。
+3. 用 Qwen `text-embedding-v4` 将索引文本向量化，写入 Chroma 向量库（`data/chroma_db/`）。
+4. 索引版本写入 `data/chroma_db/build_metadata.json`，版本或文件变化时自动重建。
+
+**检索**（`match_product_node`）：
+
+1. 检索 query = `用户说的商品名 + 故障现象`。安装/测量场景无故障现象，query 退化为只有商品名。
+2. Chroma 余弦相似度召回 Top-K，过滤低分候选。
+3. `best_match.service_order_type` 即为本次订单的 `service_type`，后续必填字段由此决定。
+
+## 必填字段与追问逻辑
+
+`validate_order_node` 根据 `service_type` 取必填清单，与已有 `order_info` 对比，得到 `missing_info`，触发 `ask_node` 追问。
+
+| 订单类型 | 必填字段 | 备注 |
+| --- | --- | --- |
+| 托管维修（客房） | area、room_number、product、fault | 有房号时 managed_repair_scope 自动为客房 |
+| 托管维修（公区） | area、product、fault | 检测到公区关键词时 room_number 自动置 `/` |
+| 单次维修服务 | product、fault、expected_start_time | — |
+| 单次安装 | product、expected_start_time、goods_arrival_status | goods_arrival_status：未到场 / 已到场 / 已到物流站 |
+| 单次测量 | product、expected_start_time | — |
+
+补充规则：
+
+- **urgency**：不在必填清单，默认为 `medium`（普通），不主动追问。
+- **expected_start_time**：支持自然语言（今天下午、明天上午、下周一、3月20日），无法理解时追问。
+- **托管维修客房/公区判断**：有明确房号 → 客房；出现大堂、走廊、电梯厅等公区关键词 → 公区，`room_number` 自动置 `/`。
+
+多轮对话下 `order_info` 增量合并，每轮用户补充一个字段即可推进流程：
 
 ```text
-final_score = name_score * PRODUCT_NAME_WEIGHT
-            + fault_score * PRODUCT_FAULT_WEIGHT
-            + service_type_adjustment
+轮1: "帮我修空调"
+  order_info = {product: "空调"}
+  service_type = 单次维修服务（匹配商品决定）
+  missing = [fault, expected_start_time]
+  → 追问：请问是什么问题？
+
+轮2: "不制冷"
+  order_info = {product: "空调", fault: "不制冷"}
+  missing = [expected_start_time]
+  → 追问：请问什么时间方便上门？
+
+轮3: "明天上午"
+  order_info = {product: "空调", fault: "不制冷", expected_start_time: "明天上午"}
+  missing = []
+  → 展示确认信息，等待用户确认
 ```
-
-6. 如果用户输入中能识别服务类型，例如安装、测量、维修、托管，会对匹配服务类型的商品加分。
-7. 返回 `best_match` 和 `candidates`。
-
-向量会缓存在：
-
-```text
-data/embedding_cache/
-```
-
-当 Excel 文件、embedding 模型或文本构建版本变化时，会自动重建缓存。
 
 ## API 使用
 
@@ -407,11 +429,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 | `SPU_EXCEL_PATH` | SPU Excel 路径 |
 | `QWEN_EMBEDDING_API_KEY` | Qwen embedding API Key |
 | `QWEN_EMBEDDING_BATCH_SIZE` | Qwen embedding 批量大小，最大建议 10 |
-| `PRODUCT_MATCH_THRESHOLD` | 商品匹配阈值 |
-| `PRODUCT_NAME_WEIGHT` | 商品名称向量权重 |
-| `PRODUCT_FAULT_WEIGHT` | 故障现象向量权重 |
-| `SERVICE_TYPE_MATCH_BONUS` | 服务类型匹配加分 |
-| `SERVICE_TYPE_MISMATCH_PENALTY` | 服务类型不匹配扣分 |
+| `PRODUCT_MATCH_THRESHOLD` | 商品匹配相似度阈值（Chroma 向量检索用） |
 
 注意：项目通过 `load_dotenv(".env", override=True)` 让 `.env` 优先于系统环境变量。
 
@@ -464,7 +482,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 3. 不要重新引入旧字段：`repair_order`、`current_order_type`、`extracted_fields`、`missing_fields`、`slots`、`order_kind`。
 4. 普通用户确认/取消不要使用 LangGraph `interrupt()`，应通过 `intent` 和路由进入 `submit_node` 或 `cancel_node`。
 5. Prompt 必须文件化，优先修改 `prompts/`，不要把大段 Prompt 写死在 Python 里。
-6. 商品匹配相关代码使用 `ProductMatcher`、`match_product_tool`、`product_match_*` 命名。
+6. 商品匹配主路径是 `rag/product_store.py`（`ProductVectorStore` / Chroma）。工具层入口是 `match_product_tool`，节点是 `match_product_node`，状态字段用 `product_match_*` 前缀。
 7. Excel 原始字段 `service_product_code`、`service_product_name`、`service_order_type` 是业务数据列名，可以保留。
 8. 修改状态字段时，需要同步更新：
    - `graph/state.py`
