@@ -31,6 +31,15 @@ interface SearchResult {
 
 const SERVICE_TYPES = ['全部', '单次维修服务', '单次安装', '单次测量', '托管维修']
 
+// 五类场景快速预设
+const PRESETS = [
+  { label: '客房维修', product: '空调', fault: '不制冷', note: '→ 托管维修 / 单次维修服务' },
+  { label: '公区维修', product: '门锁', fault: '坏了',  note: '→ 托管维修' },
+  { label: '安装',     product: '洗衣机', fault: '',    note: '→ 单次安装' },
+  { label: '测量',     product: '窗帘',   fault: '',    note: '→ 单次测量' },
+  { label: '水路',     product: '水龙头', fault: '漏水', note: '→ 单次维修服务' },
+]
+
 // 商品库
 const allProducts = ref<ProductItem[]>([])
 const activeServiceType = ref('全部')
@@ -39,19 +48,19 @@ const loadingProducts = ref(false)
 const productError = ref('')
 
 // 检索面板
-const searchQuery = ref('')
 const searchProduct = ref('')
 const searchFault = ref('')
-const searchArea = ref('')
-const searchServiceType = ref('')
-const topK = ref(10)
+const topK = ref(5)
 const threshold = ref(0.4)
-const nameWeight = ref(0.55)
-const faultWeight = ref(0.45)
+const showParams = ref(false)
 const searching = ref(false)
 const searchError = ref('')
 const searchResults = ref<SearchResult[]>([])
-const showParams = ref(false)
+const lastQuery = ref('')
+
+const actualQuery = computed(() =>
+  [searchProduct.value, searchFault.value].filter(Boolean).join(' ').trim()
+)
 
 const filteredProducts = computed(() => {
   let items = allProducts.value
@@ -79,13 +88,13 @@ const serviceTypeCounts = computed(() => {
 
 function scoreColor(score: number) {
   if (score >= 0.75) return 'text-emerald-600 bg-emerald-50'
-  if (score >= 0.6) return 'text-amber-600 bg-amber-50'
+  if (score >= 0.6)  return 'text-amber-600 bg-amber-50'
   return 'text-slate-500 bg-slate-100'
 }
 
 function scoreBarColor(score: number) {
   if (score >= 0.75) return 'bg-emerald-500'
-  if (score >= 0.6) return 'bg-amber-400'
+  if (score >= 0.6)  return 'bg-amber-400'
   return 'bg-slate-300'
 }
 
@@ -98,9 +107,19 @@ function serviceTypeBadge(type: string) {
   }[type] ?? 'bg-slate-50 text-slate-500 border-slate-200'
 }
 
+function applyPreset(preset: typeof PRESETS[0]) {
+  searchProduct.value = preset.product
+  searchFault.value   = preset.fault
+  searchResults.value = []
+  searchError.value   = ''
+  lastQuery.value     = ''
+}
+
 function fillFromProduct(product: ProductItem) {
   searchProduct.value = product.service_product_name
-  if (product.related_area) searchArea.value = product.related_area
+  searchFault.value   = ''
+  searchResults.value = []
+  lastQuery.value     = ''
 }
 
 async function loadProducts() {
@@ -119,31 +138,31 @@ async function loadProducts() {
 }
 
 async function doSearch() {
-  if (!searchQuery.value.trim() && !searchProduct.value.trim() && !searchFault.value.trim()) {
-    searchError.value = '请至少填写查询描述、商品名称或故障现象之一'
+  const query = actualQuery.value
+  if (!query) {
+    searchError.value = '请至少填写商品名称或故障现象'
     return
   }
   searching.value = true
   searchError.value = ''
   searchResults.value = []
+  lastQuery.value = ''
   try {
-    const body: Record<string, unknown> = {
-      query: searchQuery.value || [searchProduct.value, searchFault.value, searchArea.value].filter(Boolean).join(' '),
-      top_k: topK.value,
-      threshold: threshold.value,
-    }
-    if (searchProduct.value) body.product = searchProduct.value
-    if (searchFault.value) body.fault = searchFault.value
-    if (searchArea.value) body.area = searchArea.value
-
     const res = await fetch('/api/products/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        query,
+        product: searchProduct.value || undefined,
+        fault:   searchFault.value   || undefined,
+        top_k:   topK.value,
+        threshold: threshold.value,
+      }),
     })
     if (!res.ok) throw new Error(`请求失败 ${res.status}`)
     const data = await res.json()
     searchResults.value = data.results
+    lastQuery.value     = data.query
   } catch (e) {
     searchError.value = e instanceof Error ? e.message : '检索失败'
   } finally {
@@ -152,13 +171,11 @@ async function doSearch() {
 }
 
 function clearSearch() {
-  searchQuery.value = ''
   searchProduct.value = ''
-  searchFault.value = ''
-  searchArea.value = ''
-  searchServiceType.value = ''
+  searchFault.value   = ''
   searchResults.value = []
-  searchError.value = ''
+  searchError.value   = ''
+  lastQuery.value     = ''
 }
 
 onMounted(() => loadProducts())
@@ -176,20 +193,11 @@ onMounted(() => loadProducts())
           <p class="text-[10px] text-slate-400">Hotel Desk</p>
         </div>
       </div>
-
       <div class="h-6 w-px bg-slate-200"></div>
-
       <nav class="flex items-center gap-1">
-        <RouterLink
-          to="/"
-          class="rounded-lg px-3 py-1.5 text-[12px] font-medium text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
-        >下单对话</RouterLink>
-        <RouterLink
-          to="/products"
-          class="rounded-lg bg-indigo-50 px-3 py-1.5 text-[12px] font-medium text-indigo-700 transition"
-        >商品库</RouterLink>
+        <RouterLink to="/" class="rounded-lg px-3 py-1.5 text-[12px] font-medium text-slate-500 transition hover:bg-slate-50 hover:text-slate-700">下单对话</RouterLink>
+        <RouterLink to="/products" class="rounded-lg bg-indigo-50 px-3 py-1.5 text-[12px] font-medium text-indigo-700 transition">商品库</RouterLink>
       </nav>
-
       <div class="ml-auto flex items-center gap-2">
         <span class="text-[12px] text-slate-400">共 {{ allProducts.length }} 件商品</span>
         <button
@@ -205,67 +213,61 @@ onMounted(() => loadProducts())
       <!-- Left: Search Panel -->
       <div class="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto">
 
+        <!-- Quick presets -->
+        <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p class="mb-2.5 text-[12px] font-semibold uppercase tracking-wider text-slate-400">快速场景测试</p>
+          <div class="space-y-1.5">
+            <button
+              v-for="preset in PRESETS"
+              :key="preset.label"
+              class="flex w-full items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-left transition hover:border-indigo-200 hover:bg-indigo-50"
+              @click="applyPreset(preset)"
+            >
+              <div>
+                <p class="text-[12px] font-semibold text-slate-700">{{ preset.label }}</p>
+                <p class="text-[11px] text-slate-400">
+                  {{ preset.product }}<span v-if="preset.fault"> · {{ preset.fault }}</span>
+                </p>
+              </div>
+              <span class="shrink-0 text-[10px] text-slate-400">{{ preset.note }}</span>
+            </button>
+          </div>
+        </div>
+
         <!-- Search inputs -->
         <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p class="mb-3 text-[12px] font-semibold uppercase tracking-wider text-slate-400">检索测试</p>
+          <p class="mb-3 text-[12px] font-semibold uppercase tracking-wider text-slate-400">向量检索</p>
 
           <div class="space-y-2.5">
             <div>
-              <label class="mb-1 block text-[11px] font-medium text-slate-500">查询描述</label>
-              <textarea
-                v-model="searchQuery"
-                rows="2"
-                placeholder="例：门锁打不开"
-                class="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                @keydown.enter.prevent="doSearch"
+              <label class="mb-1 block text-[11px] font-medium text-slate-500">商品 / 设备</label>
+              <input
+                v-model="searchProduct"
+                type="text"
+                placeholder="空调"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                @keydown.enter="doSearch"
+              />
+            </div>
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-slate-500">故障现象 <span class="text-slate-300">（安装/测量可留空）</span></label>
+              <input
+                v-model="searchFault"
+                type="text"
+                placeholder="不制冷"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                @keydown.enter="doSearch"
               />
             </div>
 
-            <div class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-500">商品/设备</label>
-                <input
-                  v-model="searchProduct"
-                  type="text"
-                  placeholder="门锁"
-                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                />
-              </div>
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-500">故障现象</label>
-                <input
-                  v-model="searchFault"
-                  type="text"
-                  placeholder="打不开"
-                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                />
-              </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-500">区域</label>
-                <input
-                  v-model="searchArea"
-                  type="text"
-                  placeholder="卫生间"
-                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                />
-              </div>
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-500">服务类型</label>
-                <select
-                  v-model="searchServiceType"
-                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-[13px] text-slate-700 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                >
-                  <option value="">自动推断</option>
-                  <option v-for="t in SERVICE_TYPES.slice(1)" :key="t" :value="t">{{ t }}</option>
-                </select>
-              </div>
+            <!-- Actual query preview -->
+            <div class="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+              <p class="mb-0.5 text-[10px] font-medium text-slate-400">实际检索 query</p>
+              <p class="text-[12px] font-mono text-indigo-600">{{ actualQuery || '—' }}</p>
             </div>
           </div>
 
-          <!-- Param panel toggle -->
+          <!-- Advanced params -->
           <button
             class="mt-3 flex w-full items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-medium text-slate-500 transition hover:bg-slate-100"
             @click="showParams = !showParams"
@@ -275,42 +277,25 @@ onMounted(() => loadProducts())
               <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
             </svg>
           </button>
-
-          <div v-if="showParams" class="mt-2 space-y-2.5 rounded-xl border border-slate-100 bg-slate-50/70 p-3">
-            <div class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-500">Top-K</label>
-                <input v-model.number="topK" type="number" min="1" max="50"
-                  class="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 outline-none focus:border-indigo-300"
-                />
-              </div>
-              <div>
-                <label class="mb-1 block text-[11px] font-medium text-slate-500">阈值</label>
-                <input v-model.number="threshold" type="number" min="0" max="1" step="0.05"
-                  class="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 outline-none focus:border-indigo-300"
-                />
-              </div>
+          <div v-if="showParams" class="mt-2 grid grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-slate-500">Top-K</label>
+              <input v-model.number="topK" type="number" min="1" max="50"
+                class="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 outline-none focus:border-indigo-300"
+              />
             </div>
             <div>
-              <div class="mb-1 flex items-center justify-between">
-                <label class="text-[11px] font-medium text-slate-500">名称权重</label>
-                <span class="text-[11px] text-indigo-600">{{ nameWeight }}</span>
-              </div>
-              <input v-model.number="nameWeight" type="range" min="0" max="1" step="0.05" class="w-full accent-indigo-600" />
-            </div>
-            <div>
-              <div class="mb-1 flex items-center justify-between">
-                <label class="text-[11px] font-medium text-slate-500">故障权重</label>
-                <span class="text-[11px] text-indigo-600">{{ faultWeight }}</span>
-              </div>
-              <input v-model.number="faultWeight" type="range" min="0" max="1" step="0.05" class="w-full accent-indigo-600" />
+              <label class="mb-1 block text-[11px] font-medium text-slate-500">阈值</label>
+              <input v-model.number="threshold" type="number" min="0" max="1" step="0.05"
+                class="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[12px] text-slate-700 outline-none focus:border-indigo-300"
+              />
             </div>
           </div>
 
           <div class="mt-3 flex gap-2">
             <button
               class="flex-1 rounded-xl bg-indigo-600 py-2.5 text-[13px] font-semibold text-white shadow-sm shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-40"
-              :disabled="searching"
+              :disabled="searching || !actualQuery"
               @click="doSearch"
             >
               <span v-if="searching">检索中...</span>
@@ -323,15 +308,19 @@ onMounted(() => loadProducts())
           </div>
         </div>
 
-        <!-- Search results -->
+        <!-- Search error -->
         <div v-if="searchError" class="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2.5 text-[12px] text-rose-600">
           {{ searchError }}
         </div>
 
+        <!-- Search results -->
         <div v-if="searchResults.length > 0" class="rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-            <p class="text-[12px] font-semibold text-slate-700">匹配结果</p>
-            <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">{{ searchResults.length }} 条</span>
+          <div class="border-b border-slate-100 px-4 py-3">
+            <div class="flex items-center justify-between">
+              <p class="text-[12px] font-semibold text-slate-700">匹配结果</p>
+              <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">{{ searchResults.length }} 条</span>
+            </div>
+            <p v-if="lastQuery" class="mt-1 font-mono text-[11px] text-slate-400">query: "{{ lastQuery }}"</p>
           </div>
 
           <div class="divide-y divide-slate-50">
@@ -339,8 +328,8 @@ onMounted(() => loadProducts())
               v-for="(result, i) in searchResults"
               :key="result.service_product_code"
               class="px-4 py-3"
+              :class="i === 0 ? 'bg-indigo-50/40' : ''"
             >
-              <!-- Rank + name -->
               <div class="flex items-start gap-2">
                 <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
                   :class="i === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'"
@@ -354,22 +343,18 @@ onMounted(() => loadProducts())
                 </span>
               </div>
 
-              <!-- Score bar -->
               <div class="mt-2 flex items-center gap-2">
-                <span class="w-14 shrink-0 text-[10px] text-slate-400">相似度</span>
                 <div class="h-1.5 flex-1 rounded-full bg-slate-100">
                   <div class="h-full rounded-full transition-all" :class="scoreBarColor(result.score)" :style="{ width: `${result.score * 100}%` }"></div>
                 </div>
               </div>
 
-              <!-- Fault phenomenon -->
-              <p v-if="result.fault_phenomenon" class="mt-2 text-[11px] leading-4 text-slate-400" :title="result.fault_phenomenon">
+              <p v-if="result.fault_phenomenon" class="mt-1.5 text-[11px] leading-4 text-slate-400">
                 {{ result.fault_phenomenon }}
               </p>
 
-              <!-- Tags -->
               <div class="mt-2 flex flex-wrap gap-1.5">
-                <span class="rounded-md border px-1.5 py-0.5 text-[10px] font-medium" :class="serviceTypeBadge(result.service_order_type)">
+                <span class="rounded-md border px-1.5 py-0.5 text-[10px] font-semibold" :class="serviceTypeBadge(result.service_order_type)">
                   {{ result.service_order_type }}
                 </span>
                 <span v-if="result.related_area" class="rounded-md border border-slate-100 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">
@@ -380,8 +365,9 @@ onMounted(() => loadProducts())
           </div>
         </div>
 
-        <div v-else-if="!searching && searchResults.length === 0 && !searchError" class="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center">
-          <p class="text-[12px] text-slate-400">输入查询条件后点击检索</p>
+        <div v-else-if="!searching && !searchError" class="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center">
+          <p class="text-[12px] text-slate-400">输入商品和故障现象后点击检索</p>
+          <p class="mt-1 text-[11px] text-slate-300">或点击上方场景快速填入</p>
         </div>
       </div>
 
@@ -390,7 +376,6 @@ onMounted(() => loadProducts())
 
         <!-- Toolbar -->
         <div class="flex shrink-0 items-center gap-3 border-b border-slate-100 px-5 py-3">
-          <!-- Service type tabs -->
           <div class="flex items-center gap-1">
             <button
               v-for="type in SERVICE_TYPES"
@@ -407,7 +392,6 @@ onMounted(() => loadProducts())
               >{{ serviceTypeCounts[type] || 0 }}</span>
             </button>
           </div>
-
           <div class="ml-auto flex items-center gap-2">
             <div class="relative">
               <svg class="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -416,7 +400,7 @@ onMounted(() => loadProducts())
               <input
                 v-model="productKeyword"
                 type="text"
-                placeholder="搜索名称/编码/故障"
+                placeholder="搜索名称 / 编码 / 故障"
                 class="w-52 rounded-xl border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-3 text-[12px] text-slate-700 placeholder-slate-300 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
               />
             </div>
@@ -431,7 +415,6 @@ onMounted(() => loadProducts())
             <p class="text-[13px] text-slate-400">加载商品库...</p>
           </div>
         </div>
-
         <div v-else-if="productError" class="flex flex-1 items-center justify-center">
           <div class="rounded-2xl border border-rose-100 bg-rose-50 px-6 py-4 text-center">
             <p class="text-[13px] font-medium text-rose-600">{{ productError }}</p>
@@ -441,7 +424,7 @@ onMounted(() => loadProducts())
 
         <!-- Table -->
         <div v-else class="flex-1 overflow-auto">
-          <table class="w-full min-w-[900px] border-collapse text-[13px]">
+          <table class="w-full min-w-[860px] border-collapse text-[13px]">
             <thead class="sticky top-0 z-10 bg-slate-50">
               <tr>
                 <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">商品编码</th>
@@ -449,8 +432,8 @@ onMounted(() => loadProducts())
                 <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">服务类型</th>
                 <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">价格</th>
                 <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">区域</th>
-                <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">故障现象</th>
-                <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">操作</th>
+                <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400">故障现象（向量索引）</th>
+                <th class="border-b border-slate-200 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400"></th>
               </tr>
             </thead>
             <tbody>
@@ -468,21 +451,21 @@ onMounted(() => loadProducts())
                 </td>
                 <td class="px-4 py-3 text-slate-600">{{ product.price || '—' }}</td>
                 <td class="px-4 py-3 text-slate-500">{{ product.related_area || '—' }}</td>
-                <td class="max-w-[200px] px-4 py-3">
-                  <p class="truncate text-slate-500" :title="product.fault_phenomenon">{{ product.fault_phenomenon || '—' }}</p>
+                <td class="max-w-[220px] px-4 py-3">
+                  <p v-if="product.fault_phenomenon" class="truncate text-slate-500" :title="product.fault_phenomenon">
+                    {{ product.fault_phenomenon }}
+                  </p>
+                  <p v-else class="text-[11px] italic text-slate-300">安装/测量，无故障现象</p>
                 </td>
                 <td class="px-4 py-3">
                   <button
                     class="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-500 opacity-0 transition hover:border-indigo-200 hover:text-indigo-600 group-hover:opacity-100"
                     @click="fillFromProduct(product)"
-                  >
-                    填入检索
-                  </button>
+                  >填入检索</button>
                 </td>
               </tr>
             </tbody>
           </table>
-
           <div v-if="filteredProducts.length === 0" class="py-16 text-center">
             <p class="text-[13px] text-slate-400">没有匹配的商品</p>
           </div>
