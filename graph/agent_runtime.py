@@ -17,9 +17,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from config.logging import trace_event
 from config.settings import settings
-from tools.basic import current_time
-from tools.maintenance import check_package_tool
-from tools.qdrant_placeholder import qdrant_status
+from tools.check_package import check_package_tool
+from tools.current_time import current_time
 from tools.product_search import search_product_tool
 
 
@@ -98,7 +97,6 @@ def get_assist_agent():
             current_time,
             search_product_tool,
             check_package_tool,
-            qdrant_status,
         ],
         system_prompt=(
             "你是酒店 AI 下单助手的辅助 Agent。"
