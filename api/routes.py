@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from graph.builder import (
+    build_order_preview,
     clear_checkpoint_session,
     get_checkpoint_messages,
     get_checkpoint_state,
@@ -63,6 +64,7 @@ async def get_history(session_id: str) -> HistoryResponse:
         conversation_id=session_id,
         messages=[MessageItem(role=item["role"], content=item["content"]) for item in messages],
         conversation_summary=state.get("conversation_summary", ""),
+        order_preview=build_order_preview(state),
     )
 
 

@@ -201,6 +201,57 @@ function persistHistory() {
   localStorage.setItem(HISTORY_KEY, JSON.stringify(historySessions.value.slice(0, 10)))
 }
 
+function mapHistoryRole(role: string): Role | null {
+  if (role === 'human' || role === 'user') return 'user'
+  if (role === 'ai' || role === 'assistant') return 'assistant'
+  return null
+}
+
+async function loadSessionHistory(targetSessionId = sessionId.value) {
+  try {
+    const res = await fetch(`/api/chat/${encodeURIComponent(targetSessionId)}/history`)
+    if (!res.ok) return
+
+    const data = await res.json()
+    const restored = (data.messages || [])
+      .map((msg: { role: string; content: string }, index: number) => {
+        const role = mapHistoryRole(msg.role)
+        if (!role || !msg.content?.trim()) return null
+        return { id: Date.now() + index, role, content: msg.content, time: currentTime() }
+      })
+      .filter(Boolean) as ChatMessage[]
+
+    if (restored.length) {
+      messages.value = restored
+      nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
+    }
+
+    if (data.order_preview) applyOrderPreview(data.order_preview)
+  } catch {
+    // 新会话或后端不可用时保持空白页
+  }
+}
+
+async function switchSession(targetSessionId: string) {
+  if (targetSessionId === sessionId.value) {
+    showHistory.value = false
+    return
+  }
+
+  summarizeCurrentSession()
+  sessionId.value = targetSessionId
+  localStorage.setItem(SESSION_KEY, targetSessionId)
+  inputText.value = ''
+  errorMessage.value = ''
+  isListening.value = false
+  isSending.value = false
+  messages.value = []
+  resetOrder()
+  showHistory.value = false
+  await loadSessionHistory(targetSessionId)
+  nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
+}
+
 function appendMessage(role: Role, content: string) {
   const id = Date.now() + Math.floor(Math.random() * 999)
   messages.value.push({ id, role, content, time: currentTime() })
@@ -439,7 +490,10 @@ function closeHistoryOnOutside(e: MouseEvent) {
   if (historyRef.value && !historyRef.value.contains(e.target as Node)) showHistory.value = false
 }
 
-onMounted(() => document.addEventListener('mousedown', closeHistoryOnOutside))
+onMounted(() => {
+  document.addEventListener('mousedown', closeHistoryOnOutside)
+  loadSessionHistory()
+})
 onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutside))
 </script>
 
@@ -512,6 +566,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 v-for="item in historySessions"
                 :key="item.id"
                 class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-50"
+                @click="switchSession(item.id)"
               >
                 <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-xs font-bold text-indigo-600">
                   {{ item.title.slice(0, 2) }}

@@ -32,3 +32,4 @@ class HistoryResponse(BaseModel):
     conversation_id: str
     messages: list[MessageItem]
     conversation_summary: str
+    order_preview: dict[str, Any] | None = None
