@@ -1,13 +1,12 @@
-import json
 import asyncio
 import re
 from collections.abc import AsyncIterator
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
 from graph.llm import get_llm
+from graph.prompts import PROMPTS_DIR, render_prompt
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -29,7 +28,6 @@ from memory.postgres_log import save_conversation_log
 from tools.order_submit import submit_real_order
 from tools.product_search import search_product_tool
 
-PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 MAX_RETRY_COUNT = 2
 
 ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
@@ -88,25 +86,6 @@ class IntentResult(BaseModel):
     managed_repair_scope: str | None = None
     user_confirmed: bool = False
     user_cancelled: bool = False
-
-
-@lru_cache
-def load_prompt(relative_path: str) -> str:
-    return (PROMPTS_DIR / relative_path).read_text(encoding="utf-8")
-
-
-def render_prompt(relative_path: str, **variables: object) -> str:
-    prompt = load_prompt(relative_path)
-    for key, value in variables.items():
-        prompt = prompt.replace(f"{{{{{key}}}}}", to_prompt_text(value))
-    return prompt
-
-
-def to_prompt_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
-
 
 
 def format_messages(messages: list[BaseMessage]) -> str:
@@ -325,7 +304,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         [
             SystemMessage(
                 content=render_prompt(
-                    "router/order_intent.md",
+                    "intent/intent.md",
                     conversation_history=get_extractor_history(state),
                     user_input=get_last_human_message(state["messages"]),
                     status=state.get("status") or "idle",
@@ -590,7 +569,7 @@ async def build_missing_info_question(state: AgentState) -> str:
         return build_missing_info_fallback_question(missing_info)
 
     prompt = render_prompt(
-        "ask/ask_missing_info.md",
+        "ask/missing_info.md",
         order_info=state.get("order_info", {}),
         missing_info=missing_info,
         asked_questions=get_asked_questions(state.get("messages", [])),
@@ -607,7 +586,7 @@ async def build_topic_boundary_response(state: AgentState) -> str:
     if active_order and not missing_info and not state.get("order_info"):
         next_question = "请说房号和故障。"
     prompt = render_prompt(
-        "safety/off_topic_redirect.md",
+        "safety/off_topic.md",
         last_user_message=get_last_human_message(state.get("messages", [])),
         active_order=active_order,
         status=state.get("status") or "idle",
@@ -620,7 +599,7 @@ async def build_topic_boundary_response(state: AgentState) -> str:
     )
     answer = await stream_llm_text([SystemMessage(content=prompt)], step="ask_node")
     return answer or render_prompt(
-        "ask/maintenance_unknown_intent.md",
+        "ask/unknown_fallback.md",
         next_question=next_question or "如果需要继续报修，请告诉我房号和故障。",
     )
 
@@ -639,7 +618,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
         off_topic_count += 1
     elif retry_count > MAX_RETRY_COUNT:
         question = render_prompt(
-            "ask/retry_missing_info.md",
+            "ask/missing_info_retry.md",
             missing_info=", ".join(missing_info),
         )
         await emit_token_text(question, step="ask_node")
@@ -737,7 +716,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
         }
 
     confirmation_text = render_prompt(
-        "confirm/order_confirm.md",
+        "confirm/confirm.md",
         service_type=format_service_type(service_type, order_info),
         room_number=order_info.get("room_number"),
         product=order_info.get("product"),
@@ -827,7 +806,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "real_order_result": submit_data,
     }
     answer = render_prompt(
-        "confirm/order_submitted.md",
+        "confirm/submitted.md",
         order_id=order_id,
         service_type=format_service_type(state.get("service_type"), state.get("order_info", {})),
         order_info=order_info,

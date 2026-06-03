@@ -461,7 +461,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 ├── frontend/                    # Vue 3 前端
 ├── graph/                       # LangGraph 状态、节点和 Studio 入口
 ├── memory/                      # PostgreSQL 日志与旧 memory 模块
-├── prompts/                     # 文件化 Prompt
+├── prompts/                     # 文件化 Prompt（见 docs/prompts.md）
 ├── rag/                         # Qwen embedding 和商品匹配
 ├── schemas/                     # API 请求/响应模型
 ├── tests/                       # 集成测试（pytest + pytest-asyncio）
@@ -481,7 +481,7 @@ LANGSMITH_PROJECT=hotel-ai-order-agent
 2. 主状态字段使用 `intent`、`service_type`、`status`、`order_info`、`missing_info`。
 3. 不要重新引入旧字段：`repair_order`、`current_order_type`、`extracted_fields`、`missing_fields`、`slots`、`order_kind`。
 4. 普通用户确认/取消不要使用 LangGraph `interrupt()`，应通过 `intent` 和路由进入 `submit_node` 或 `cancel_node`。
-5. Prompt 必须文件化，优先修改 `prompts/`，不要把大段 Prompt 写死在 Python 里。
+5. Prompt 必须文件化，优先修改 `prompts/`，不要把大段 Prompt 写死在 Python 里。目录规则见 `docs/prompts.md`：**一个节点 → 一个同名子目录**（如 `intent_node` → `prompts/intent/`）。
 6. 商品检索主路径是 `rag/product_store.py`（`ProductVectorStore` / Chroma）。工具层入口是 `tools/product_search.py::search_product_tool`，节点是 `search_product_node`，HTTP 接口 `/api/products/search` 也统一走这个工具，状态字段用 `product_search_*` 前缀。
 7. Excel 原始字段 `service_product_code`、`service_product_name`、`service_order_type` 是业务数据列名，可以保留。
 8. 修改状态字段时，需要同步更新：
