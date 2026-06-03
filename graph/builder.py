@@ -18,8 +18,15 @@ from pydantic import BaseModel
 from config.logging import trace_event
 from config.settings import settings
 from graph.agent import get_assist_agent
+from graph.expected_time import (
+    infer_expected_start_time_from_message,
+    looks_like_expected_start_time,
+    merge_expected_start_time,
+    normalize_expected_start_time_text,
+)
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
+from tools.order_submit import submit_real_order
 from tools.product_search import search_product_tool
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -197,35 +204,6 @@ def normalize_goods_arrival_status(value: str | None) -> str | None:
     return None
 
 
-def looks_like_expected_start_time(value: str | None) -> bool:
-    if not value:
-        return False
-    time_keywords = (
-        "今天",
-        "明天",
-        "后天",
-        "上午",
-        "中午",
-        "下午",
-        "晚上",
-        "下周",
-        "本周",
-        "周一",
-        "周二",
-        "周三",
-        "周四",
-        "周五",
-        "周六",
-        "周日",
-        "星期",
-        "月",
-        "日",
-        "号",
-        "点",
-    )
-    return any(keyword in value for keyword in time_keywords)
-
-
 def format_service_type(service_type: str | None, order_info: dict[str, object]) -> str | None:
     if service_type != "托管维修":
         return service_type
@@ -297,6 +275,14 @@ def normalize_order_defaults(
             normalized["room_number"] = "/"
         elif scope not in VALID_MANAGED_REPAIR_SCOPES:
             normalized.pop("managed_repair_scope", None)
+
+    inferred_time = infer_expected_start_time_from_message(last_user_message)
+    existing_time = normalize_expected_start_time_text(
+        str(normalized.get("expected_start_time") or "") or None
+    )
+    merged_time = merge_expected_start_time(existing_time, inferred_time)
+    if merged_time:
+        normalized["expected_start_time"] = merged_time
 
     return normalized
 
@@ -400,9 +386,17 @@ async def intent_node(state: AgentState) -> dict[str, object]:
             **{
                 key: value
                 for key, value in detected_fields.items()
-                if value is not None
+                if value is not None and key != "expected_start_time"
             },
         }
+        merged_expected_time = merge_expected_start_time(
+            cleaned_existing.get("expected_start_time"),
+            normalize_expected_start_time_text(detected_fields.get("expected_start_time")),
+        )
+        inferred_expected_time = infer_expected_start_time_from_message(last_user_message)
+        merged_expected_time = merge_expected_start_time(merged_expected_time, inferred_expected_time)
+        if merged_expected_time:
+            order_info["expected_start_time"] = merged_expected_time
         order_info["user_confirmed"] = result.user_confirmed
         order_info["user_cancelled"] = user_cancelled
     output: dict[str, object] = {
@@ -806,28 +800,59 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
 async def submit_node(state: AgentState) -> dict[str, object]:
     """提交订单。
 
-    真实项目中这里通常会调用下单系统 API。
-    当前骨架先返回一个稳定的订单号，方便本地直接运行和测试流程。
+    这里参考用户端 App 的 CreateOrderTypeStore.createOrder 逻辑，先构造
+    OrderSaveReqVO 风格的真实下单参数；只有开启配置时才会真正调用用户端接口。
     """
 
-    order_id = f"ORDER-{uuid4().hex[:8].upper()}"
     matched_product = state.get("matched_product", {})
+    order_info = state.get("order_info", {})
+    submit_result = await submit_real_order(
+        order_info=order_info,
+        matched_product=matched_product,
+        submit=True,
+    )
+    submit_data = submit_result.get("data", {})
+    request_payload = submit_data.get("request_payload") or {}
+    missing_fields = submit_data.get("missing_fields") or []
+    order_id = submit_data.get("parent_order_no") or f"ORDER-PREVIEW-{uuid4().hex[:8].upper()}"
     submitted_order = {
         "order_id": order_id,
         "service_type": format_service_type(state.get("service_type"), state.get("order_info", {})),
-        **state.get("order_info", {}),
+        **order_info,
         "product_code": matched_product.get("service_product_code"),
         "product_name": matched_product.get("service_product_name"),
         "product_order_type": matched_product.get("service_order_type"),
         "matched_product": matched_product,
+        "real_order_payload": request_payload,
+        "real_order_result": submit_data,
     }
     answer = render_prompt(
         "confirm/order_submitted.md",
         order_id=order_id,
         service_type=format_service_type(state.get("service_type"), state.get("order_info", {})),
-        order_info=state.get("order_info", {}),
+        order_info=order_info,
         matched_product=matched_product,
     )
+    if not submit_data.get("submitted"):
+        missing_text = "、".join(str(item) for item in missing_fields)
+        diagnostics = submit_data.get("diagnostics") or {}
+        address_diagnostics = diagnostics.get("default_address") if isinstance(diagnostics, dict) else {}
+        address_hint = ""
+        address_api_code = address_diagnostics.get("address_api_code") if isinstance(address_diagnostics, dict) else None
+        if address_api_code and address_api_code != 200:
+            address_hint = (
+                "\n默认地址补齐失败："
+                f"地址接口返回 {address_api_code}"
+                f"（{address_diagnostics.get('address_api_message') or '无错误信息'}）。"
+                "请更新用户端登录 token，或在 .env 配置 USER_APP_DEFAULT_* 默认下单地址。"
+            )
+        missing_line = f"还需补齐：{missing_text}。" if missing_text else "订单参数已补齐，但创建订单接口没有返回可识别的订单号。"
+        answer = (
+            "已根据用户端 App 的下单逻辑生成真实下单参数，但还没有调用线上创建订单接口。\n"
+            f"原因：{submit_result.get('message')}。\n"
+            f"{missing_line}"
+            f"{address_hint}"
+        )
     await emit_token_text(answer, step="submit_node")
 
     output = {
@@ -835,6 +860,9 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         "step": "submit_node",
         "status": "submitted",
         "last_order": submitted_order,
+        "real_order_payload": request_payload,
+        "real_order_result": submit_data,
+        "real_order_missing_fields": missing_fields,
         "service_type": None,
         "order_info": {},
         "matched_product": {},
@@ -849,7 +877,10 @@ async def submit_node(state: AgentState) -> dict[str, object]:
     trace_event(
         "node.submit.output",
         answer=answer,
-        order_info=state.get("order_info", {}),
+        order_info=order_info,
+        tool_status=submit_result.get("status"),
+        real_submitted=submit_data.get("submitted"),
+        real_order_missing_fields=missing_fields,
     )
     return output
 
@@ -963,6 +994,8 @@ def get_graph_config(session_id: str) -> dict[str, object]:
 
 def checkpoint_path() -> Path:
     db_path = Path(settings.sqlite_memory_path)
+    if not db_path.is_absolute():
+        db_path = PROMPTS_DIR.parent / db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
 
@@ -1002,7 +1035,9 @@ def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
     order_info = state.get("order_info") or {}
     matched_product = state.get("matched_product") or {}
     candidates = state.get("product_candidates") or []
-    if not order_info and not matched_product and not candidates:
+    real_order_payload = state.get("real_order_payload") or {}
+    real_order_result = state.get("real_order_result") or {}
+    if not order_info and not matched_product and not candidates and not real_order_payload and not real_order_result:
         return None
 
     return {
@@ -1016,6 +1051,9 @@ def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
         "product_search_query": state.get("product_search_query"),
         "product_search_feedback": state.get("product_search_feedback"),
         "missing_info": state.get("missing_info") or [],
+        "real_order_payload": real_order_payload,
+        "real_order_result": real_order_result,
+        "real_order_missing_fields": state.get("real_order_missing_fields") or [],
     }
 
 

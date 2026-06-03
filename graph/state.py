@@ -36,6 +36,11 @@ class AgentState(TypedDict, total=False):
     # 当前匹配到的真实商品，来自商品匹配工具。
     matched_product: dict[str, Any]
 
+    # 按用户端 App 结构构造出的真实下单参数，以及真实接口返回结果。
+    real_order_payload: dict[str, Any]
+    real_order_result: dict[str, Any]
+    real_order_missing_fields: list[str]
+
     # 商品候选列表，低置信度时可给前端或人工选择。
     product_candidates: list[dict[str, Any]]
 

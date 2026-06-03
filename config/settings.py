@@ -77,6 +77,32 @@ class Settings(BaseSettings):
 
     tavily_api_key: str = Field(default="", repr=False)
 
+    user_app_base_url: str = "https://userapp.hxcsz.com"
+    user_app_access_token: str = Field(default="", repr=False)
+    user_app_tenant_id: str = ""
+    user_app_type: str = "2"
+    user_app_version: str = ""
+    user_app_channel: str = ""
+    user_app_platform: str = "ios"
+    user_app_device_id: str = ""
+    user_app_spirit: str = "IDontKnowPasswordtoo/1708hxcchang"
+    user_app_submit_enabled: bool = False
+    user_app_timeout_seconds: float = 30.0
+    user_app_default_contacts: str = ""
+    user_app_default_phone: str = ""
+    user_app_default_province: str = ""
+    user_app_default_city: str = ""
+    user_app_default_area: str = ""
+    user_app_default_address: str = ""
+    user_app_default_simple_address: str = ""
+    user_app_default_house_number: str = ""
+    user_app_default_ide_name: str = ""
+    user_app_default_province_code: str = ""
+    user_app_default_city_code: str = ""
+    user_app_default_area_code: str = ""
+    user_app_default_lon: float | None = None
+    user_app_default_lat: float | None = None
+
     @cached_property
     def database_url(self) -> str:
         return (
