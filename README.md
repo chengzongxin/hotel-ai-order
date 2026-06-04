@@ -13,7 +13,7 @@
 
 - 后端：Python、FastAPI、LangGraph、LangChain
 - 记忆：LangGraph SQLite checkpoint
-- 商品匹配：Qwen text-embedding、NumPy cosine similarity、Excel SPU 数据
+- 商品匹配：Qwen text-embedding、BM25（jieba）+ 向量混合检索、Excel SPU 数据
 - 配置：`.env`、Pydantic Settings
 - 观测：LangSmith、LangGraph Studio、本地 trace 日志
 - 前端：Vue 3、Vite、UnoCSS
@@ -206,13 +206,16 @@ SQLite Checkpoint
 1. `SpuExcelLoader` 读取 Excel，过滤下架商品。
 2. 每条商品生成索引文本：`服务商品名称 + 关联故障现象`。安装、测量类商品无故障现象，只用商品名。
 3. 用 Qwen `text-embedding-v4` 将索引文本向量化，写入 Chroma 向量库（`data/chroma_db/`）。
-4. 索引版本写入 `data/chroma_db/build_metadata.json`，版本或文件变化时自动重建。
+4. 同时对商品名建立 BM25 倒排索引（in-memory，每次启动重建，用 jieba 搜索模式分词）。
+5. 索引版本写入 `data/chroma_db/build_metadata.json`，版本或文件变化时向量库自动重建。
 
 **检索**（`search_product_node`）：
 
-1. 检索 query = `用户说的商品名 + 故障现象`。安装/测量场景无故障现象，query 退化为只有商品名。
-2. Chroma 余弦相似度召回 Top-K，过滤低分候选。
-3. `best_match.service_order_type` 即为本次订单的 `service_type`，后续必填字段由此决定。
+1. 检索 query = `用户说的商品名 + 故障现象`。安装场景无故障现象，query 追加"安装"关键词；测量场景 query 退化为只有商品名。
+2. **BM25 关键词过滤**：用商品名的 BM25 倒排索引（jieba 分词）圈定候选池，排除与 query 无任何关键词重叠的商品（如查"空调漏水"时水柜因名字里没有"空调"而被过滤）。
+3. **向量排名**：Chroma 余弦相似度对过滤后的候选排序，过滤低分结果。
+4. **故障惩罚**（`has_fault=True`）：用户描述了故障时，对无故障描述的商品（纯安装/测量类）扣 0.15 分，确保维修商品优于同名的安装商品（如"水龙头漏水"找维修而非安装）。
+5. `best_match.service_order_type` 即为本次订单的 `service_type`，后续必填字段由此决定。
 
 ## 必填字段与追问逻辑
 

@@ -398,9 +398,13 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
     product = order_info.get("product")
     fault = order_info.get("fault")
 
+    # 无故障时从用户原始消息中补充服务意图关键词（如"安装"），辅助找到正确商品类型
+    last_msg = state.get("last_user_message", "")
+    install_hint = "安装" if not fault and "安装" in last_msg else ""
+
     search_query = " ".join(
         str(value)
-        for value in [product, fault]
+        for value in [product, fault, install_hint]
         if value
     )
     if not search_query:
@@ -421,6 +425,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
             "query": search_query,
             "top_k": 3,
             "threshold": None,
+            "has_fault": bool(fault),
         },
     )
     data = result.get("data", {})
