@@ -22,3 +22,15 @@ app = graph.invoke({"x": 1, "y": 2})
 print("====================")
 print(app)
 print("====================")
+
+
+import jieba
+print(list(jieba.cut_for_search("门把手 坏了")))
+print(list(jieba.lcut("门把手 坏了")))
+
+
+print("-----------")
+
+print(list(jieba.lcut("门五金")))
+print(list(jieba.cut_for_search("门五金")))
+

@@ -1,12 +1,10 @@
 import json
-import warnings
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
 
 import jieba
 from langchain_chroma import Chroma
-from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
@@ -21,13 +19,29 @@ INDEX_TEXT_VERSION = "product-name-fault-v2"
 
 # 有故障词时对"无故障描述"商品（安装/测量类）的分数惩罚值
 NO_FAULT_PENALTY = 0.15
-# BM25 过滤池大小：足够大以覆盖所有有关键词重叠的商品
-BM25_FILTER_K = 80
 
 
-def _jieba_tokenize(text: str) -> list[str]:
-    """jieba 搜索模式分词，过滤空字符串。"""
-    return [token for token in jieba.cut_for_search(text) if token.strip()]
+def _keyword_overlap_tokens(text: str, *, expand_chars: bool) -> set[str]:
+    """提取用于关键词重叠判断的 token 集合。
+
+    expand_chars=True 时，对多字中文词补充单字，缓解 jieba 整词切分造成的匹配断层
+    （如 query「门把手」与商品「门五金」）；商品名侧不展开，避免单字误匹配。
+    """
+    tokens: set[str] = set()
+    for token in jieba.cut_for_search(text):
+        token = token.strip()
+        if not token:
+            continue
+        tokens.add(token)
+        if expand_chars and len(token) >= 2 and all("\u4e00" <= c <= "\u9fff" for c in token):
+            tokens.update(token)
+    return tokens
+
+
+def _has_keyword_overlap(query: str, product_name: str) -> bool:
+    query_tokens = _keyword_overlap_tokens(query, expand_chars=True)
+    product_tokens = _keyword_overlap_tokens(product_name, expand_chars=False)
+    return bool(query_tokens & product_tokens)
 
 
 class QwenEmbeddings(Embeddings):
@@ -51,7 +65,6 @@ class ProductVectorStore:
             embedding_function=self.embed_model,
             persist_directory=PERSIST_DIR,
         )
-        self._bm25_retriever: BM25Retriever | None = None
         self._documents: list[Document] = []
         self.load_products()
 
@@ -66,30 +79,18 @@ class ProductVectorStore:
         has_fault: bool = False,
     ) -> list[dict]:
         """
-        混合检索：BM25 过滤 + 向量排名 + 故障惩罚。
+        混合检索：关键词过滤 + 向量排名 + 故障惩罚。
 
         has_fault: 当为 True 时，对没有故障描述的商品（安装/测量类）扣减分数，
                    确保用户描述了故障时优先匹配维修商品。
         """
+        # ── 关键词过滤：剔除与 query 无词级重叠的商品 ─────────────────────────
+        # 向量负责语义排序；此处只做轻量过滤，query 侧对多字中文词做字级展开
         query = query.strip()
         if not query:
             return []
         min_score = threshold if threshold is not None else settings.product_search_threshold
         fetch_k = top_k * 4
-
-        # ── BM25 过滤：剔除与查询词无任何关键词重叠的商品 ──────────────────────
-        # 原理：BM25 对零分（无词命中）的商品不返回，利用这一特性做过滤而非排名
-        bm25_filter_codes: set[str] = set()
-        if self._bm25_retriever is not None:
-            self._bm25_retriever.k = BM25_FILTER_K
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                bm25_docs = self._bm25_retriever.invoke(query)
-            bm25_filter_codes = {
-                doc.metadata.get("service_product_code", "")
-                for doc in bm25_docs
-                if doc.metadata.get("service_product_code")
-            }
 
         # ── 向量检索（语义排名）──────────────────────────────────────────────
         vector_results = self.vector_store.similarity_search_with_relevance_scores(query, k=fetch_k)
@@ -97,9 +98,8 @@ class ProductVectorStore:
         # ── 过滤 + 故障惩罚 + 排序 ──────────────────────────────────────────
         scored: list[tuple[float, Document]] = []
         for doc, v_score in vector_results:
-            code = doc.metadata.get("service_product_code", "")
-            # BM25 过滤：跳过与查询无任何关键词重叠的商品（过滤池非空时生效）
-            if bm25_filter_codes and code not in bm25_filter_codes:
+            product_name = doc.metadata.get("service_product_name", "")
+            if product_name and not _has_keyword_overlap(query, product_name):
                 continue
             # 故障惩罚：有故障描述时，对无故障文本的商品（安装/测量类）降权
             adjusted = float(v_score)
@@ -130,9 +130,8 @@ class ProductVectorStore:
 
     def load_products(self):
         """
-        从 Excel 加载商品数据，构建向量库和 BM25 索引。
-        - BM25 每次启动都重建（内存中）。
-        - Chroma 向量库仅在 Excel 或版本变化时重建。
+        从 Excel 加载商品数据，构建向量库。
+        Chroma 向量库仅在 Excel 或版本变化时重建。
         """
         excel_path = PROJECT_ROOT / settings.spu_excel_path
         current_meta = {
@@ -150,7 +149,6 @@ class ProductVectorStore:
             )
             for r in records
         ]
-        self._build_bm25(self._documents)
 
         metadata_path = Path(METADATA_FILE)
         if metadata_path.exists():
@@ -168,27 +166,6 @@ class ProductVectorStore:
             encoding="utf-8",
         )
         print(f"[商品向量库] 构建完成，共 {len(self._documents)} 件商品")
-
-    def _build_bm25(self, documents: list[Document]) -> None:
-        """BM25 只索引商品名，用于关键词过滤（去除无词重叠的无关商品）。"""
-        name_docs = [
-            Document(
-                page_content=doc.metadata.get("service_product_name", ""),
-                metadata=doc.metadata,
-            )
-            for doc in documents
-        ]
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            self._bm25_retriever = BM25Retriever.from_documents(
-                name_docs,
-                preprocess_func=_jieba_tokenize,
-                k=BM25_FILTER_K,
-            )
-        print(f"[BM25 索引] 构建完成，共 {len(name_docs)} 件商品")
-
-    def _join_text(self, values: list[str]) -> str:
-        return " ".join(value.strip() for value in values if value and value.strip())
 
 
 @lru_cache
