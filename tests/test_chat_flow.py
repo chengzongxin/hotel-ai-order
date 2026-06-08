@@ -1,13 +1,24 @@
 """
 聊天流程集成测试。
 每个测试用独立 session_id，测后自动清理。
+
+需在 .env 或环境中配置真实用户凭证：
+TEST_ACCESS_TOKEN、TEST_USER_ID、TEST_TENANT_ID
 """
 
+import os
 import uuid
 
 import pytest
 
 from graph.builder import clear_checkpoint_session, run_agent
+from schemas.user import UserContext
+
+_TEST_ENV_KEYS = ("TEST_ACCESS_TOKEN", "TEST_USER_ID", "TEST_TENANT_ID")
+pytestmark = pytest.mark.skipif(
+    not all(os.getenv(key) for key in _TEST_ENV_KEYS),
+    reason="需要配置 TEST_ACCESS_TOKEN / TEST_USER_ID / TEST_TENANT_ID",
+)
 
 
 # ── 工具函数 ────────────────────────────────────────────────────────────────────
@@ -16,9 +27,22 @@ def new_session() -> str:
     return f"test-{uuid.uuid4().hex[:8]}"
 
 
+TEST_USER = UserContext(
+    user_id=os.getenv("TEST_USER_ID", "test-skip"),
+    tenant_id=os.getenv("TEST_TENANT_ID", "test-skip"),
+    access_token=os.getenv("TEST_ACCESS_TOKEN", "test-skip"),
+    platform=os.getenv("TEST_PLATFORM", "ios"),
+    app_type=os.getenv("TEST_APP_TYPE", "2"),
+    device_id=os.getenv("TEST_DEVICE_ID", ""),
+    version=os.getenv("TEST_APP_VERSION", ""),
+    channel=os.getenv("TEST_APP_CHANNEL", ""),
+    spirit=os.getenv("TEST_APP_SPIRIT", ""),
+)
+
+
 async def chat(session_id: str, message: str) -> dict:
     """一次对话，打印用户输入和 AI 回复，返回 run_agent 结果。"""
-    result = await run_agent(user_message=message, session_id=session_id)
+    result = await run_agent(user_message=message, session_id=session_id, user=TEST_USER)
     preview = result.get("order_preview") or {}
     print(f"\n  > 用户: {message}")
     print(f"  < AI  : {result.get('answer', '')}")
@@ -63,7 +87,7 @@ class TestSingleTurnComplete:
             assert missing(result) in ([], ["expected_start_time"])
             assert status(result) in ("confirming", "collecting")
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_faucet_leak(self):
         """卫生间水龙头漏水——信息完整，直接确认。"""
@@ -75,7 +99,7 @@ class TestSingleTurnComplete:
             assert info.get("product") == "水龙头"
             assert missing(result) == []
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_public_area_door_lock(self):
         """大堂门锁坏了——识别为公区，service_type 包含公区，不带客房房号。"""
@@ -89,7 +113,7 @@ class TestSingleTurnComplete:
             stype = service_type(result)
             assert stype is not None
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
 
 # ── 缺字段追问 ────────────────────────────────────────────────────────────────
@@ -107,7 +131,7 @@ class TestMissingField:
             answer = result.get("answer", "")
             assert any(kw in answer for kw in ("房间", "房号", "几号", "哪个房"))
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_missing_fault(self):
         """
@@ -123,7 +147,7 @@ class TestMissingField:
             # 系统接受模糊 fault，进入后续步骤（collecting 或 confirming）
             assert status(result) in ("collecting", "confirming")
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_missing_product(self):
         """只说坏了但没说是什么——应追问商品。"""
@@ -134,7 +158,7 @@ class TestMissingField:
             info = order_info(result)
             assert info.get("room_number") == "1208"
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
 
 # ── 多轮对话 ──────────────────────────────────────────────────────────────────
@@ -152,7 +176,7 @@ class TestMultiTurn:
             assert info.get("product") == "空调"
             assert "制冷" in (info.get("fault") or "")
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_correct_room_number(self):
         """用户纠正房号，最新值生效。"""
@@ -164,7 +188,7 @@ class TestMultiTurn:
             assert info.get("room_number") == "1210"
             assert info.get("product") == "电视"
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_public_area_after_guest_room(self):
         """先报客房单，确认后再报公区故障——新单不应带旧房号。"""
@@ -177,7 +201,7 @@ class TestMultiTurn:
             # 新单应识别为公区，不能带旧房号
             assert info.get("room_number") is None or info.get("managed_repair_scope") == "公区"
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
 
 # ── 取消与闲聊 ────────────────────────────────────────────────────────────────
@@ -193,7 +217,7 @@ class TestCancelAndSmallTalk:
             s = status(result)
             assert s in ("cancelled", "idle", None)
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_smalltalk_does_not_create_order(self):
         """纯闲聊——不应创建订单。"""
@@ -202,7 +226,7 @@ class TestCancelAndSmallTalk:
             result = await chat(sid, "你好，你是谁？")
             assert result.get("order_preview") is None or order_info(result) == {}
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
 
 # ── 商品匹配与服务类型 ────────────────────────────────────────────────────────
@@ -218,7 +242,7 @@ class TestProductMatch:
             assert stype is not None
             assert stype in ("单次维修服务", "托管维修", "托管维修（客房）", "托管维修（公区）")
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)
 
     async def test_installation_service_type(self):
         """安装类商品应匹配到单次安装服务类型。"""
@@ -230,4 +254,4 @@ class TestProductMatch:
             if stype is not None:
                 assert "安装" in stype
         finally:
-            await clear_checkpoint_session(sid)
+            await clear_checkpoint_session(sid, user=TEST_USER)

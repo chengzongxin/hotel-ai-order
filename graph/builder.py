@@ -25,6 +25,13 @@ from graph.expected_time import (
 )
 from graph.state import AgentState
 from memory.postgres_log import save_conversation_log
+from schemas.user import (
+    SessionAccessError,
+    UserContext,
+    build_thread_id,
+    require_user,
+    user_from_runtime_config,
+)
 from tools.order_submit import submit_real_order
 from tools.product_search import search_product_tool
 
@@ -781,6 +788,12 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
     return output
 
 
+def ensure_session_access(state: AgentState, user: UserContext) -> None:
+    stored_user_id = state.get("user_id")
+    if stored_user_id and stored_user_id != user.user_id:
+        raise SessionAccessError("无权访问该会话")
+
+
 async def submit_node(state: AgentState) -> dict[str, object]:
     """提交订单。
 
@@ -794,6 +807,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         order_info=order_info,
         matched_product=matched_product,
         submit=True,
+        user=user_from_runtime_config(),
     )
     submit_data = submit_result.get("data", {})
     request_payload = submit_data.get("request_payload") or {}
@@ -828,7 +842,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
                 "\n默认地址补齐失败："
                 f"地址接口返回 {address_api_code}"
                 f"（{address_diagnostics.get('address_api_message') or '无错误信息'}）。"
-                "请更新用户端登录 token，或在 .env 配置 USER_APP_DEFAULT_* 默认下单地址。"
+                "请更新用户端登录 token，或确认维保卡接口可返回酒店地址与联系人信息。"
             )
         missing_line = f"还需补齐：{missing_text}。" if missing_text else "订单参数已补齐，但创建订单接口没有返回可识别的订单号。"
         answer = (
@@ -960,9 +974,13 @@ def get_interrupt_answer(result: dict[str, object]) -> str | None:
     return str(payload)
 
 
-def get_graph_config(session_id: str) -> dict[str, object]:
+def get_graph_config(user: UserContext, session_id: str) -> dict[str, object]:
+    thread_id = build_thread_id(user.user_id, session_id)
     return {
-        "configurable": {"thread_id": session_id},
+        "configurable": {
+            "thread_id": thread_id,
+            "user_context": user.to_config_dict(),
+        },
         "run_name": "order_graph",
         "tags": [
             "hotel-ai-order",
@@ -971,6 +989,8 @@ def get_graph_config(session_id: str) -> dict[str, object]:
         ],
         "metadata": {
             "session_id": session_id,
+            "user_id": user.user_id,
+            "tenant_id": user.tenant_id,
             "app_env": settings.app_env,
         },
     }
@@ -996,23 +1016,38 @@ def message_to_item(message: BaseMessage) -> dict[str, str]:
     }
 
 
-async def get_checkpoint_state(session_id: str) -> AgentState:
+async def get_checkpoint_state(
+    session_id: str,
+    user: UserContext,
+) -> AgentState:
+    active_user = require_user(user)
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
-        snapshot = await graph.aget_state(get_graph_config(session_id))
-    return snapshot.values or {}
+        snapshot = await graph.aget_state(get_graph_config(active_user, session_id))
+        state = snapshot.values or {}
+        if state:
+            ensure_session_access(state, active_user)
+        return state
 
 
-async def get_checkpoint_messages(session_id: str) -> list[dict[str, str]]:
-    state = await get_checkpoint_state(session_id)
+async def get_checkpoint_messages(
+    session_id: str,
+    user: UserContext,
+) -> list[dict[str, str]]:
+    state = await get_checkpoint_state(session_id, user=user)
     return [message_to_item(message) for message in state.get("messages", [])]
 
 
-async def clear_checkpoint_session(session_id: str) -> None:
+async def clear_checkpoint_session(
+    session_id: str,
+    user: UserContext,
+) -> None:
+    active_user = require_user(user)
+    thread_id = build_thread_id(active_user.user_id, session_id)
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
-        await checkpointer.adelete_thread(session_id)
+        await checkpointer.adelete_thread(thread_id)
 
 
 def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
@@ -1058,12 +1093,15 @@ STREAMABLE_TOKEN_NODES: set[str] = set()
 async def stream_agent_events(
     user_message: str,
     session_id: str | None,
+    user: UserContext,
 ) -> AsyncIterator[dict[str, object]]:
+    active_user = require_user(user)
     active_session_id = session_id or str(uuid4())
 
     trace_event(
         "agent.stream.start",
         session_id=active_session_id,
+        user_id=active_user.user_id,
         user_message=user_message,
     )
     yield {
@@ -1079,6 +1117,7 @@ async def stream_agent_events(
 
     initial_state: AgentState = {
         "conversation_id": active_session_id,
+        "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
     }
@@ -1087,7 +1126,10 @@ async def stream_agent_events(
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
             await checkpointer.setup()
             graph = build_graph(checkpointer)
-            config = get_graph_config(active_session_id)
+            config = get_graph_config(active_user, active_session_id)
+            existing_snapshot = await graph.aget_state(config)
+            if existing_snapshot.values:
+                ensure_session_access(existing_snapshot.values, active_user)
 
             latest_state: dict[str, object] = dict(initial_state)
             emitted_token = False
@@ -1189,6 +1231,8 @@ async def stream_agent_events(
             "answer": str(answer),
             "order_preview": build_order_preview(final_state),
         }
+    except SessionAccessError:
+        raise
     except Exception as exc:
         trace_event(
             "agent.stream.error",
@@ -1204,17 +1248,21 @@ async def stream_agent_events(
 async def run_agent(
     user_message: str,
     session_id: str | None,
+    user: UserContext,
 ) -> dict[str, object]:
+    active_user = require_user(user)
     active_session_id = session_id or str(uuid4())
 
     trace_event(
         "agent.run.start",
         session_id=active_session_id,
+        user_id=active_user.user_id,
         user_message=user_message,
     )
 
     initial_state: AgentState = {
         "conversation_id": active_session_id,
+        "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
     }
@@ -1222,7 +1270,10 @@ async def run_agent(
     async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
-        config = get_graph_config(active_session_id)
+        config = get_graph_config(active_user, active_session_id)
+        existing_snapshot = await graph.aget_state(config)
+        if existing_snapshot.values:
+            ensure_session_access(existing_snapshot.values, active_user)
         result = await graph.ainvoke(
             initial_state,
             config=config,

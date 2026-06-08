@@ -42,18 +42,18 @@ class QwenEmbeddingClient:
         return np.asarray(embeddings, dtype=np.float32)
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        response = httpx.post(
-            f"{self.base_url}/embeddings",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "input": texts,
-            },
-            timeout=self.timeout_seconds,
-        )
+        with httpx.Client(trust_env=False, timeout=self.timeout_seconds) as client:
+            response = client.post(
+                f"{self.base_url}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "input": texts,
+                },
+            )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

@@ -2,9 +2,10 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
+from api.deps import get_current_user
 from graph.builder import (
     build_order_preview,
     clear_checkpoint_session,
@@ -22,28 +23,53 @@ from schemas.product import (
     ProductSearchResponse,
     ProductSearchResult,
 )
+from schemas.user import SessionAccessError, UserContext
 from tools.product_search import search_product_tool
 
 router = APIRouter(tags=["chat"])
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
-    result = await run_agent(
-        user_message=request.message,
-        session_id=request.session_id or request.conversation_id,
+def _session_access_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="无权访问该会话",
     )
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(
+    request: ChatRequest,
+    user: UserContext = Depends(get_current_user),
+) -> ChatResponse:
+    try:
+        result = await run_agent(
+            user_message=request.message,
+            session_id=request.session_id or request.conversation_id,
+            user=user,
+        )
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
     return ChatResponse(**result)
 
 
 @router.post("/chat/stream")
-async def stream_chat(request: ChatRequest) -> StreamingResponse:
+async def stream_chat(
+    request: ChatRequest,
+    user: UserContext = Depends(get_current_user),
+) -> StreamingResponse:
     async def event_lines() -> AsyncIterator[str]:
-        async for event in stream_agent_events(
-            user_message=request.message,
-            session_id=request.session_id or request.conversation_id,
-        ):
-            yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
+        try:
+            async for event in stream_agent_events(
+                user_message=request.message,
+                session_id=request.session_id or request.conversation_id,
+                user=user,
+            ):
+                yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
+        except SessionAccessError as exc:
+            yield json.dumps(
+                {"type": "error", "message": str(exc)},
+                ensure_ascii=False,
+            ) + "\n"
 
     return StreamingResponse(
         event_lines(),
@@ -56,9 +82,15 @@ async def stream_chat(request: ChatRequest) -> StreamingResponse:
 
 
 @router.get("/chat/{session_id}/history", response_model=HistoryResponse)
-async def get_history(session_id: str) -> HistoryResponse:
-    messages = await get_checkpoint_messages(session_id)
-    state = await get_checkpoint_state(session_id)
+async def get_history(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> HistoryResponse:
+    try:
+        messages = await get_checkpoint_messages(session_id, user=user)
+        state = await get_checkpoint_state(session_id, user=user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
     return HistoryResponse(
         session_id=session_id,
         conversation_id=session_id,
@@ -69,8 +101,15 @@ async def get_history(session_id: str) -> HistoryResponse:
 
 
 @router.delete("/chat/{session_id}", status_code=204)
-async def clear_history(session_id: str) -> None:
-    await clear_checkpoint_session(session_id)
+async def clear_history(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    try:
+        await get_checkpoint_state(session_id, user=user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    await clear_checkpoint_session(session_id, user=user)
 
 
 @router.get("/products", response_model=ProductListResponse, tags=["products"])

@@ -79,40 +79,9 @@ class Settings(BaseSettings):
 
     admin_api_base_url: str = "http://192.168.2.223:18080"
 
-    managed_repair_hotel_name: str = ""
-    managed_repair_combo_card_id: int = 1
-    managed_repair_response_time: int = 30
-    managed_repair_response_time_unit: str = "MINUTES"
-    managed_repair_first_area_id: int | None = None
-    managed_repair_first_area_name: str = ""
-    managed_repair_second_area_id: int | None = None
-    managed_repair_second_area_name: str = ""
-
     user_app_base_url: str = "https://userapp.hxcsz.com"
-    user_app_access_token: str = Field(default="", repr=False)
-    user_app_tenant_id: str = ""
-    user_app_type: str = "2"
-    user_app_version: str = ""
-    user_app_channel: str = ""
-    user_app_platform: str = "ios"
-    user_app_device_id: str = ""
-    user_app_spirit: str = "IDontKnowPasswordtoo/1708hxcchang"
     user_app_submit_enabled: bool = False
     user_app_timeout_seconds: float = 30.0
-    user_app_default_contacts: str = ""
-    user_app_default_phone: str = ""
-    user_app_default_province: str = ""
-    user_app_default_city: str = ""
-    user_app_default_area: str = ""
-    user_app_default_address: str = ""
-    user_app_default_simple_address: str = ""
-    user_app_default_house_number: str = ""
-    user_app_default_ide_name: str = ""
-    user_app_default_province_code: str = ""
-    user_app_default_city_code: str = ""
-    user_app_default_area_code: str = ""
-    user_app_default_lon: float | None = None
-    user_app_default_lat: float | None = None
 
     @cached_property
     def database_url(self) -> str:

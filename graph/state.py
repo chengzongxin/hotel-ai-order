@@ -17,6 +17,9 @@ class AgentState(TypedDict, total=False):
     # 当前会话 ID，供 Redis Memory 和 PostgreSQL 日志使用。
     conversation_id: str
 
+    # 当前登录用户 ID，用于会话隔离与越权校验。
+    user_id: str
+
     # 当前识别到的用户意图，例如 create_order、confirm_order、cancel_order。
     intent: str | None
 

@@ -3,6 +3,14 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import {
+  API_PARAM_FIELDS,
+  buildApiHeaders,
+  loadApiParams,
+  resetApiParams,
+  saveApiParams,
+  type ApiRequestParams,
+} from './utils/apiParams'
 import { createSessionId } from './utils/sessionId'
 
 marked.setOptions({ breaks: true })
@@ -75,6 +83,11 @@ interface SessionSummary {
 
 const SESSION_KEY = 'order_voice_session_id'
 const HISTORY_KEY = 'order_voice_history_sessions'
+
+const apiParams = ref<ApiRequestParams>(loadApiParams())
+const showApiParams = ref(true)
+const showApiParamsMobile = ref(false)
+const apiParamsSaved = ref(false)
 
 const sessionId = ref(localStorage.getItem(SESSION_KEY) || createSessionId())
 const inputText = ref('')
@@ -207,9 +220,27 @@ function mapHistoryRole(role: string): Role | null {
   return null
 }
 
+function currentApiHeaders() {
+  return buildApiHeaders(apiParams.value)
+}
+
+function persistApiParams() {
+  saveApiParams(apiParams.value)
+  apiParamsSaved.value = true
+  window.setTimeout(() => { apiParamsSaved.value = false }, 2000)
+}
+
+function restoreDefaultApiParams() {
+  apiParams.value = resetApiParams()
+  apiParamsSaved.value = true
+  window.setTimeout(() => { apiParamsSaved.value = false }, 2000)
+}
+
 async function loadSessionHistory(targetSessionId = sessionId.value) {
   try {
-    const res = await fetch(`/api/chat/${encodeURIComponent(targetSessionId)}/history`)
+    const res = await fetch(`/api/chat/${encodeURIComponent(targetSessionId)}/history`, {
+      headers: currentApiHeaders(),
+    })
     if (!res.ok) return
 
     const data = await res.json()
@@ -357,7 +388,7 @@ async function sendMessage(text = inputText.value) {
 async function sendFallbackMessage(content: string, assistantMessageId: number) {
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: currentApiHeaders(),
       body: JSON.stringify({ session_id: sessionId.value, message: content }),
     })
     if (!res.ok) throw new Error(`请求失败 ${res.status}`)
@@ -370,7 +401,7 @@ async function sendFallbackMessage(content: string, assistantMessageId: number) 
 async function sendStreamingMessage(content: string, assistantMessageId: number) {
   const res = await fetch('/api/chat/stream', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: currentApiHeaders(),
     body: JSON.stringify({ session_id: sessionId.value, message: content }),
   })
   if (!res.ok || !res.body) throw new Error(`请求失败 ${res.status}`)
@@ -540,6 +571,13 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
       </div>
 
       <div class="ml-auto flex items-center gap-2">
+        <button
+          class="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 lg:hidden"
+          @click="showApiParamsMobile = true"
+        >
+          接口参数
+        </button>
+
         <!-- History dropdown -->
         <div ref="historyRef" class="relative">
           <button
@@ -734,7 +772,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
       </div>
 
       <!-- ── Right Panel ── -->
-      <div class="hidden w-[272px] shrink-0 flex-col gap-3 lg:flex">
+      <div class="hidden w-[300px] shrink-0 flex-col gap-3 overflow-y-auto lg:flex">
 
         <!-- Order Card -->
         <div class="flex flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -848,8 +886,68 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
           </div>
         </div>
 
+        <!-- API params card -->
+        <div class="shrink-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <button
+            class="flex w-full items-center justify-between px-4 py-3 text-left"
+            @click="showApiParams = !showApiParams"
+          >
+            <div>
+              <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Request Params</p>
+              <p class="mt-0.5 text-sm font-semibold text-slate-800">接口参数</p>
+              <p class="mt-1 text-[11px] text-slate-500">
+                {{ apiParams.userId }} · 租户 {{ apiParams.tenantId }}
+              </p>
+            </div>
+            <svg
+              class="h-4 w-4 text-slate-400 transition"
+              :class="showApiParams ? 'rotate-180' : ''"
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+          </button>
+
+          <div v-if="showApiParams" class="border-t border-slate-100 px-4 py-3.5">
+            <div class="mb-3 rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2 text-[11px] leading-5 text-amber-800">
+              这些参数会作为请求 Header 发送给后端，修改后请点击「保存参数」。
+            </div>
+
+            <div class="max-h-[360px] space-y-2.5 overflow-y-auto pr-0.5">
+              <label
+                v-for="field in API_PARAM_FIELDS"
+                :key="field.key"
+                class="block"
+              >
+                <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ field.label }}</span>
+                <input
+                  v-model="apiParams[field.key]"
+                  type="text"
+                  :placeholder="field.placeholder"
+                  class="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-800 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                />
+              </label>
+            </div>
+
+            <div class="mt-3 flex gap-2">
+              <button
+                class="flex-1 rounded-xl bg-indigo-600 py-2 text-[12px] font-semibold text-white transition hover:bg-indigo-700"
+                @click="persistApiParams"
+              >保存参数</button>
+              <button
+                class="rounded-xl border border-slate-200 px-3 py-2 text-[12px] font-medium text-slate-600 transition hover:bg-slate-50"
+                @click="restoreDefaultApiParams"
+              >恢复默认</button>
+            </div>
+            <p v-if="apiParamsSaved" class="mt-2 text-center text-[11px] font-medium text-emerald-600">已保存，后续请求将使用新参数</p>
+            <p class="mt-2 break-all text-[10px] leading-4 text-slate-400">
+              当前 Token：{{ apiParams.accessToken || '未填写' }}
+            </p>
+          </div>
+        </div>
+
         <!-- Session info mini card -->
-        <div class="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <div class="shrink-0 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div class="flex items-center justify-between">
             <p class="text-[11px] font-semibold text-slate-400">当前会话</p>
             <span class="flex items-center gap-1 text-[11px] text-emerald-600">
@@ -861,5 +959,43 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
         </div>
       </div>
     </main>
+
+    <!-- Mobile API params drawer -->
+    <div
+      v-if="showApiParamsMobile"
+      class="fixed inset-0 z-[60] flex items-end bg-slate-900/40 lg:hidden"
+      @click.self="showApiParamsMobile = false"
+    >
+      <div class="max-h-[85vh] w-full overflow-y-auto rounded-t-3xl border border-slate-200 bg-white p-5 shadow-2xl">
+        <div class="mb-4 flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Request Params</p>
+            <h3 class="text-base font-semibold text-slate-800">接口参数</h3>
+          </div>
+          <button class="rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-100" @click="showApiParamsMobile = false">✕</button>
+        </div>
+        <div class="space-y-2.5">
+          <label v-for="field in API_PARAM_FIELDS" :key="`mobile-${field.key}`" class="block">
+            <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ field.label }}</span>
+            <input
+              v-model="apiParams[field.key]"
+              type="text"
+              :placeholder="field.placeholder"
+              class="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-800 outline-none focus:border-indigo-300 focus:bg-white"
+            />
+          </label>
+        </div>
+        <div class="mt-4 flex gap-2">
+          <button
+            class="flex-1 rounded-xl bg-indigo-600 py-3 text-[13px] font-semibold text-white"
+            @click="persistApiParams(); showApiParamsMobile = false"
+          >保存参数</button>
+          <button
+            class="rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-600"
+            @click="restoreDefaultApiParams"
+          >恢复默认</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
