@@ -53,7 +53,6 @@ config={"configurable": {"thread_id": active_session_id}}
 
 ```python
 initial_state = {
-    "conversation_id": active_session_id,
     "messages": [HumanMessage(content=user_message)],
     "last_user_message": user_message,
 }

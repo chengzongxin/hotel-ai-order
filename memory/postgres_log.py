@@ -7,7 +7,7 @@ from config.settings import settings
 from config.database import conversation_logs, engine
 
 
-async def save_conversation_log(conversation_id: str, role: str, content: str) -> None:
+async def save_conversation_log(session_id: str, role: str, content: str) -> None:
     if not settings.postgres_enabled:
         return
 
@@ -16,7 +16,7 @@ async def save_conversation_log(conversation_id: str, role: str, content: str) -
             await conn.execute(
                 insert(conversation_logs).values(
                     id=str(uuid4()),
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                     role=role,
                     content=content,
                 )

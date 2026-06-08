@@ -270,7 +270,6 @@ curl -X POST http://localhost:8000/api/chat \
 ```json
 {
   "session_id": "4f4c1d66-xxxx",
-  "conversation_id": "4f4c1d66-xxxx",
   "answer": "请确认订单信息：...",
   "order_preview": {
     "service_type": "单次维修服务",
@@ -385,7 +384,6 @@ Studio 输入的是 LangGraph State，不是 FastAPI 请求体。示例：
 
 ```json
 {
-  "conversation_id": "studio-1208",
   "messages": [
     {
       "role": "user",

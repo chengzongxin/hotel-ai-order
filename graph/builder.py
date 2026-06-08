@@ -1107,7 +1107,6 @@ async def stream_agent_events(
     yield {
         "type": "session",
         "session_id": active_session_id,
-        "conversation_id": active_session_id,
     }
     yield {
         "type": "status",
@@ -1116,7 +1115,6 @@ async def stream_agent_events(
     }
 
     initial_state: AgentState = {
-        "conversation_id": active_session_id,
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
@@ -1227,7 +1225,6 @@ async def stream_agent_events(
         yield {
             "type": "final",
             "session_id": active_session_id,
-            "conversation_id": active_session_id,
             "answer": str(answer),
             "order_preview": build_order_preview(final_state),
         }
@@ -1261,7 +1258,6 @@ async def run_agent(
     )
 
     initial_state: AgentState = {
-        "conversation_id": active_session_id,
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
@@ -1304,7 +1300,6 @@ async def run_agent(
 
     return {
         "session_id": active_session_id,
-        "conversation_id": active_session_id,
         "answer": answer,
         "order_preview": build_order_preview(result),
     }

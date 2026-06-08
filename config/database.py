@@ -10,7 +10,7 @@ conversation_logs = Table(
     "conversation_logs",
     metadata,
     Column("id", String(64), primary_key=True),
-    Column("conversation_id", String(128), nullable=False, index=True),
+    Column("session_id", String(128), nullable=False, index=True),
     Column("role", String(32), nullable=False),
     Column("content", Text, nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),

@@ -66,7 +66,6 @@ interface OrderPreview {
 interface StreamEvent {
   type: 'session' | 'status' | 'preview' | 'token' | 'final' | 'error'
   session_id?: string
-  conversation_id?: string
   step?: string
   message?: string
   content?: string

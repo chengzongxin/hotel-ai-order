@@ -44,7 +44,7 @@ async def chat(
     try:
         result = await run_agent(
             user_message=request.message,
-            session_id=request.session_id or request.conversation_id,
+            session_id=request.session_id,
             user=user,
         )
     except SessionAccessError as exc:
@@ -61,7 +61,7 @@ async def stream_chat(
         try:
             async for event in stream_agent_events(
                 user_message=request.message,
-                session_id=request.session_id or request.conversation_id,
+                session_id=request.session_id,
                 user=user,
             ):
                 yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
@@ -93,7 +93,6 @@ async def get_history(
         raise _session_access_error() from exc
     return HistoryResponse(
         session_id=session_id,
-        conversation_id=session_id,
         messages=[MessageItem(role=item["role"], content=item["content"]) for item in messages],
         conversation_summary=state.get("conversation_summary", ""),
         order_preview=build_order_preview(state),

@@ -24,12 +24,12 @@ class RedisChatMemory:
         self.redis = Redis.from_url(redis_url or settings.redis_url, decode_responses=True)
         self.ttl_seconds = ttl_seconds or settings.redis_ttl_seconds
 
-    async def get_messages(self, conversation_id: str) -> list[StoredMessage]:
-        values = await self.redis.lrange(self._key(conversation_id), 0, -1)
+    async def get_messages(self, session_id: str) -> list[StoredMessage]:
+        values = await self.redis.lrange(self._key(session_id), 0, -1)
         return [json.loads(value) for value in values]
 
-    async def get_langchain_messages(self, conversation_id: str) -> list[BaseMessage]:
-        stored_messages = await self.get_messages(conversation_id)
+    async def get_langchain_messages(self, session_id: str) -> list[BaseMessage]:
+        stored_messages = await self.get_messages(session_id)
         messages: list[BaseMessage] = []
 
         for item in stored_messages:
@@ -40,15 +40,15 @@ class RedisChatMemory:
 
         return messages
 
-    async def append_message(self, conversation_id: str, role: Role, content: str) -> None:
+    async def append_message(self, session_id: str, role: Role, content: str) -> None:
         payload = json.dumps({"role": role, "content": content}, ensure_ascii=False)
-        key = self._key(conversation_id)
+        key = self._key(session_id)
 
         await self.redis.rpush(key, payload)
         await self.redis.expire(key, self.ttl_seconds)
 
-    async def clear(self, conversation_id: str) -> None:
-        await self.redis.delete(self._key(conversation_id))
+    async def clear(self, session_id: str) -> None:
+        await self.redis.delete(self._key(session_id))
 
-    def _key(self, conversation_id: str) -> str:
-        return f"chat:{conversation_id}:messages"
+    def _key(self, session_id: str) -> str:
+        return f"chat:{session_id}:messages"

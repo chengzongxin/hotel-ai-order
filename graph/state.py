@@ -14,9 +14,6 @@ class AgentState(TypedDict, total=False):
     # LangGraph 会通过 add_messages 自动追加消息，而不是每次覆盖整个列表。
     messages: Annotated[list[BaseMessage], add_messages]
 
-    # 当前会话 ID，供 Redis Memory 和 PostgreSQL 日志使用。
-    conversation_id: str
-
     # 当前登录用户 ID，用于会话隔离与越权校验。
     user_id: str
 
