@@ -8,6 +8,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from config.settings import settings
+from graph.expected_time import parse_expected_time_to_range
 from schemas.user import UserContext, user_from_runtime_config
 from tools.protocol import ToolErrorCode, ToolResult, error_response, success_response
 
@@ -15,10 +16,14 @@ JsonDict = dict[str, Any]
 
 ADMIN_API_SPU_PAGE = "/admin-api/system/service-spu/page"
 CREATE_MANAGED_REPAIR_ORDER = "/app-api/order/company-managed-repair-order/create"
+CHECK_SINGLE_ORDER = "/app-api/order/publish-order/checkDouble"
+CREATE_SINGLE_ORDER = "/app-api/order/publish-order/create"
 HOSTING_CARD_GET = "/app-api/order/hosting-card/card"
 USER_PROFILE_GET = "/app-api/system/profile/get"
 MANAGED_REPAIR_GLOBAL_CONFIG = "/app-api/system/config/getManagedRepairGlobal"
 MANAGED_REPAIR_AREA_TREE_LIST = "/app-api/system/managed-repair-order-homepage/area-tree-list"
+SERVICE_SPU_CATEGORY_TYPE_LIST = "/app-api/system/service-spu-category/list-with-type"
+SERVICE_SPU_TYPE_CATEGORY_LIST = "/app-api/system/service-spu/type-category-list"
 
 DEFAULT_RESPONSE_TIME = 30
 DEFAULT_RESPONSE_TIME_UNIT = "MINUTES"
@@ -29,6 +34,9 @@ PLACEHOLDER_MARKERS = ("你的", "租户ID", "your-", "replace")
 class SubmitOrderInput(BaseModel):
     order_info: JsonDict = Field(..., description="对话抽取出的订单信息")
     matched_product: JsonDict = Field(..., description="商品匹配工具返回的标准商品")
+    service_type: str | None = Field(default=None, description="商品库匹配出的原始服务类型")
+    effective_service_type: str | None = Field(default=None, description="最终用于提交的服务类型")
+    coverage_result: JsonDict = Field(default_factory=dict, description="托管维修维保范围校验结果")
     submit: bool = Field(default=False, description="是否真实调用创建订单接口")
 
 
@@ -270,6 +278,337 @@ def _extract_order_no(response: JsonDict) -> str | None:
     return None
 
 
+def _first_present(*values: object) -> object:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _nested_dict(value: object) -> JsonDict:
+    return value if isinstance(value, dict) else {}
+
+
+def resolve_single_order_spu_type(service_type: str | None) -> str:
+    if service_type == "单次安装":
+        return "安装"
+    if service_type == "单次测量":
+        return "测量"
+    return "维修"
+
+
+def resolve_goods_arrival_status(value: object, service_type: str | None) -> int:
+    if service_type != "单次安装":
+        return 3
+    mapping = {
+        "未到场": 0,
+        "已到场": 1,
+        "已到物流站": 2,
+    }
+    return mapping.get(_clean_text(value), 3)
+
+
+async def query_single_order_category_context(
+    category_name: str,
+    service_type: str | None,
+    user: UserContext,
+) -> JsonDict:
+    """按 App 类目列表补齐普通订单所需的 category/type ID。"""
+
+    if not category_name:
+        return {}
+    data = await _post_app(SERVICE_SPU_CATEGORY_TYPE_LIST, {}, user)
+    if data.get("code") != 200:
+        return {}
+
+    categories = data.get("data") or []
+    if not isinstance(categories, list):
+        return {}
+
+    spu_type_name = resolve_single_order_spu_type(service_type)
+    normalized_category_name = _clean_text(category_name)
+    matched_category: JsonDict | None = None
+    for item in categories:
+        if not isinstance(item, dict):
+            continue
+        names = [
+            _clean_text(item.get("erpName")),
+            _clean_text(item.get("name")),
+            _clean_text(item.get("categoryName")),
+        ]
+        if normalized_category_name in names or any(
+            name and (normalized_category_name in name or name in normalized_category_name)
+            for name in names
+        ):
+            matched_category = item
+            break
+
+    if not matched_category:
+        return {}
+
+    type_list = matched_category.get("typeRespAppVOS") or []
+    matched_type: JsonDict = {}
+    if isinstance(type_list, list):
+        for item in type_list:
+            if not isinstance(item, dict):
+                continue
+            if _clean_text(item.get("serviceTypeName")) == spu_type_name:
+                matched_type = item
+                break
+
+    return {
+        "category_id": matched_category.get("id"),
+        "category_code": matched_category.get("erpCode") or matched_category.get("code"),
+        "category_name": matched_category.get("erpName") or matched_category.get("name"),
+        "type_id": matched_type.get("id"),
+        "type_code": matched_type.get("serviceTypeCode") or matched_type.get("code"),
+        "type_name": matched_type.get("serviceTypeName") or spu_type_name,
+    }
+
+
+async def query_single_order_app_spu(
+    *,
+    product_name: str,
+    product_code: str,
+    category_context: JsonDict,
+    selected_address: JsonDict,
+    user: UserContext,
+) -> JsonDict:
+    """按 App 商品列表接口获取普通下单可用的商品结构。"""
+
+    category_id = category_context.get("category_id")
+    type_id = category_context.get("type_id")
+    if not category_id or not type_id:
+        return {}
+
+    payload: JsonDict = {
+        "firstCategoryId": category_id,
+        "serviceSpuTypeId": type_id,
+    }
+    for source_key, target_key in [
+        ("province", "province"),
+        ("city", "city"),
+        ("area", "area"),
+        ("provinceCode", "provinceCode"),
+        ("cityCode", "cityCode"),
+        ("areaCode", "areaCode"),
+    ]:
+        value = selected_address.get(source_key)
+        if value not in (None, ""):
+            payload[target_key] = value
+
+    data = await _post_app(SERVICE_SPU_TYPE_CATEGORY_LIST, payload, user)
+    if data.get("code") != 200:
+        return {}
+
+    groups = data.get("data") or []
+    if not isinstance(groups, list):
+        return {}
+
+    normalized_code = _clean_text(product_code)
+    normalized_name = _clean_text(product_name)
+    fallback: JsonDict = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        items = group.get("itemRespVOList") or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            enriched = {
+                **item,
+                "categoryId": _first_present(item.get("categoryId"), group.get("secondCategoryId")),
+                "categoryCode": _first_present(item.get("categoryCode"), group.get("secondCategoryCode")),
+                "categoryName": _first_present(item.get("categoryName"), group.get("secondCategoryName")),
+            }
+            item_code = _clean_text(item.get("code"))
+            item_name = _clean_text(item.get("name"))
+            if normalized_code and item_code == normalized_code:
+                return enriched
+            if normalized_name and item_name == normalized_name:
+                return enriched
+            if normalized_name and not fallback and (normalized_name in item_name or item_name in normalized_name):
+                fallback = enriched
+
+    return fallback
+
+
+def build_single_order_payload(
+    order_info: JsonDict,
+    spu: JsonDict,
+    matched_product: JsonDict,
+    category_context: JsonDict,
+    selected_address: JsonDict,
+    contacts: str,
+    phone: str,
+    service_type: str | None,
+    ide_name: str = "",
+) -> tuple[JsonDict, list[str]]:
+    """按 App 普通订单 OrderSaveReqVO 结构构造单次安装/测量/维修参数。"""
+
+    spu_type_name = resolve_single_order_spu_type(service_type)
+    work_start_time, work_end_time = parse_expected_time_to_range(order_info.get("expected_start_time"))
+    hotel_address = _clean_text(selected_address.get("address"))
+    room_num = _clean_text(order_info.get("room_number"))
+    category = _nested_dict(spu.get("category"))
+    spu_type = _nested_dict(spu.get("type") or spu.get("serviceSpuType"))
+    unit = _nested_dict(spu.get("serviceMeasureUnitDO") or spu.get("measureUnit"))
+
+    category_id = _first_present(
+        spu.get("firstCategoryId"),
+        spu.get("spuCategoryId"),
+        category_context.get("category_id"),
+        category.get("id"),
+        spu.get("spuCategoryId"),
+    )
+    category_code = _clean_text(
+        _first_present(
+            spu.get("categoryCode"),
+            spu.get("spuCategoryCode"),
+            category_context.get("category_code"),
+            category.get("erpCode"),
+            category.get("code"),
+        )
+    )
+    category_name = _clean_text(
+        _first_present(
+            spu.get("categoryName"),
+            spu.get("spuCategoryName"),
+            category_context.get("category_name"),
+            category.get("erpName"),
+            category.get("name"),
+            matched_product.get("category"),
+            matched_product.get("related_category"),
+        )
+    )
+    type_id = _first_present(
+        spu.get("typeId"),
+        spu.get("serviceSpuTypeId"),
+        spu.get("spuTypeId"),
+        spu_type.get("id"),
+        category_context.get("type_id"),
+    )
+    type_code = _clean_text(
+        _first_present(
+            spu.get("typeCode"),
+            spu.get("serviceSpuTypeCode"),
+            spu.get("spuTypeCode"),
+            spu_type.get("serviceTypeCode"),
+            spu_type.get("code"),
+            category_context.get("type_code"),
+        )
+    )
+    unit_name = _clean_text(_first_present(spu.get("measureUnitName"), unit.get("name")), "个")
+    unit_type = _first_present(spu.get("measureUnitType"), unit.get("type"), "0")
+
+    order_goods: JsonDict = {
+        "goodsId": spu.get("id"),
+        "goodsNo": _clean_text(spu.get("code")),
+        "templateCode": _clean_text(spu.get("code")),
+        "templateName": _clean_text(spu.get("name")) or _clean_text(order_info.get("product")),
+        "num": 1,
+        "unit": unit_name,
+        "templatePhoto": _clean_text(spu.get("icon")),
+        "unitType": str(unit_type),
+        "quantity": "1",
+        "erpCodeId": _first_present(spu.get("categoryId"), spu.get("erpCodeId"), category_id),
+        "erpCode": _clean_text(_first_present(spu.get("categoryCode"), spu.get("erpCode"), category_code)),
+        "erpName": _clean_text(_first_present(spu.get("categoryName"), spu.get("erpName"), category_name)),
+        "price": spu.get("discountPrice") or spu.get("price") or 0,
+    }
+    for key in [
+        "actualPrice",
+        "userPrice",
+        "discount",
+        "provinceCode",
+        "province",
+        "cityCode",
+        "city",
+        "areaCode",
+        "area",
+        "calculationMethod",
+        "limitBuyType",
+        "limitBuyStart",
+        "limitBuyEnd",
+        "efficiency",
+        "stackPrice",
+        "isStackDiscount",
+    ]:
+        if key in spu and spu.get(key) is not None:
+            order_goods[key] = spu.get(key)
+    order_goods["discountType"] = 0
+
+    category_payload: JsonDict = {
+        "sId": "ai_order_group_1",
+        "spuTypeId": type_id,
+        "spuTypeCode": type_code,
+        "spuTypeName": spu_type_name,
+        "spuCategoryId": category_id,
+        "spuCategoryCode": category_code,
+        "spuCategoryName": category_name,
+        "isArrive": resolve_goods_arrival_status(order_info.get("goods_arrival_status"), service_type),
+        "goodsSaveReqVOList": [order_goods],
+        "workStartTime": work_start_time,
+        "workEndTime": work_end_time,
+        "roomNum": room_num,
+        "imageList": "",
+        "remark": _clean_text(order_info.get("remark") or order_info.get("fault")),
+    }
+
+    payload: JsonDict = {
+        "projectNo": None,
+        "attributeName": None,
+        "projectName": None,
+        "province": _clean_text(selected_address.get("province")),
+        "city": _clean_text(selected_address.get("city")),
+        "area": _clean_text(selected_address.get("area")) or None,
+        "provinceCode": _clean_text(selected_address.get("provinceCode")) or None,
+        "cityCode": _clean_text(selected_address.get("cityCode")) or None,
+        "areaCode": _clean_text(selected_address.get("areaCode")) or None,
+        "contacts": contacts,
+        "phone": phone,
+        "lon": selected_address.get("lon"),
+        "lat": selected_address.get("lat"),
+        "address": hotel_address,
+        "simpleAddress": _clean_text(selected_address.get("simpleAddress")) or None,
+        "houseNumber": _clean_text(order_info.get("house_number")) or _clean_text(selected_address.get("houseNumber")) or room_num,
+        "ideName": _clean_text(order_info.get("ide_name")) or ide_name or _clean_text(selected_address.get("ideName")),
+        "workerName": None,
+        "specialReq": _clean_text(order_info.get("special_requirement") or order_info.get("remark") or order_info.get("fault")) or None,
+        "fileList": "",
+        "photo": "",
+        "categorySaveReqVOS": [category_payload],
+    }
+
+    if service_type == "单次维修服务":
+        urgency = _clean_text(order_info.get("urgency"))
+        payload["emergencyFlag"] = 1 if urgency in {"urgent", "紧急"} else 0
+        payload["nightEmergencyPrice"] = 0
+
+    missing: list[str] = []
+    for field, value in [
+        ("contacts", contacts),
+        ("phone", phone),
+        ("address", hotel_address),
+        ("province", payload["province"]),
+        ("city", payload["city"]),
+        ("provinceCode", payload["provinceCode"]),
+        ("cityCode", payload["cityCode"]),
+        ("spuTypeId", category_payload["spuTypeId"]),
+        ("spuCategoryId", category_payload["spuCategoryId"]),
+        ("goodsId", order_goods["goodsId"]),
+        ("workStartTime", category_payload["workStartTime"]),
+        ("workEndTime", category_payload["workEndTime"]),
+    ]:
+        if value in (None, ""):
+            missing.append(field)
+    if not selected_address:
+        missing.append("address_context")
+    return payload, sorted(set(missing))
+
+
 def build_managed_repair_order_payload(
     order_info: JsonDict,
     spu: JsonDict,
@@ -413,9 +752,13 @@ async def submit_real_order(
     matched_product: JsonDict,
     submit: bool,
     user: UserContext,
+    service_type: str | None = None,
+    effective_service_type: str | None = None,
+    coverage_result: JsonDict | None = None,
 ) -> ToolResult:
     active_user = user
     order_context = await load_managed_repair_order_context(active_user)
+    final_service_type = effective_service_type or service_type or matched_product.get("service_order_type")
 
     product_name = _clean_text(matched_product.get("service_product_name"))
     spu: JsonDict = {}
@@ -428,92 +771,51 @@ async def submit_real_order(
         except Exception as exc:
             spu_query_error = f"{type(exc).__name__}: {exc}"
 
-    payload, missing_fields = build_managed_repair_order_payload(
+    if final_service_type == "托管维修":
+        from tools.order_submit_managed import submit_managed_repair_order
+
+        return await submit_managed_repair_order(
+            order_info=order_info,
+            matched_product=matched_product,
+            spu=spu,
+            order_context=order_context,
+            submit=submit,
+            user=active_user,
+            service_type=service_type,
+            coverage_result=coverage_result,
+            spu_query_error=spu_query_error,
+        )
+
+    from tools.order_submit_single import submit_single_order
+
+    return await submit_single_order(
         order_info=order_info,
+        matched_product=matched_product,
         spu=spu,
-        selected_address=order_context["selected_address"],
-        contacts=order_context["contacts"],
-        phone=order_context["phone"],
-        area_tree=order_context["area_tree"],
-        global_config=order_context["global_config"],
-        ide_name=active_user.ide_name,
+        order_context=order_context,
+        submit=submit,
+        user=active_user,
+        service_type=final_service_type,
+        coverage_result=coverage_result,
+        spu_query_error=spu_query_error,
     )
-
-    data: JsonDict = {
-        "request_payload": payload,
-        "missing_fields": missing_fields,
-        "submit_enabled": settings.user_app_submit_enabled,
-        "submitted": False,
-        "parent_order_no": None,
-        "spu_detail": spu,
-        "spu_query_error": spu_query_error,
-        "hosting_card": order_context["hosting_card"],
-        "hosting_card_error": order_context["hosting_card_error"],
-        "selected_address": order_context["selected_address"],
-        "user_profile": order_context["user_profile"],
-        "global_config": order_context["global_config"],
-    }
-
-    should_submit = submit and settings.user_app_submit_enabled
-    if not should_submit:
-        return success_response(
-            data=data,
-            message="built order payload; real submit is disabled",
-        )
-
-    if missing_fields:
-        return error_response(
-            error_code=ToolErrorCode.INVALID_INPUT,
-            message=f"cannot submit order, missing fields: {', '.join(missing_fields)}",
-            data=data,
-        )
-    if not _has_login_config(active_user):
-        return error_response(
-            error_code=ToolErrorCode.INVALID_INPUT,
-            message="cannot submit order, user access token or tenant id is missing",
-            data=data,
-        )
-
-    try:
-        create_result = await _post_app(CREATE_MANAGED_REPAIR_ORDER, payload, active_user)
-        data["create_order_response"] = create_result
-        order_no = _extract_order_no(create_result)
-        data["parent_order_no"] = order_no
-        data["submitted"] = create_result.get("code") == 200 and bool(order_no)
-    except httpx.HTTPError as exc:
-        return error_response(
-            error_code=ToolErrorCode.UPSTREAM_ERROR,
-            message=f"order api request failed: {exc}",
-            data=data,
-        )
-
-    if not data["submitted"]:
-        create_result = data.get("create_order_response") or {}
-        if isinstance(create_result, dict):
-            code = create_result.get("code")
-            msg = create_result.get("msg") or create_result.get("message") or "no message"
-            message = f"order api returned code={code}, msg={msg}, but no order number was found"
-        else:
-            message = "order api did not return a valid response"
-        return error_response(
-            error_code=ToolErrorCode.UPSTREAM_ERROR,
-            message=message,
-            data=data,
-        )
-
-    return success_response(data=data, message="order submitted")
-
 
 @tool(args_schema=SubmitOrderInput)
 async def submit_real_order_tool(
     order_info: JsonDict,
     matched_product: JsonDict,
+    service_type: str | None = None,
+    effective_service_type: str | None = None,
+    coverage_result: JsonDict | None = None,
     submit: bool = False,
 ) -> ToolResult:
-    """查询商品详情并构造托管维修下单参数，在启用配置后调用真实下单接口。"""
+    """查询商品详情并构造下单参数，在启用配置后调用真实下单接口。"""
     return await submit_real_order(
         order_info=order_info,
         matched_product=matched_product,
+        service_type=service_type,
+        effective_service_type=effective_service_type,
+        coverage_result=coverage_result or {},
         submit=submit,
         user=user_from_runtime_config(),
     )

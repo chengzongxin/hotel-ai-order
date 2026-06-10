@@ -9,11 +9,13 @@ from api.deps import get_current_user
 from graph.builder import (
     build_order_preview,
     clear_checkpoint_session,
+    confirm_order_in_session,
     get_checkpoint_messages,
     get_checkpoint_state,
     run_agent,
     select_product_in_session,
     stream_agent_events,
+    update_order_info_in_session,
 )
 from rag.spu_loader import SpuExcelLoader
 from schemas.chat import (
@@ -23,6 +25,8 @@ from schemas.chat import (
     MessageItem,
     SelectProductRequest,
     SelectProductResponse,
+    UpdateOrderInfoRequest,
+    UpdateOrderInfoResponse,
 )
 from schemas.product import (
     ProductItem,
@@ -112,6 +116,41 @@ async def select_product(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return SelectProductResponse(**result)
+
+
+@router.patch("/chat/{session_id}/order-info", response_model=UpdateOrderInfoResponse)
+async def update_order_info(
+    session_id: str,
+    request: UpdateOrderInfoRequest,
+    user: UserContext = Depends(get_current_user),
+) -> UpdateOrderInfoResponse:
+    """前端编辑预下单卡片字段后调用，更新当前会话的订单信息。"""
+    try:
+        result = await update_order_info_in_session(
+            session_id=session_id,
+            updates=request.updates,
+            user=user,
+        )
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return UpdateOrderInfoResponse(**result)
+
+
+@router.post("/chat/{session_id}/confirm", response_model=ChatResponse)
+async def confirm_order(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> ChatResponse:
+    """前端确认按钮的确定性提交接口，不再依赖 LLM 重新识别“确认”。"""
+    try:
+        result = await confirm_order_in_session(session_id=session_id, user=user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ChatResponse(**result)
 
 
 @router.get("/chat/{session_id}/history", response_model=HistoryResponse)

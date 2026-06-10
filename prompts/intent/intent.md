@@ -19,6 +19,8 @@
 - urgency：紧急度
 - expected_start_time：期待开工时间，保留用户原始说法，例如 今天下午、明天上午、下周一、本周五、3月20日
 - goods_arrival_status：货物是否到场，仅安装订单需要，可为 未到场、已到场、已到物流站 或 null
+- contacts：联系人姓名
+- phone：联系电话
 - managed_repair_scope：托管维修范围，可为 客房、公区 或 null
 - user_confirmed：用户是否明确确认提交订单
 - user_cancelled：用户是否明确取消当前订单
@@ -43,8 +45,9 @@
 17. 纯数字房号（如 1208、0816）是 room_number，不要写入 expected_start_time；用户只说“09:30”“昨天”“昨”时，应抽取为 expected_start_time，可与对话里先前说过的日期合并理解。
 18. 当前订单已在收集时间且用户最新输入只是补充时刻或日期时，只更新 expected_start_time，不要清空已收集的 product、fault 等字段。
 19. 安装订单需要抽取 goods_arrival_status：货没到、还没到、在路上 输出 未到场；货到了、已收到、货物在酒店 输出 已到场；到物流站了、在物流点、待配送 输出 已到物流站。
-20. 不要输出 Markdown。
-21. 不要输出解释。
+20. 用户补充“联系人李四”“找张三”“电话13600000000”“手机号是...”时，抽取 contacts 和 phone；没有明确说时输出 null，不要编造。
+21. 不要输出 Markdown。
+22. 不要输出解释。
 
 输出 JSON 格式：
 {
@@ -56,6 +59,8 @@
   "urgency": null,
   "expected_start_time": null,
   "goods_arrival_status": null,
+  "contacts": null,
+  "phone": null,
   "managed_repair_scope": null,
   "user_confirmed": false,
   "user_cancelled": false

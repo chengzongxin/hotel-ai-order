@@ -2,23 +2,28 @@
 聊天流程集成测试。
 每个测试用独立 session_id，测后自动清理。
 
-需在 .env 或环境中配置真实用户凭证：
-TEST_ACCESS_TOKEN、TEST_USER_ID、TEST_TENANT_ID
+默认复用前端开发配置里的用户凭证；也可以通过环境变量覆盖：
+TEST_ACCESS_TOKEN、TEST_USER_ID、TEST_TENANT_ID 等。
 """
 
 import os
 import uuid
 
-import pytest
-
 from graph.builder import clear_checkpoint_session, run_agent
 from schemas.user import UserContext
 
-_TEST_ENV_KEYS = ("TEST_ACCESS_TOKEN", "TEST_USER_ID", "TEST_TENANT_ID")
-pytestmark = pytest.mark.skipif(
-    not all(os.getenv(key) for key in _TEST_ENV_KEYS),
-    reason="需要配置 TEST_ACCESS_TOKEN / TEST_USER_ID / TEST_TENANT_ID",
-)
+DEFAULT_API_PARAMS = {
+    # 与 frontend/src/utils/apiParams.ts 的开发默认值保持一致。
+    "access_token": "d5d15b2e6fc7480b9fe87ea8f43591c0",
+    "user_id": "dev-user",
+    "tenant_id": "2123",
+    "platform": "ios",
+    "app_type": "2",
+    "device_id": "1234567890",
+    "version": "1.1.2",
+    "channel": "appstore",
+    "spirit": "IDontKnowPasswordtoo/1708hxcchang",
+}
 
 
 # ── 工具函数 ────────────────────────────────────────────────────────────────────
@@ -28,15 +33,15 @@ def new_session() -> str:
 
 
 TEST_USER = UserContext(
-    user_id=os.getenv("TEST_USER_ID", "test-skip"),
-    tenant_id=os.getenv("TEST_TENANT_ID", "test-skip"),
-    access_token=os.getenv("TEST_ACCESS_TOKEN", "test-skip"),
-    platform=os.getenv("TEST_PLATFORM", "ios"),
-    app_type=os.getenv("TEST_APP_TYPE", "2"),
-    device_id=os.getenv("TEST_DEVICE_ID", ""),
-    version=os.getenv("TEST_APP_VERSION", ""),
-    channel=os.getenv("TEST_APP_CHANNEL", ""),
-    spirit=os.getenv("TEST_APP_SPIRIT", ""),
+    user_id=os.getenv("TEST_USER_ID", DEFAULT_API_PARAMS["user_id"]),
+    tenant_id=os.getenv("TEST_TENANT_ID", DEFAULT_API_PARAMS["tenant_id"]),
+    access_token=os.getenv("TEST_ACCESS_TOKEN", DEFAULT_API_PARAMS["access_token"]),
+    platform=os.getenv("TEST_PLATFORM", DEFAULT_API_PARAMS["platform"]),
+    app_type=os.getenv("TEST_APP_TYPE", DEFAULT_API_PARAMS["app_type"]),
+    device_id=os.getenv("TEST_DEVICE_ID", DEFAULT_API_PARAMS["device_id"]),
+    version=os.getenv("TEST_APP_VERSION", DEFAULT_API_PARAMS["version"]),
+    channel=os.getenv("TEST_APP_CHANNEL", DEFAULT_API_PARAMS["channel"]),
+    spirit=os.getenv("TEST_APP_SPIRIT", DEFAULT_API_PARAMS["spirit"]),
 )
 
 
@@ -56,6 +61,10 @@ async def chat(session_id: str, message: str) -> dict:
 
 def order_info(result: dict) -> dict:
     return (result.get("order_preview") or {}).get("order_info") or {}
+
+
+def order_preview(result: dict) -> dict:
+    return result.get("order_preview") or {}
 
 
 def missing(result: dict) -> list:
@@ -121,10 +130,20 @@ class TestSingleTurnComplete:
 class TestMissingField:
 
     async def test_missing_room_number(self):
-        """缺房号——应追问房号，不追问其他。"""
+        """缺房号——当前流程会先推荐商品，选品后再追问房号。"""
         sid = new_session()
         try:
-            result = await chat(sid, "卫生间水龙头漏水，麻烦来修一下。")
+            first = await chat(sid, "卫生间水龙头漏水，麻烦来修一下。")
+            first_preview = order_preview(first)
+            products = (first_preview.get("products") or {}).get("items") or []
+
+            # 新流程：只要匹配到商品，第一轮先让用户选商品，而不是马上追问房号。
+            assert first_preview.get("ui_phase") == "product_selection"
+            assert products
+
+            result = await chat(sid, "第一个")
+
+            # 选完商品后进入信息校验，此时才应该发现缺少客房房号。
             assert "room_number" in missing(result)
             assert status(result) == "collecting"
             # AI 的回复里应有追问房号的意图

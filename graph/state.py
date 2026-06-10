@@ -23,6 +23,27 @@ class AgentState(TypedDict, total=False):
     # 服务类型，例如 单次安装、单次测量、单次维修服务、托管维修。
     service_type: str | None
 
+    # 最终用于字段校验和真实提交的服务类型；托管维修范围外会降级为单次维修服务。
+    effective_service_type: str | None
+
+    # 托管维修商品是否在当前用户维保卡范围内的校验结果。
+    coverage_result: dict[str, Any]
+
+    # 真实提交路由，例如 managed_repair、single_repair、single_install、single_measure。
+    order_submit_route: str | None
+
+    # 下单卡片默认值，来自用户登录态、维保卡、地址、商品接口等。
+    order_context: dict[str, Any]
+
+    # 下单卡片字段列表，由后端按当前订单类型生成，前端直接渲染。
+    order_card_fields: list[dict[str, Any]]
+
+    # 前端展示阶段：idle、product_selection、pre_order、submitted、cancelled。
+    ui_phase: str | None
+
+    # 用户选择“以上都不符合”后，用于触发重新描述和重新检索。
+    product_selection_rejected: bool
+
     # 当前订单生命周期：idle、collecting、confirming、submitted、cancelled。
     status: str | None
 

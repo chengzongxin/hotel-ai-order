@@ -3,6 +3,19 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import OrderPreviewCard from './components/OrderPreviewCard.vue'
+import OrderStatusNotices from './components/OrderStatusNotices.vue'
+import ProductSelectionCard from './components/ProductSelectionCard.vue'
+import type {
+  ChatMessage,
+  CoverageNotice,
+  OrderPreview,
+  ProductOption,
+  Role,
+  SessionSummary,
+  StreamEvent,
+  UiOrderField,
+} from './types/order'
 import {
   API_PARAM_FIELDS,
   buildApiHeaders,
@@ -17,76 +30,6 @@ marked.setOptions({ breaks: true })
 
 function renderMarkdown(content: string): string {
   return DOMPurify.sanitize(marked.parse(content) as string)
-}
-
-type Role = 'user' | 'assistant'
-
-interface ChatMessage {
-  id: number
-  role: Role
-  content: string
-  time: string
-}
-
-type UrgencyLevel = 'low' | 'medium' | 'high' | 'urgent'
-
-interface ProductOption {
-  code?: string
-  name?: string
-  service_type?: string
-  price?: string | null
-  repair_category?: string | null
-  score?: number | null
-  rank?: number
-  is_recommended?: boolean
-  is_selected?: boolean
-}
-
-interface ProductSection {
-  status?: string | null
-  query?: string | null
-  feedback?: string | null
-  selected_code?: string | null
-  items?: ProductOption[]
-}
-
-interface OrderPreview {
-  service_type?: string | null
-  service_type_display?: string | null
-  status?: string | null
-  order_info?: {
-    room_number?: string | null
-    product?: string | null
-    fault?: string | null
-    area?: string | null
-    urgency?: UrgencyLevel | null
-    expected_start_time?: string | null
-    goods_arrival_status?: string | null
-  }
-  products?: ProductSection
-  missing_info?: string[]
-  submission?: {
-    payload?: Record<string, unknown>
-    result?: Record<string, unknown>
-    missing_fields?: string[]
-  }
-}
-
-interface StreamEvent {
-  type: 'session' | 'status' | 'preview' | 'token' | 'final' | 'error'
-  session_id?: string
-  step?: string
-  message?: string
-  content?: string
-  answer?: string
-  order_preview?: OrderPreview | null
-}
-
-interface SessionSummary {
-  id: string
-  title: string
-  status: string
-  time: string
 }
 
 const SESSION_KEY = 'order_voice_session_id'
@@ -111,6 +54,8 @@ const messages = ref<ChatMessage[]>([])
 const orderPreview = ref<OrderPreview | null>(null)
 const isSelectingProduct = ref(false)
 const selectingProductCode = ref<string | null>(null)
+const isUpdatingOrderInfo = ref(false)
+const updatingFieldKey = ref<string | null>(null)
 const historySessions = ref<SessionSummary[]>(loadHistorySessions())
 
 localStorage.setItem(SESSION_KEY, sessionId.value)
@@ -124,17 +69,45 @@ const totalFieldCount = computed(() => Math.max(orderFields.value.length, 1))
 const orderCompleteness = computed(() => Math.round((filledCount.value / totalFieldCount.value) * 100))
 
 const orderInfo = computed(() => orderPreview.value?.order_info ?? {})
+const uiPhase = computed(() => orderPreview.value?.ui_phase ?? null)
 const previewStatus = computed(() => orderPreview.value?.status ?? null)
 const serviceTypeDisplay = computed(
   () => orderPreview.value?.service_type_display ?? orderPreview.value?.service_type ?? null,
 )
-const missingInfo = computed(() => orderPreview.value?.missing_info ?? [])
-const productItems = computed(() => orderPreview.value?.products?.items ?? [])
-const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
-const selectedProduct = computed(
-  () => productItems.value.find(isProductSelected) ?? productItems.value[0] ?? null,
+const effectiveServiceTypeDisplay = computed(
+  () =>
+    orderPreview.value?.effective_service_type_display
+    ?? orderPreview.value?.effective_service_type
+    ?? serviceTypeDisplay.value
+    ?? null,
 )
+const missingInfo = computed(() => orderPreview.value?.missing_info ?? [])
+const coverage = computed(() => orderPreview.value?.coverage ?? {})
+const productItems = computed(() => orderPreview.value?.products?.items ?? [])
+const productFeedback = computed(() => orderPreview.value?.products?.feedback ?? null)
+const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
+const productSelectionRejected = computed(() => Boolean(orderPreview.value?.products?.selection_rejected))
+const selectedProduct = computed(
+  () => productItems.value.find(isProductSelected) ?? null,
+)
+const backendOrderFields = computed(() => orderPreview.value?.order_card?.fields ?? [])
+const hasBackendOrderFields = computed(() => backendOrderFields.value.length > 0)
+const isProductSelectionPhase = computed(() => uiPhase.value === 'product_selection')
+const isPreOrderPhase = computed(() => uiPhase.value === 'pre_order' || previewStatus.value === 'confirming')
+const isAwaitingProductSelection = computed(
+  () => isProductSelectionPhase.value && hasProductOptions.value && !selectedProductCode.value && !productSelectionRejected.value,
+)
+const showDraftOrderCard = computed(() => isPreOrderPhase.value && Boolean(selectedProductCode.value) && hasBackendOrderFields.value)
 const submittedOrderId = computed(() => extractOrderId(orderPreview.value?.submission?.result))
+const isSubmittingOrder = computed(() => isSending.value && previewStatus.value === 'confirming')
+const submissionMissingFields = computed(() => orderPreview.value?.submission?.missing_fields ?? [])
+const hasSubmissionFailure = computed(
+  () =>
+    previewStatus.value === 'confirming'
+    && Boolean(orderPreview.value?.submission?.payload)
+    && !submittedOrderId.value
+    && (submissionMissingFields.value.length > 0 || Boolean(orderPreview.value?.submission?.result)),
+)
 
 const canSubmit = computed(() =>
   previewStatus.value === 'confirming' && missingInfo.value.length === 0
@@ -146,16 +119,15 @@ const isOrderSubmitted = computed(() => previewStatus.value === 'submitted')
 
 const showChatOrderPanel = computed(() => {
   const status = previewStatus.value
-  // 已提交/已取消：不在对话区挂常驻卡片（提交结果以 AI 气泡为准）
-  if (status === 'submitted' || status === 'cancelled') return false
+  if (status === 'submitted') return true
+  if (status === 'cancelled') return false
   if (!status || status === 'idle') return false
-  // 点击「确认下单」后 status 仍为 confirming，需等 submit_node 才变 submitted；等待期间先收起卡片
-  if (isSending.value && status === 'confirming') return false
-  return productItems.value.length > 0 || missingInfo.value.length > 0
+  if (productSelectionRejected.value) return false
+  return (isProductSelectionPhase.value && productItems.value.length > 0) || showDraftOrderCard.value
 })
 
 const canConfirmOrder = computed(
-  () => canSubmit.value && Boolean(selectedProductCode.value) && !isSending.value,
+  () => canSubmit.value && Boolean(selectedProductCode.value) && !isSending.value && !isUpdatingOrderInfo.value,
 )
 
 const canCancelOrder = computed(() => {
@@ -164,13 +136,40 @@ const canCancelOrder = computed(() => {
 })
 
 const missingInfoLabels: Record<string, string> = {
+  selected_product: '服务商品',
   room_number: '房号',
   product: '商品/设备',
-  fault: '故障描述',
+  fault: '故障现象',
   area: '区域',
   expected_start_time: '期待开工时间',
   goods_arrival_status: '货物到场状态',
+  contacts: '联系人',
+  phone: '联系电话',
+  address: '地址',
 }
+
+const missingInfoText = computed(() =>
+  missingInfo.value
+    .map((field) => missingInfoLabels[field] || field)
+    .join('、')
+)
+
+const submissionMissingText = computed(() =>
+  submissionMissingFields.value
+    .map((field) => missingInfoLabels[field] || field)
+    .join('、')
+)
+
+const coverageNotice = computed<CoverageNotice | null>(() => {
+  const data = coverage.value
+  if (!data.checked || !data.reason) return null
+  const tone: CoverageNotice['tone'] = data.covered === false ? 'warning' : 'ok'
+  return {
+    tone,
+    title: data.covered === false ? '维保范围提示' : '维保范围已校验',
+    message: data.reason,
+  }
+})
 
 const urgencyConfig = computed(() => {
   if (!orderInfo.value.urgency) return { label: '—', icon: '·', color: 'text-slate-400', bg: 'bg-slate-50' }
@@ -182,40 +181,71 @@ const urgencyConfig = computed(() => {
   }[orderInfo.value.urgency]
 })
 
-const orderFields = computed(() => {
+function makeReadonlyField(
+  key: string,
+  icon: string,
+  label: string,
+  value: string | null | undefined,
+): UiOrderField {
+  return {
+    key,
+    icon,
+    label,
+    value: value ?? null,
+    required: false,
+    editable: false,
+    inputType: 'text',
+    options: [],
+  }
+}
+
+const orderFields = computed<UiOrderField[]>(() => {
+  if (hasBackendOrderFields.value) {
+    return backendOrderFields.value.map((field) => ({
+      key: field.key,
+      icon: iconForOrderField(field.key),
+      label: field.label,
+      value: formatOrderFieldValue(field.value),
+      required: Boolean(field.required),
+      editable: field.editable !== false,
+      inputType: field.input_type || 'text',
+      options: field.options || [],
+    }))
+  }
+
   const base = [
-    { key: 'serviceType', icon: '📋', label: '订单类型', value: serviceTypeDisplay.value },
-    { key: 'product', icon: '🔧', label: '商品/设备', value: orderInfo.value.product ?? null },
+    makeReadonlyField('serviceType', '📋', '订单类型', serviceTypeDisplay.value),
+    makeReadonlyField('product', '🔧', '商品/设备', orderInfo.value.product ?? null),
   ]
 
   if (serviceTypeDisplay.value?.includes('单次安装')) {
     return [
       ...base,
-      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: orderInfo.value.expected_start_time ?? null },
-      { key: 'goodsArrivalStatus', icon: '🚚', label: '货物是否到场', value: orderInfo.value.goods_arrival_status ?? null },
+      makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
+      makeReadonlyField('goodsArrivalStatus', '🚚', '货物是否到场', orderInfo.value.goods_arrival_status),
     ]
   }
 
   if (serviceTypeDisplay.value?.includes('单次测量')) {
     return [
       ...base,
-      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: orderInfo.value.expected_start_time ?? null },
+      makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
     ]
   }
 
   if (serviceTypeDisplay.value?.includes('单次维修')) {
     return [
       ...base,
-      { key: 'fault', icon: '⚡', label: '问题描述', value: orderInfo.value.fault ?? null },
-      { key: 'expectedStartTime', icon: '🕒', label: '期待开工时间', value: orderInfo.value.expected_start_time ?? null },
+      makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
+      makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
     ]
   }
 
   return [
     ...base,
-    { key: 'fault', icon: '⚡', label: '问题描述', value: orderInfo.value.fault ?? null },
-    { key: 'area', icon: '📍', label: '所在区域', value: orderInfo.value.area ?? null },
-    { key: 'roomNumber', icon: '🏠', label: '房间号', value: orderInfo.value.room_number ?? null },
+    makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
+    makeReadonlyField('area', '📍', '所在区域', orderInfo.value.area),
+    makeReadonlyField('roomNumber', '🏠', '房间号', orderInfo.value.room_number),
   ]
 })
 
@@ -237,15 +267,10 @@ function currentTime() {
 }
 
 function loadHistorySessions(): SessionSummary[] {
-  const fallback: SessionSummary[] = [
-    { id: '1208', title: '1208 空调不制冷', status: '待确认', time: '09:42' },
-    { id: '0816', title: '0816 水龙头漏水',  status: '已派单', time: '昨天' },
-    { id: '0321', title: '0321 门锁打不开',  status: '已完成', time: '周日' },
-  ]
   try {
     const saved = localStorage.getItem(HISTORY_KEY)
-    return saved ? JSON.parse(saved) : fallback
-  } catch { return fallback }
+    return saved ? JSON.parse(saved) : []
+  } catch { return [] }
 }
 
 function persistHistory() {
@@ -370,6 +395,63 @@ function formatMatchScore(score?: number | null): string {
   return `${Math.round(score * 100)}%`
 }
 
+function iconForOrderField(key: string): string {
+  const icons: Record<string, string> = {
+    area_room: '📍',
+    urgency: '!',
+    remark: '✎',
+    contacts: '👤',
+    phone: '☎',
+    total_fee: '¥',
+    expected_time: '🕒',
+    goods_arrival_status: '🚚',
+  }
+  return icons[key] || '•'
+}
+
+function formatOrderFieldValue(value: unknown): string | null {
+  if (value == null || value === '') return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value)
+}
+
+function displayOrderFieldValue(field: { value?: string | null; options?: Array<{ label: string; value: string }> }): string {
+  const value = field.value ?? ''
+  const option = field.options?.find((item) => item.value === value)
+  return option?.label || value || '待识别'
+}
+
+async function updateOrderInfoField(key: string, value: string | null) {
+  if (!selectedProductCode.value || isUpdatingOrderInfo.value) return
+  isUpdatingOrderInfo.value = true
+  updatingFieldKey.value = key
+  errorMessage.value = ''
+
+  try {
+    const res = await fetch(`/api/chat/${encodeURIComponent(sessionId.value)}/order-info`, {
+      method: 'PATCH',
+      headers: currentApiHeaders(),
+      body: JSON.stringify({ updates: { [key]: value ?? '' } }),
+    })
+    if (!res.ok) {
+      let detail = `更新失败 ${res.status}`
+      try {
+        const errBody = await res.json()
+        detail = typeof errBody.detail === 'string' ? errBody.detail : detail
+      } catch { /* ignore */ }
+      throw new Error(detail)
+    }
+    const data = await res.json()
+    applyOrderPreview(data.order_preview)
+  } catch (err) {
+    errorMessage.value = err instanceof Error ? err.message : '更新下单信息失败'
+  } finally {
+    isUpdatingOrderInfo.value = false
+    updatingFieldKey.value = null
+  }
+}
+
 async function selectProduct(item: ProductOption) {
   const code = item.code?.trim()
   if (!code || isSelectingProduct.value || isSending.value || isProductSelected(item)) return
@@ -394,6 +476,9 @@ async function selectProduct(item: ProductOption) {
     }
     const data = await res.json()
     applyOrderPreview(data.order_preview)
+    if (typeof data.message === 'string' && data.message.trim()) {
+      appendMessage('assistant', data.message.trim())
+    }
   } catch (err) {
     errorMessage.value = err instanceof Error ? err.message : '选择商品失败'
   } finally {
@@ -402,9 +487,37 @@ async function selectProduct(item: ProductOption) {
   }
 }
 
-function confirmOrder() {
+async function confirmOrder() {
   if (!canConfirmOrder.value || isSending.value) return
-  sendMessage('确认')
+  errorMessage.value = ''
+  appendMessage('user', '确认下单')
+  const assistantMessageId = appendMessage('assistant', '')
+  isSending.value = true
+  streamStatus.value = '正在提交订单...'
+
+  try {
+    const res = await fetch(`/api/chat/${encodeURIComponent(sessionId.value)}/confirm`, {
+      method: 'POST',
+      headers: currentApiHeaders(),
+    })
+    if (!res.ok) {
+      let detail = `确认失败 ${res.status}`
+      try {
+        const errBody = await res.json()
+        detail = typeof errBody.detail === 'string' ? errBody.detail : detail
+      } catch { /* ignore */ }
+      throw new Error(detail)
+    }
+    const data = await res.json()
+    applyOrderPreview(data.order_preview)
+    setMessageContent(assistantMessageId, data.answer || '已处理确认下单请求。')
+  } catch (err) {
+    errorMessage.value = err instanceof Error ? err.message : '确认下单失败'
+    setMessageContent(assistantMessageId, '确认下单失败，请检查信息后重试。')
+  } finally {
+    isSending.value = false
+    streamStatus.value = ''
+  }
 }
 
 function cancelOrder() {
@@ -510,6 +623,16 @@ async function sendStreamingMessage(content: string, assistantMessageId: number)
     }
   }
 
+  const parseAndHandleEvent = (line: string) => {
+    try {
+      handleEvent(JSON.parse(line))
+    } catch {
+      const streamError = new Error('流式响应格式异常，请稍后重试')
+      streamError.name = 'StreamEventError'
+      throw streamError
+    }
+  }
+
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
@@ -519,12 +642,12 @@ async function sendStreamingMessage(content: string, assistantMessageId: number)
     for (const line of lines) {
       const text = line.trim()
       if (!text) continue
-      handleEvent(JSON.parse(text))
+      parseAndHandleEvent(text)
     }
   }
 
   const lastLine = buffer.trim()
-  if (lastLine) handleEvent(JSON.parse(lastLine))
+  if (lastLine) parseAndHandleEvent(lastLine)
   if (!messages.value.find((item) => item.id === assistantMessageId)?.content) {
     setMessageContent(assistantMessageId, '我已收到，会继续为您处理。')
   }
@@ -794,90 +917,46 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       </p>
                     </div>
 
-                    <!-- Missing info (compact) -->
-                    <p
-                      v-else-if="missingInfo.length"
-                      class="mb-3 text-[12px] leading-5 text-amber-700"
-                    >
-                      还需补充：{{ missingInfo.map((f) => missingInfoLabels[f] || f).join('、') }}
-                    </p>
+                    <OrderStatusNotices
+                      v-if="isSubmittingOrder || hasSubmissionFailure"
+                      class="mb-3"
+                      :is-submitting-order="isSubmittingOrder"
+                      :has-submission-failure="hasSubmissionFailure"
+                      :submission-missing-text="submissionMissingText"
+                    />
 
-                    <!-- Product cards -->
-                    <div v-if="hasProductOptions" class="space-y-2">
-                      <div v-if="productItems.length > 1 && !isOrderSubmitted" class="text-right">
-                        <p class="text-[10px] text-slate-400">← 左右滑动 →</p>
-                      </div>
+                    <ProductSelectionCard
+                      v-if="isProductSelectionPhase && hasProductOptions && !productSelectionRejected"
+                      :items="productItems"
+                      :feedback="productFeedback"
+                      :selected-code="selectedProductCode"
+                      :selecting-code="selectingProductCode"
+                      :is-awaiting-selection="isAwaitingProductSelection"
+                      :is-selecting="isSelectingProduct"
+                      :is-sending="isSending"
+                      :is-submitted="isOrderSubmitted"
+                      @select="selectProduct"
+                      @reject="sendMessage('0')"
+                    />
 
-                      <div class="-mx-4 px-4">
-                        <div class="flex gap-3 overflow-x-auto pb-2 scroll-smooth snap-x snap-mandatory">
-                          <div
-                            v-for="item in productItems"
-                            :key="`chat-${item.code}`"
-                            class="relative flex h-[188px] w-[220px] shrink-0 snap-start flex-col rounded-xl border p-3.5 text-left transition-all duration-200"
-                            :class="[
-                              isProductSelected(item)
-                                ? 'border-indigo-400 bg-indigo-50 ring-2 ring-indigo-200'
-                                : 'border-slate-200 bg-white',
-                              !isOrderSubmitted && !isSelectingProduct && !isSending ? 'cursor-pointer hover:border-indigo-200 hover:shadow-sm' : '',
-                              isOrderSubmitted ? 'opacity-95' : '',
-                            ]"
-                            :role="isOrderSubmitted ? undefined : 'button'"
-                            @click="!isOrderSubmitted && selectProduct(item)"
-                          >
-                            <div class="flex items-start justify-between gap-2">
-                              <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-800">{{ item.name }}</p>
-                              <span
-                                v-if="item.is_recommended && !isOrderSubmitted"
-                                class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700"
-                              >推荐</span>
-                            </div>
-                            <p class="mt-1 font-mono text-[10px] text-slate-400">{{ item.code }}</p>
-                            <p v-if="item.service_type" class="mt-1 truncate text-[11px] text-slate-500">{{ item.service_type }}</p>
-                            <div class="mt-2 flex flex-wrap gap-1.5">
-                              <span v-if="item.repair_category" class="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ item.repair_category }}</span>
-                              <span v-if="item.price" class="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">¥{{ item.price }}</span>
-                              <span v-if="item.score != null" class="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">匹配 {{ formatMatchScore(item.score) }}</span>
-                            </div>
-
-                            <div class="mt-auto pt-3">
-                              <span
-                                v-if="!isOrderSubmitted && selectingProductCode === item.code"
-                                class="inline-flex items-center gap-1.5 text-[11px] text-indigo-600"
-                              >
-                                <span class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600"></span>
-                                选择中…
-                              </span>
-                              <span
-                                v-else-if="isProductSelected(item)"
-                                class="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600"
-                              >
-                                <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
-                                </svg>
-                                {{ isOrderSubmitted ? '已下单' : '已选中' }}
-                              </span>
-                              <span v-else-if="!isOrderSubmitted" class="text-[11px] font-medium text-indigo-500">点击选择</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- Actions -->
-                    <div v-if="!isOrderSubmitted" class="mt-4 flex flex-col gap-2 sm:flex-row">
-                      <button
-                        type="button"
-                        class="flex-1 rounded-xl bg-indigo-600 py-2.5 text-[13px] font-semibold text-white shadow-sm shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
-                        :disabled="!canConfirmOrder"
-                        @click="confirmOrder"
-                      >确认下单</button>
-                      <button
-                        type="button"
-                        class="flex-1 rounded-xl border border-slate-200 bg-white py-2.5 text-[13px] font-medium text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
-                        :disabled="!canCancelOrder"
-                        @click="cancelOrder"
-                      >取消订单</button>
-                    </div>
+                    <OrderPreviewCard
+                      v-if="showDraftOrderCard && !isOrderSubmitted"
+                      :fields="orderFields"
+                      :filled-count="filledCount"
+                      :total-field-count="totalFieldCount"
+                      :order-completeness="orderCompleteness"
+                      :effective-service-type-display="effectiveServiceTypeDisplay"
+                      :selected-product="selectedProduct"
+                      :coverage-notice="coverageNotice"
+                      :missing-info-text="missingInfoText"
+                      :is-updating-order-info="isUpdatingOrderInfo"
+                      :updating-field-key="updatingFieldKey"
+                      :can-confirm-order="canConfirmOrder"
+                      :can-cancel-order="canCancelOrder"
+                      @update-field="updateOrderInfoField"
+                      @confirm="confirmOrder"
+                      @cancel="cancelOrder"
+                    />
                   </div>
                   <p class="mt-2 text-[11px] text-slate-400">{{ currentTime() }}</p>
                 </div>
@@ -949,114 +1028,29 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
       <!-- ── Right Panel ── -->
       <div class="hidden w-[300px] shrink-0 flex-col gap-3 overflow-y-auto lg:flex">
 
-        <!-- Order Card -->
-        <div class="flex flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-
-          <!-- Card header with circular progress -->
-          <div class="flex items-center gap-4 border-b border-slate-100 px-5 py-4">
-            <!-- Circular progress ring -->
-            <div class="relative h-[72px] w-[72px] shrink-0">
-              <svg class="-rotate-90" width="72" height="72" viewBox="0 0 80 80">
-                <circle cx="40" cy="40" :r="progressR" fill="none" stroke="#e2e8f0" stroke-width="5"/>
-                <circle
-                  cx="40" cy="40" :r="progressR" fill="none"
-                  :stroke="orderCompleteness === 100 ? '#10b981' : '#6366f1'"
-                  stroke-width="5" stroke-linecap="round"
-                  :stroke-dasharray="progressCircumference"
-                  :stroke-dashoffset="progressOffset"
-                  class="transition-all duration-500"
-                />
-              </svg>
-              <div class="absolute inset-0 flex flex-col items-center justify-center">
-                <span class="text-lg font-bold leading-none text-slate-800">{{ orderCompleteness }}<span class="text-xs font-normal">%</span></span>
-              </div>
-            </div>
-
-            <div class="min-w-0 flex-1">
-              <p class="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Draft Order</p>
-              <h2 class="mt-0.5 text-sm font-semibold text-slate-800">预下单卡片</h2>
-              <p class="mt-1 text-xs text-slate-500">已填写 <span class="font-semibold text-slate-700">{{ filledCount }}</span> / {{ totalFieldCount }} 项</p>
-            </div>
-          </div>
-
-          <!-- Fields -->
-          <div class="flex-1 overflow-y-auto p-3.5 space-y-2">
-            <div
-              v-for="field in orderFields"
-              :key="field.key"
-              class="group flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
-              :class="field.value ? 'border-emerald-100 bg-emerald-50/50' : 'border-slate-100 bg-slate-50/60'"
-            >
-              <span class="shrink-0 text-[15px] leading-none">{{ field.icon }}</span>
-              <div class="min-w-0 flex-1">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{{ field.label }}</p>
-                <p class="mt-0.5 truncate text-[13px] font-medium" :class="field.value ? 'text-slate-800' : 'text-slate-300'">
-                  {{ field.value || '待识别' }}
-                </p>
-              </div>
-              <div
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-all duration-300"
-                :class="field.value ? 'bg-emerald-500' : 'bg-slate-200'"
-              >
-                <svg class="h-3 w-3 text-white" :class="field.value ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
-                </svg>
-              </div>
-            </div>
-
-            <!-- Urgency field -->
-            <div
-              class="flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
-              :class="orderInfo.urgency ? urgencyConfig.bg + ' border-transparent' : 'border-slate-100 bg-slate-50/60'"
-            >
-              <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/80 text-[13px] font-bold shadow-sm" :class="urgencyConfig.color">
-                {{ urgencyConfig.icon }}
-              </span>
-              <div class="min-w-0 flex-1">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">紧急程度</p>
-                <p class="mt-0.5 text-[13px] font-medium" :class="orderInfo.urgency ? urgencyConfig.color : 'text-slate-300'">
-                  {{ urgencyConfig.label }}
-                </p>
-              </div>
-            </div>
-
-            <!-- Matched product summary (sidebar read-only) -->
-            <div
-              class="flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
-              :class="selectedProduct?.code ? 'border-indigo-100 bg-indigo-50/60' : 'border-slate-100 bg-slate-50/60'"
-            >
-              <span class="shrink-0 text-[15px] leading-none">📦</span>
-              <div class="min-w-0 flex-1">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">当前选中商品</p>
-                <p class="mt-0.5 truncate text-[13px] font-medium" :class="selectedProduct?.name ? 'text-slate-800' : 'text-slate-300'">
-                  {{ selectedProduct?.name || '待匹配' }}
-                </p>
-                <p v-if="selectedProduct?.code" class="mt-0.5 truncate text-[11px] text-slate-400">{{ selectedProduct.code }}</p>
-                <p v-if="hasProductOptions" class="mt-1 text-[10px] text-indigo-500">请在对话窗口选择商品</p>
-              </div>
-            </div>
-
-            <!-- Tip -->
-            <div class="mt-1 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3.5 py-3">
-              <p class="text-[10px] font-semibold uppercase tracking-wide text-indigo-400">示例语句</p>
-              <ul class="mt-1.5 space-y-1 text-[12px] leading-5 text-indigo-700/70">
-                <li>"1208 房卫生间水龙头漏水，比较急。"</li>
-                <li>"大堂空调噪音很大，麻烦来看一下。"</li>
-                <li>"帮我安装洗衣机，明天上午，货已经到了。"</li>
-                <li>"我要测量 306 房窗帘尺寸，本周五上午。"</li>
-                <li>"空调不制冷，下周一来修，货在路上。"</li>
-              </ul>
-            </div>
-          </div>
-
-          <!-- Action buttons -->
-          <div class="space-y-2 border-t border-slate-100 p-3.5">
-            <button
-              class="w-full rounded-xl border border-slate-200 py-2.5 text-[13px] font-medium text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700"
-              @click="resetOrder"
-            >清空卡片</button>
-          </div>
-        </div>
+        <OrderPreviewCard
+          v-if="showDraftOrderCard"
+          variant="sidebar"
+          :fields="orderFields"
+          :filled-count="filledCount"
+          :total-field-count="totalFieldCount"
+          :order-completeness="orderCompleteness"
+          :effective-service-type-display="effectiveServiceTypeDisplay"
+          :selected-product="selectedProduct"
+          :coverage-notice="coverageNotice"
+          :missing-info-text="missingInfoText"
+          :is-submitting-order="isSubmittingOrder"
+          :has-submission-failure="hasSubmissionFailure"
+          :submission-missing-text="submissionMissingText"
+          :is-updating-order-info="isUpdatingOrderInfo"
+          :updating-field-key="updatingFieldKey"
+          :can-confirm-order="canConfirmOrder"
+          :can-cancel-order="canCancelOrder"
+          @update-field="updateOrderInfoField"
+          @confirm="confirmOrder"
+          @cancel="cancelOrder"
+          @reset="resetOrder"
+        />
 
         <!-- API params card -->
         <div class="shrink-0 rounded-2xl border border-slate-200 bg-white shadow-sm">

@@ -42,3 +42,17 @@ class SelectProductResponse(BaseModel):
     session_id: str
     order_preview: OrderPreview
     message: str = Field(..., description="选择结果说明")
+
+
+class UpdateOrderInfoRequest(BaseModel):
+    updates: dict[str, object] = Field(
+        ...,
+        description="要更新的预下单字段，key 对应 order_preview.order_card.fields[].key",
+        examples=[{"contacts": "李四", "phone": "13600000000"}],
+    )
+
+
+class UpdateOrderInfoResponse(BaseModel):
+    session_id: str
+    order_preview: OrderPreview
+    message: str = Field(..., description="更新结果说明")

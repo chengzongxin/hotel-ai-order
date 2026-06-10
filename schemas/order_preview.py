@@ -79,7 +79,44 @@ class ProductSection(BaseModel):
     query: str | None = Field(default=None, description="本轮检索使用的 query")
     feedback: str | None = Field(default=None, description="面向用户的匹配说明文案")
     selected_code: str | None = Field(default=None, description="当前选中的商品编码")
+    selection_rejected: bool = Field(default=False, description="用户是否选择了以上都不符合")
     items: list[ProductOption] = Field(default_factory=list, description="全部候选商品，按 rank 排序")
+
+
+class OrderCardField(BaseModel):
+    """预下单卡片字段，前端直接按列表渲染。"""
+
+    key: str = Field(..., description="字段 key")
+    label: str = Field(..., description="展示标签")
+    value: Any = Field(default=None, description="展示值")
+    required: bool = Field(default=False, description="是否必填")
+    source: str = Field(default="system", description="字段来源：user / system / product")
+    editable: bool = Field(default=True, description="前端是否可编辑")
+    input_type: str = Field(default="text", description="输入类型：text / textarea / select / datetime")
+    options: list[dict[str, str]] = Field(default_factory=list, description="可选项，仅 select 使用")
+
+
+class OrderCardSection(BaseModel):
+    """预下单卡片配置。"""
+
+    card_type: str | None = Field(default=None, description="卡片类型")
+    title: str | None = Field(default=None, description="卡片标题")
+    fields: list[OrderCardField] = Field(default_factory=list, description="卡片字段")
+
+
+class CoverageSection(BaseModel):
+    """托管维修维保范围校验结果。"""
+
+    checked: bool = Field(default=False, description="是否已校验维保范围")
+    covered: bool | None = Field(default=None, description="是否在当前维保卡范围内；非托管维修为 null")
+    reason: str | None = Field(default=None, description="范围校验或降级原因")
+    effective_service_type: str | None = Field(default=None, description="校验后的最终下单服务类型")
+    hosting_card_status: int | str | None = Field(default=None, description="维保卡状态")
+    hosting_card_id: int | str | None = Field(default=None, description="维保卡 ID")
+    hosting_card_name: str | None = Field(default=None, description="维保套餐名称")
+    spu_id: int | str | None = Field(default=None, description="托管维修 SPU ID")
+    spu_name: str | None = Field(default=None, description="托管维修 SPU 名称")
+    second_area_id: int | str | None = Field(default=None, description="托管维修二级区域 ID")
 
 
 class SubmissionSection(BaseModel):
@@ -93,14 +130,22 @@ class SubmissionSection(BaseModel):
 class OrderPreview(BaseModel):
     """对话过程中的订单预览，供前端侧边栏/卡片渲染。"""
 
+    ui_phase: str | None = Field(default=None, description="前端展示阶段：product_selection / pre_order / submitted / cancelled")
     service_type: str | None = Field(default=None, description="服务类型")
     service_type_display: str | None = Field(
         default=None,
         description="展示用服务类型，如 托管维修（客房）",
     )
+    effective_service_type: str | None = Field(default=None, description="最终用于校验和提交的服务类型")
+    effective_service_type_display: str | None = Field(
+        default=None,
+        description="展示用最终服务类型，如 单次维修服务",
+    )
     status: OrderStatus | str | None = Field(default=None, description="订单状态")
     order_info: OrderInfo = Field(default_factory=OrderInfo, description="已收集的订单信息")
     products: ProductSection = Field(default_factory=ProductSection, description="商品匹配与选择")
+    order_card: OrderCardSection = Field(default_factory=OrderCardSection, description="预下单卡片字段配置")
+    coverage: CoverageSection = Field(default_factory=CoverageSection, description="托管维修维保范围校验结果")
     missing_info: list[str] = Field(default_factory=list, description="仍需用户补充的字段名")
     submission: SubmissionSection = Field(default_factory=SubmissionSection, description="提交阶段数据")
 
@@ -139,11 +184,12 @@ def build_product_section(
     search_status: str | None,
     search_query: str | None,
     search_feedback: str | None,
+    selection_rejected: bool = False,
 ) -> ProductSection:
     """将状态机中的商品列表映射为 API 对外结构。"""
     from graph.products import resolve_selected_code
 
-    resolved_code = resolve_selected_code(products, selected_code)
+    resolved_code = resolve_selected_code(products, selected_code, default_to_first=False)
 
     items = [
         product_raw_to_option(raw, rank=index, selected_code=resolved_code)
@@ -156,6 +202,7 @@ def build_product_section(
         query=search_query,
         feedback=search_feedback,
         selected_code=resolved_code,
+        selection_rejected=selection_rejected,
         items=items,
     )
 
@@ -169,24 +216,43 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     selected_code = state.get("selected_product_code")
     real_order_payload = state.get("real_order_payload") or {}
     real_order_result = state.get("real_order_result") or {}
+    coverage_result = state.get("coverage_result") or {}
 
     if (
         not order_info_raw
         and not products
         and not real_order_payload
         and not real_order_result
+        and not coverage_result
+        and not state.get("order_card_fields")
     ):
         return None
 
     search_status, search_query, search_feedback = derive_product_section_fields(state)
     service_type = state.get("service_type")
     if not service_type and products:
-        selected = get_selected_product(products, selected_code)
+        selected = get_selected_product(products, selected_code, default_to_first=False)
         service_type = selected.get("service_order_type") or None
+    ui_phase = state.get("ui_phase")
+    if not ui_phase:
+        status = state.get("status")
+        if status in {"submitted", "cancelled"}:
+            ui_phase = status
+        elif selected_code and state.get("order_card_fields"):
+            ui_phase = "pre_order"
+        elif products and not state.get("product_selection_rejected"):
+            ui_phase = "product_selection"
+        elif order_info_raw:
+            ui_phase = "collecting"
+        else:
+            ui_phase = "idle"
 
     return OrderPreview(
+        ui_phase=ui_phase,
         service_type=service_type,
         service_type_display=state.get("service_type_display"),
+        effective_service_type=state.get("effective_service_type") or service_type,
+        effective_service_type_display=state.get("effective_service_type_display") or state.get("service_type_display"),
         status=state.get("status"),
         order_info=OrderInfo.model_validate(order_info_raw),
         products=build_product_section(
@@ -195,7 +261,18 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
             search_status=search_status,
             search_query=search_query,
             search_feedback=search_feedback,
+            selection_rejected=bool(state.get("product_selection_rejected")),
         ),
+        order_card=OrderCardSection(
+            card_type=state.get("order_submit_route"),
+            title=state.get("effective_service_type_display") or state.get("service_type_display"),
+            fields=[
+                OrderCardField.model_validate(field)
+                for field in (state.get("order_card_fields") or [])
+                if isinstance(field, dict)
+            ],
+        ),
+        coverage=CoverageSection.model_validate(coverage_result),
         missing_info=state.get("missing_info") or [],
         submission=SubmissionSection(
             payload=real_order_payload,
