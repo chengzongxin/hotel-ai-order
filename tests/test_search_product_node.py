@@ -144,8 +144,9 @@ async def test_submit_node_keeps_pre_order_when_real_submit_disabled(monkeypatch
 
     result = await submit_node(state)
 
-    assert result["status"] == "confirming"
-    assert result["ui_phase"] == "pre_order"
+    assert result["phase"] == "pre_order"
+    assert result["submission"]["state"] == "disabled"
+    assert result["submission"]["failure_code"] == "submit_disabled"
     assert result["order_info"] == state["order_info"]
     assert result["order_card_fields"] == state["order_card_fields"]
     assert result["missing_info"] == []
@@ -159,7 +160,11 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
             "status": "success",
             "message": "single order submitted",
             "data": {
-                "request_payload": {"serviceProductCode": "A"},
+                "request_payload": {
+                    "serviceProductCode": "A",
+                    "contacts": "默认联系人",
+                    "phone": "13900001111",
+                },
                 "missing_fields": [],
                 "submit_enabled": True,
                 "submitted": True,
@@ -187,13 +192,19 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
         }
     )
 
-    assert result["status"] == "submitted"
-    assert result["ui_phase"] == "submitted"
-    assert result["last_order"]["order_id"] == "SO123"
+    assert result["phase"] == "submitted"
+    assert result["submission"]["state"] == "succeeded"
+    assert result["submission"]["order_no"] == "SO123"
+    assert result["last_order"]["order_no"] == "SO123"
+    assert result["submitted_order"]["order_no"] == "SO123"
+    assert result["submitted_order"]["contacts"] == "默认联系人"
+    assert result["submitted_order"]["phone"] == "13900001111"
     assert result["order_info"] == {}
     assert result["missing_info"] == []
     assert result["products"] == []
     assert result["selected_product_code"] is None
-    assert result["real_order_payload"] == {}
-    assert result["real_order_result"] == {}
-    assert build_order_preview(result) is None
+    preview = build_order_preview(result)
+    assert preview is not None
+    assert preview["phase"] == "submitted"
+    assert preview["submission"]["state"] == "succeeded"
+    assert preview["submitted_order"]["order_no"] == "SO123"

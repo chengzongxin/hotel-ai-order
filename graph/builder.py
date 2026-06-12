@@ -39,7 +39,7 @@ from graph.products import (
     resolve_selected_code,
 )
 from graph.state import AgentState
-from graph.submission import get_effective_service_type, submit_order_from_state
+from graph.submission import empty_submission, get_effective_service_type, submit_order_from_state
 from memory.postgres_log import save_conversation_log
 from schemas.user import (
     SessionAccessError,
@@ -54,7 +54,6 @@ from tools.product_search import search_product_tool
 
 MAX_RETRY_COUNT = 2
 
-ACTIVE_ORDER_STATUSES = {"collecting", "confirming"}
 CANCEL_ORDER_KEYWORDS = ("取消", "不用了", "不提交", "先算了", "撤销", "放弃", "不要了")
 PUBLIC_AREA_KEYWORDS = (
     "公区",
@@ -101,6 +100,7 @@ PHASE_PRE_ORDER = "pre_order"
 PHASE_COLLECTING = "collecting"
 PHASE_SUBMITTED = "submitted"
 PHASE_CANCELLED = "cancelled"
+ACTIVE_ORDER_PHASES = {PHASE_COLLECTING, PHASE_PRODUCT_SELECTION, PHASE_PRE_ORDER}
 
 def resolve_order_submit_route(service_type: str | None) -> str | None:
     route_map = {
@@ -172,7 +172,7 @@ def emit_status(step: str, message: str) -> None:
 
 
 def has_active_order(state: AgentState) -> bool:
-    return state.get("status") in ACTIVE_ORDER_STATUSES
+    return state.get("phase") in ACTIVE_ORDER_PHASES
 
 
 def is_cancel_request(text: str) -> bool:
@@ -370,7 +370,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "node.intent.input",
         last_user_message=get_last_human_message(state["messages"]),
         message_count=len(state["messages"]),
-        status=state.get("status"),
+        phase=state.get("phase"),
     )
     emit_status("intent_node", "正在识别意图并提取订单信息...")
     llm = get_llm().with_structured_output(IntentResult)
@@ -381,7 +381,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
                     "intent/intent.md",
                     conversation_history=get_extractor_history(state),
                     user_input=get_last_human_message(state["messages"]),
-                    status=state.get("status") or "idle",
+                    status=state.get("phase") or PHASE_IDLE,
                     last_order=state.get("last_order", {}),
                 )
             ),
@@ -394,12 +394,12 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     intent = "cancel_order" if user_cancelled else result.intent
     emit_status("intent_node", f"已识别意图：{intent}")
 
-    status = state.get("status")
+    phase = state.get("phase")
     if intent in {"create_order", "confirm_order"}:
-        status = "collecting"
+        phase = PHASE_COLLECTING
         emit_status("intent_node", "正在整理订单信息...")
     elif intent in {"smalltalk", "unknown"} and not has_active_order(state):
-        status = state.get("status") or "idle"
+        phase = state.get("phase") or PHASE_IDLE
         emit_status("intent_node", "正在准备辅助回复...")
     elif intent == "cancel_order":
         emit_status("intent_node", "已收到取消请求...")
@@ -457,25 +457,23 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         order_info["user_cancelled"] = user_cancelled
     output: dict[str, object] = {
         "intent": intent,
-        "status": status,
+        "phase": phase,
         "order_info": order_info,
         "step": "intent_node",
         "last_user_message": last_user_message,
     }
-    if intent in {"create_order", "confirm_order"} and state.get("status") == "submitted":
+    if intent in {"create_order", "confirm_order"} and state.get("phase") == PHASE_SUBMITTED:
         output.update(
             {
                 "products": [],
                 "selected_product_code": None,
-                "real_order_payload": {},
-                "real_order_result": {},
-                "real_order_missing_fields": [],
+                "submission": empty_submission(),
                 "effective_service_type": None,
                 "coverage_result": {},
                 "order_submit_route": None,
                 "order_context": {},
                 "order_card_fields": [],
-                "ui_phase": PHASE_IDLE,
+                "submitted_order": {},
                 "product_selection_rejected": False,
             }
         )
@@ -502,8 +500,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
             "order_card_fields": [],
             "product_selection_rejected": True,
             "missing_info": [],
-            "status": "collecting",
-            "ui_phase": PHASE_COLLECTING,
+            "phase": PHASE_COLLECTING,
             "step": "search_product_node",
         }
         trace_logger("node.search_product.rejected", **output)
@@ -523,7 +520,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
                 "service_type": service_type,
                 "order_info": normalized_order_info,
                 "product_selection_rejected": False,
-                "ui_phase": PHASE_PRE_ORDER,
+                "phase": PHASE_PRE_ORDER,
                 "step": "search_product_node",
             }
             trace_logger("node.search_product.selected_by_text", selection=selection, **output)
@@ -564,9 +561,9 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
     data = result.get("data", {})
     products = data.get("products") or []
     top_product = get_selected_product(products, None, default_to_first=True)
-    status = "success" if products else "no_match"
+    search_status = "success" if products else "no_match"
     if result.get("status") != "success":
-        status = "error"
+        search_status = "error"
 
     # service_type 完全由 Top1 商品决定，匹配失败则置 null
     service_type = top_product.get("service_order_type") or None
@@ -589,7 +586,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         "order_info": normalized_order_info,
         "product_selection_rejected": False,
         "order_card_fields": [],
-        "ui_phase": PHASE_PRODUCT_SELECTION if products else PHASE_COLLECTING,
+        "phase": PHASE_PRODUCT_SELECTION if products else PHASE_COLLECTING,
         "step": "search_product_node",
     }
     trace_logger(
@@ -597,7 +594,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         tool_status=result.get("status"),
         tool_error_code=result.get("error_code"),
         tool_message=result.get("message"),
-        search_status=status,
+        search_status=search_status,
         **output,
     )
     return output
@@ -702,7 +699,7 @@ async def prepare_order_context_node(state: AgentState) -> dict[str, object]:
     output = {
         "order_context": order_context,
         "order_card_fields": order_card_fields,
-        "ui_phase": PHASE_PRE_ORDER,
+        "phase": PHASE_PRE_ORDER,
         "step": "prepare_order_context_node",
     }
     trace_logger("node.prepare_order_context.output", service_type=service_type, **output)
@@ -718,8 +715,7 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
         return {
             "missing_info": ["selected_product"],
             "retry_count": state.get("retry_count", 0),
-            "status": "collecting",
-            "ui_phase": PHASE_PRODUCT_SELECTION,
+            "phase": PHASE_PRODUCT_SELECTION,
             "step": "validate_order_node",
         }
 
@@ -749,8 +745,7 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
         "missing_info": missing_info,
         "order_info": order_info,
         "retry_count": retry_count,
-        "status": "collecting" if missing_info else "confirming",
-        "ui_phase": PHASE_PRE_ORDER,
+        "phase": PHASE_PRE_ORDER,
         "step": "validate_order_node",
     }
     trace_logger(
@@ -848,7 +843,7 @@ async def build_topic_boundary_response(state: AgentState) -> str:
         "ask/off_topic.md",
         last_user_message=get_last_human_message(state.get("messages", [])),
         active_order=active_order,
-        status=state.get("status") or "idle",
+        status=state.get("phase") or PHASE_IDLE,
         order_info=state.get("order_info", {}) if active_order else {},
         last_order=state.get("last_order", {}),
         missing_info=missing_info,
@@ -913,7 +908,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     output = {
         "messages": [AIMessage(content=question)],
         "step": "ask_node",
-        "status": state.get("status") or "idle",
+        "phase": state.get("phase") or PHASE_IDLE,
         "off_topic_count": off_topic_count,
     }
     if is_topic_deviation and not has_active_order(state):
@@ -935,7 +930,7 @@ async def assist_node(state: AgentState) -> dict[str, object]:
         "node.assist.input",
         message_count=len(state.get("messages", [])),
         intent=state.get("intent"),
-        status=state.get("status"),
+        phase=state.get("phase"),
     )
     answer_parts: list[str] = []
     latest_messages: list[BaseMessage] = []
@@ -972,7 +967,7 @@ async def assist_node(state: AgentState) -> dict[str, object]:
     return {
         "messages": [AIMessage(content=str(answer))],
         "step": "assist_node",
-        "status": state.get("status") or "idle",
+        "phase": state.get("phase") or PHASE_IDLE,
     }
 
 
@@ -1031,8 +1026,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
     return {
         "messages": [AIMessage(content=confirmation_text)],
         "step": "confirm_node",
-        "status": "confirming",
-        "ui_phase": PHASE_PRE_ORDER,
+        "phase": PHASE_PRE_ORDER,
     }
 
 
@@ -1051,19 +1045,19 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "order_submit_route": None,
         "order_context": {},
         "order_card_fields": [],
-        "ui_phase": PHASE_CANCELLED,
-        "status": "cancelled",
+        "phase": PHASE_CANCELLED,
         "order_info": {},
         "products": [],
         "selected_product_code": None,
         "missing_info": [],
+        "submission": empty_submission(),
         "retry_count": 0,
         "off_topic_count": 0,
     }
     trace_logger(
         "node.cancel.output",
         answer=answer,
-        previous_status=state.get("status"),
+        previous_phase=state.get("phase"),
         previous_order_info=state.get("order_info", {}),
     )
     return output
@@ -1371,8 +1365,8 @@ async def select_product_in_session(
             "order_context": order_context,
             "order_card_fields": order_card_fields,
             "missing_info": missing_info,
-            "status": "collecting" if missing_info else "confirming",
-            "ui_phase": PHASE_PRE_ORDER,
+            "phase": PHASE_PRE_ORDER,
+            "submission": empty_submission(),
             "product_selection_rejected": False,
         }
         await graph.aupdate_state(config, update, as_node="search_product_node")
@@ -1449,8 +1443,8 @@ async def update_order_info_in_session(
             "order_context": order_context,
             "order_card_fields": order_card_fields,
             "missing_info": missing_info,
-            "status": "collecting" if missing_info else "confirming",
-            "ui_phase": PHASE_PRE_ORDER,
+            "phase": PHASE_PRE_ORDER,
+            "submission": empty_submission(),
         }
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
 
@@ -1508,8 +1502,8 @@ async def confirm_order_in_session(
             update = {
                 "order_info": order_info,
                 "missing_info": missing_info,
-                "status": "collecting",
-                "ui_phase": PHASE_PRE_ORDER,
+                "phase": PHASE_PRE_ORDER,
+                "submission": empty_submission(),
             }
             await graph.aupdate_state(config, update, as_node="validate_order_node")
             merged_state = dict(state)

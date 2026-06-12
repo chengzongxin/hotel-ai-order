@@ -4,14 +4,35 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class OrderStatus(str, Enum):
-    """订单生命周期状态。"""
+class OrderPhase(str, Enum):
+    """订单主流程阶段，同时决定前端展示哪类主卡片。"""
 
     IDLE = "idle"
     COLLECTING = "collecting"
-    CONFIRMING = "confirming"
+    PRODUCT_SELECTION = "product_selection"
+    PRE_ORDER = "pre_order"
     SUBMITTED = "submitted"
     CANCELLED = "cancelled"
+
+
+class SubmissionState(str, Enum):
+    """真实提交动作的状态。"""
+
+    NOT_ATTEMPTED = "not_attempted"
+    SUBMITTING = "submitting"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DISABLED = "disabled"
+
+
+class SubmissionFailureCode(str, Enum):
+    """提交失败原因，供前端选择文案和后续排查。"""
+
+    SUBMIT_DISABLED = "submit_disabled"
+    MISSING_REQUIRED_FIELDS = "missing_required_fields"
+    ORDER_NO_MISSING = "order_no_missing"
+    API_ERROR = "api_error"
+    UNKNOWN = "unknown"
 
 
 class UrgencyLevel(str, Enum):
@@ -120,17 +141,45 @@ class CoverageSection(BaseModel):
 
 
 class SubmissionSection(BaseModel):
-    """真实下单参数与结果（提交后才有内容）。"""
+    """真实下单动作的结构化结果。"""
 
-    payload: dict[str, Any] = Field(default_factory=dict, description="构造出的真实下单参数")
-    result: dict[str, Any] = Field(default_factory=dict, description="真实下单接口返回")
+    attempted: bool = Field(default=False, description="是否已经尝试过真实提交")
+    state: SubmissionState | str = Field(default=SubmissionState.NOT_ATTEMPTED, description="提交动作状态")
+    order_no: str | None = Field(default=None, description="真实订单号")
+    failure_code: SubmissionFailureCode | str | None = Field(default=None, description="失败类型")
+    failure_message: str | None = Field(default=None, description="面向前端展示的失败说明")
     missing_fields: list[str] = Field(default_factory=list, description="仍缺失的下单字段")
+    request_payload: dict[str, Any] = Field(default_factory=dict, description="构造出的真实下单参数")
+    response_payload: dict[str, Any] = Field(default_factory=dict, description="真实下单接口返回")
+
+
+class SubmittedOrder(BaseModel):
+    """提交成功后的订单快照，供成功卡片与历史追问使用。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    order_no: str
+    service_type: str | None = None
+    effective_service_type: str | None = None
+    product_code: str | None = None
+    product_name: str | None = None
+    product_order_type: str | None = None
+    room_number: str | None = None
+    product: str | None = None
+    fault: str | None = None
+    area: str | None = None
+    managed_repair_scope: str | None = None
+    urgency: UrgencyLevel | str | None = None
+    expected_start_time: str | None = None
+    goods_arrival_status: str | None = None
+    contacts: str | None = None
+    phone: str | None = None
 
 
 class OrderPreview(BaseModel):
     """对话过程中的订单预览，供前端侧边栏/卡片渲染。"""
 
-    ui_phase: str | None = Field(default=None, description="前端展示阶段：product_selection / pre_order / submitted / cancelled")
+    phase: OrderPhase | str = Field(default=OrderPhase.IDLE, description="订单主流程阶段")
     service_type: str | None = Field(default=None, description="服务类型")
     service_type_display: str | None = Field(
         default=None,
@@ -141,13 +190,13 @@ class OrderPreview(BaseModel):
         default=None,
         description="展示用最终服务类型，如 单次维修服务",
     )
-    status: OrderStatus | str | None = Field(default=None, description="订单状态")
     order_info: OrderInfo = Field(default_factory=OrderInfo, description="已收集的订单信息")
     products: ProductSection = Field(default_factory=ProductSection, description="商品匹配与选择")
     order_card: OrderCardSection = Field(default_factory=OrderCardSection, description="预下单卡片字段配置")
     coverage: CoverageSection = Field(default_factory=CoverageSection, description="托管维修维保范围校验结果")
     missing_info: list[str] = Field(default_factory=list, description="仍需用户补充的字段名")
     submission: SubmissionSection = Field(default_factory=SubmissionSection, description="提交阶段数据")
+    submitted_order: SubmittedOrder | None = Field(default=None, description="提交成功后的订单快照")
 
 
 def product_raw_to_option(
@@ -214,15 +263,18 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     order_info_raw = state.get("order_info") or {}
     products = state.get("products") or []
     selected_code = state.get("selected_product_code")
-    real_order_payload = state.get("real_order_payload") or {}
-    real_order_result = state.get("real_order_result") or {}
+    submission_raw = state.get("submission") or {}
+    request_payload = submission_raw.get("request_payload") or {}
+    response_payload = submission_raw.get("response_payload") or {}
+    submitted_order_raw = state.get("submitted_order") or state.get("last_order") or None
     coverage_result = state.get("coverage_result") or {}
 
     if (
         not order_info_raw
         and not products
-        and not real_order_payload
-        and not real_order_result
+        and not request_payload
+        and not response_payload
+        and not submitted_order_raw
         and not coverage_result
         and not state.get("order_card_fields")
     ):
@@ -233,27 +285,32 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     if not service_type and products:
         selected = get_selected_product(products, selected_code, default_to_first=False)
         service_type = selected.get("service_order_type") or None
-    ui_phase = state.get("ui_phase")
-    if not ui_phase:
-        status = state.get("status")
-        if status in {"submitted", "cancelled"}:
-            ui_phase = status
+    phase = state.get("phase")
+    if not phase:
+        if submitted_order_raw:
+            phase = OrderPhase.SUBMITTED
+        elif state.get("product_selection_rejected"):
+            phase = OrderPhase.COLLECTING
         elif selected_code and state.get("order_card_fields"):
-            ui_phase = "pre_order"
-        elif products and not state.get("product_selection_rejected"):
-            ui_phase = "product_selection"
+            phase = OrderPhase.PRE_ORDER
+        elif products:
+            phase = OrderPhase.PRODUCT_SELECTION
         elif order_info_raw:
-            ui_phase = "collecting"
+            phase = OrderPhase.COLLECTING
         else:
-            ui_phase = "idle"
+            phase = OrderPhase.IDLE
+
+    submission = SubmissionSection.model_validate(submission_raw)
+    submitted_order = None
+    if isinstance(submitted_order_raw, dict) and submitted_order_raw.get("order_no"):
+        submitted_order = SubmittedOrder.model_validate(submitted_order_raw)
 
     return OrderPreview(
-        ui_phase=ui_phase,
+        phase=phase,
         service_type=service_type,
         service_type_display=state.get("service_type_display"),
         effective_service_type=state.get("effective_service_type") or service_type,
         effective_service_type_display=state.get("effective_service_type_display") or state.get("service_type_display"),
-        status=state.get("status"),
         order_info=OrderInfo.model_validate(order_info_raw),
         products=build_product_section(
             products=products,
@@ -274,9 +331,6 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
         ),
         coverage=CoverageSection.model_validate(coverage_result),
         missing_info=state.get("missing_info") or [],
-        submission=SubmissionSection(
-            payload=real_order_payload,
-            result=real_order_result,
-            missing_fields=state.get("real_order_missing_fields") or [],
-        ),
+        submission=submission,
+        submitted_order=submitted_order,
     )

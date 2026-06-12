@@ -17,6 +17,11 @@ PHASE_SUBMITTED = "submitted"
 
 EmitTokenText = Callable[..., Awaitable[None]]
 
+SUBMISSION_NOT_ATTEMPTED = "not_attempted"
+SUBMISSION_SUCCEEDED = "succeeded"
+SUBMISSION_FAILED = "failed"
+SUBMISSION_DISABLED = "disabled"
+
 
 def get_effective_service_type(state: AgentState | dict[str, Any]) -> str | None:
     """返回最终用于校验和提交的服务类型。"""
@@ -26,6 +31,13 @@ def get_effective_service_type(state: AgentState | dict[str, Any]) -> str | None
 
 def format_service_type(service_type: str | None, order_info: dict[str, object]) -> str | None:
     return format_service_type_display(service_type, order_info)  # type: ignore[arg-type]
+
+
+def first_text(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def clear_active_order_state() -> dict[str, object]:
@@ -41,11 +53,85 @@ def clear_active_order_state() -> dict[str, object]:
         "order_info": {},
         "products": [],
         "selected_product_code": None,
-        "real_order_payload": {},
-        "real_order_result": {},
-        "real_order_missing_fields": [],
         "missing_info": [],
     }
+
+
+def empty_submission() -> dict[str, object]:
+    return {
+        "attempted": False,
+        "state": SUBMISSION_NOT_ATTEMPTED,
+        "order_no": None,
+        "failure_code": None,
+        "failure_message": None,
+        "missing_fields": [],
+        "request_payload": {},
+        "response_payload": {},
+    }
+
+
+def build_submission_result(
+    *,
+    submit_result: dict[str, Any],
+    request_payload: dict[str, Any],
+    submit_data: dict[str, Any],
+    missing_fields: list[str],
+    order_no: str | None,
+    is_submitted: bool,
+) -> dict[str, object]:
+    """把工具返回值归一化成前端可直接消费的提交状态。"""
+
+    base: dict[str, object] = {
+        "attempted": True,
+        "state": SUBMISSION_SUCCEEDED if is_submitted else SUBMISSION_FAILED,
+        "order_no": order_no if is_submitted else None,
+        "failure_code": None,
+        "failure_message": None,
+        "missing_fields": missing_fields,
+        "request_payload": request_payload,
+        "response_payload": submit_data,
+    }
+    if is_submitted:
+        return base
+
+    if submit_data.get("submit_enabled") is False:
+        base.update(
+            {
+                "state": SUBMISSION_DISABLED,
+                "failure_code": "submit_disabled",
+                "failure_message": "已生成真实下单参数，但当前未开启线上创建订单开关。",
+            }
+        )
+    elif missing_fields:
+        missing_text = "、".join(str(item) for item in missing_fields)
+        base.update(
+            {
+                "failure_code": "missing_required_fields",
+                "failure_message": f"真实下单参数仍缺少必填字段：{missing_text}。",
+            }
+        )
+    elif submit_data.get("submit_enabled") is True and submit_data:
+        base.update(
+            {
+                "failure_code": "order_no_missing",
+                "failure_message": "已调用创建订单接口，但没有返回可识别的订单号。",
+            }
+        )
+    elif submit_result.get("error_code"):
+        base.update(
+            {
+                "failure_code": "api_error",
+                "failure_message": str(submit_result.get("message") or "调用下单接口失败。"),
+            }
+        )
+    else:
+        base.update(
+            {
+                "failure_code": "order_no_missing",
+                "failure_message": "已调用创建订单接口，但没有返回可识别的订单号。",
+            }
+        )
+    return base
 
 
 async def submit_order_from_state(
@@ -76,25 +162,35 @@ async def submit_order_from_state(
     request_payload = submit_data.get("request_payload") or {}
     missing_fields = submit_data.get("missing_fields") or []
     is_submitted = bool(submit_data.get("submitted"))
+    order_no = str(submit_data.get("parent_order_no") or "") if is_submitted else None
+    submission = build_submission_result(
+        submit_result=submit_result,
+        request_payload=request_payload,
+        submit_data=submit_data,
+        missing_fields=missing_fields,
+        order_no=order_no,
+        is_submitted=is_submitted,
+    )
     submitted_order: dict[str, object] = {}
     if is_submitted:
-        order_id = str(submit_data.get("parent_order_no") or "")
         submitted_order = {
-            "order_id": order_id,
+            "order_no": order_no or "",
             "service_type": format_service_type(state.get("service_type"), state.get("order_info", {})),
             "effective_service_type": format_service_type(get_effective_service_type(state), state.get("order_info", {})),
             **order_info,
+            "contacts": first_text(order_info.get("contacts"), submit_data.get("contacts"), request_payload.get("contacts")),
+            "phone": first_text(order_info.get("phone"), submit_data.get("phone"), request_payload.get("phone")),
             "product_code": selected_product.get("service_product_code"),
             "product_name": selected_product.get("service_product_name"),
             "product_order_type": selected_product.get("service_order_type"),
             "selected_product": selected_product,
-            "real_order_payload": request_payload,
-            "real_order_result": submit_data,
+            "request_payload": request_payload,
+            "response_payload": submit_data,
             "coverage_result": state.get("coverage_result") or {},
         }
         answer = render_prompt(
             "submit/submit.md",
-            order_id=order_id,
+            order_id=order_no or "",
             service_type=format_service_type(get_effective_service_type(state), state.get("order_info", {})),
             order_info=order_info,
             matched_product=selected_product,
@@ -112,7 +208,7 @@ async def submit_order_from_state(
                 f"（{address_diagnostics.get('address_api_message') or '无错误信息'}）。"
                 "请更新用户端登录 token，或确认维保卡接口可返回酒店地址与联系人信息。"
             )
-        if not submit_data.get("submit_enabled"):
+        if submit_data.get("submit_enabled") is False:
             lead = "已根据用户端 App 的下单逻辑生成真实下单参数，但当前关闭了线上创建订单开关。"
         elif missing_fields:
             lead = "已根据用户端 App 的下单逻辑生成真实下单参数，但仍有必填参数缺失，暂未提交。"
@@ -131,9 +227,7 @@ async def submit_order_from_state(
     output = {
         "messages": [AIMessage(content=answer)],
         "step": "submit_node",
-        "real_order_payload": request_payload,
-        "real_order_result": submit_data,
-        "real_order_missing_fields": missing_fields,
+        "submission": submission,
         "products": state.get("products") or [],
         "selected_product_code": state.get("selected_product_code"),
         "missing_info": missing_fields,
@@ -143,17 +237,20 @@ async def submit_order_from_state(
     if is_submitted:
         output.update(
             {
-                "status": "submitted",
-                "ui_phase": PHASE_SUBMITTED,
+                "phase": PHASE_SUBMITTED,
                 "last_order": submitted_order,
+                "submitted_order": submitted_order,
                 **clear_active_order_state(),
             }
         )
+        output["submission"] = submission
+        output["phase"] = PHASE_SUBMITTED
+        output["last_order"] = submitted_order
+        output["submitted_order"] = submitted_order
     else:
         output.update(
             {
-                "status": "collecting" if missing_fields else "confirming",
-                "ui_phase": PHASE_PRE_ORDER,
+                "phase": PHASE_PRE_ORDER,
                 "service_type": state.get("service_type"),
                 "effective_service_type": state.get("effective_service_type"),
                 "coverage_result": state.get("coverage_result") or {},
@@ -169,6 +266,6 @@ async def submit_order_from_state(
         order_info=order_info,
         tool_status=submit_result.get("status"),
         real_submitted=submit_data.get("submitted"),
-        real_order_missing_fields=missing_fields,
+        submission=submission,
     )
     return output

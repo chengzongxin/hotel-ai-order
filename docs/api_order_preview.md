@@ -9,19 +9,21 @@
 1. **商品统一放在数组**：`order_preview.products.items[]`，前端直接渲染卡片列表。
 2. **字段语义化**：对外使用 `code` / `name` / `service_type`，不再暴露 Excel 原始列名。
 3. **选中态明确**：`products.selected_code` + 每个 item 的 `is_selected`。
-4. **可扩展**：提交相关数据放在 `submission` 区块，避免与收集/确认阶段混在一起。
+4. **阶段单一**：`phase` 同时表示订单主流程阶段和前端主卡片类型。
+5. **提交独立**：真实提交动作放在 `submission` 区块，用 `submission.state` 表达结果。
 
 ## order_preview 顶层结构
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| `phase` | string | `idle` / `collecting` / `product_selection` / `pre_order` / `submitted` / `cancelled` |
 | `service_type` | string \| null | 服务类型，如 `托管维修` |
 | `service_type_display` | string \| null | 展示文案，如 `托管维修（客房）` |
-| `status` | string \| null | `idle` / `collecting` / `confirming` / `submitted` / `cancelled` |
 | `order_info` | object | 用户已描述的订单信息 |
 | `products` | object | 商品检索与候选列表 |
 | `missing_info` | string[] | 仍需补充的字段名 |
-| `submission` | object | 真实下单参数与结果（提交后才有） |
+| `submission` | object | 真实提交动作状态 |
+| `submitted_order` | object \| null | 提交成功后的订单快照 |
 
 ### order_info
 
@@ -72,9 +74,14 @@
 
 | 字段 | 说明 |
 |------|------|
-| `payload` | 构造出的真实下单参数 |
-| `result` | 创建订单接口返回 |
+| `attempted` | 是否尝试过真实提交 |
+| `state` | `not_attempted` / `submitting` / `succeeded` / `failed` / `disabled` |
+| `order_no` | 真实订单号 |
+| `failure_code` | `submit_disabled` / `missing_required_fields` / `order_no_missing` / `api_error` / `unknown` |
+| `failure_message` | 可直接展示给前端用户或运维的失败说明 |
 | `missing_fields` | 仍缺失字段 |
+| `request_payload` | 构造出的真实下单参数 |
+| `response_payload` | 创建订单接口返回 |
 
 ## 流式事件（NDJSON）
 
@@ -121,7 +128,8 @@ Content-Type: application/json
 1. 当 `products.items.length > 0` 时展示商品卡片列表。
 2. 用 `item.is_selected` 或对比 `item.code === products.selected_code` 高亮当前选中项。
 3. 点击卡片调用 `select-product`，再用返回的 `order_preview` 刷新 UI。
-4. `status === "confirming"` 且 `missing_info` 为空时，展示确认按钮/引导用户回复「确认」。
+4. `phase === "pre_order"` 且 `missing_info` 为空时，展示确认按钮/引导用户回复「确认」。
+5. `submission.state === "failed" | "disabled"` 时，展示 `failure_message`。
 
 ## 状态机字段（LangGraph AgentState）
 
@@ -134,26 +142,13 @@ Content-Type: application/json
 
 对外 `order_preview.products` 由上述状态在 API 层推导（`status` / `query` / `feedback`），前端无需感知状态机细节。
 
-## 迁移说明（Breaking Change）
-
-以下字段已从 **API 响应** 和 **状态机** 移除：
-
-| 旧字段 | 新字段 |
-|--------|--------|
-| `matched_product` | `products` + `selected_product_code`（状态机） / `products.items` + `products.selected_code`（API） |
-| `product_candidates` | `products` / `products.items` |
-| （旧状态机 `product_search_*`） | `products.status` / `products.query` / `products.feedback`（API 层推导，不再写入 state） |
-| `real_order_payload` | `submission.payload` |
-| `real_order_result` | `submission.result` |
-| `real_order_missing_fields` | `submission.missing_fields` |
-
 ## 示例
 
 ```json
 {
   "service_type": "托管维修",
   "service_type_display": "托管维修（客房）",
-  "status": "confirming",
+  "phase": "pre_order",
   "order_info": {
     "room_number": "301",
     "product": "门锁",
@@ -196,9 +191,15 @@ Content-Type: application/json
   },
   "missing_info": [],
   "submission": {
-    "payload": {},
-    "result": {},
-    "missing_fields": []
-  }
+    "attempted": false,
+    "state": "not_attempted",
+    "order_no": null,
+    "failure_code": null,
+    "failure_message": null,
+    "missing_fields": [],
+    "request_payload": {},
+    "response_payload": {}
+  },
+  "submitted_order": null
 }
 ```

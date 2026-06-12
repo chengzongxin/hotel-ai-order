@@ -105,40 +105,44 @@ flowchart TD
 
 | 节点 | 主要职责 | 关键输入/输出 |
 | --- | --- | --- |
-| `intent_node` | 调用结构化 LLM，识别 `intent` 并抽取 `order_info`。提交成功后的新订单只看最新用户输入，避免旧订单被重新抽取。 | 输入 `messages`、`last_order`、`status`；输出 `intent`、`order_info`、`status`、`last_user_message` |
-| `search_product_node` | 根据 `product + fault + 用户原文` 生成检索 query，调用 `search_product_tool` 取 Top3；也处理用户输入"1/2/3/以上都不符合"。 | 输出 `products`、`selected_product_code`、`service_type`、`ui_phase` |
+| `intent_node` | 调用结构化 LLM，识别 `intent` 并抽取 `order_info`。提交成功后的新订单只看最新用户输入，避免旧订单被重新抽取。 | 输入 `messages`、`last_order`、`phase`；输出 `intent`、`order_info`、`phase`、`last_user_message` |
+| `search_product_node` | 根据 `product + fault + 用户原文` 生成检索 query，调用 `search_product_tool` 取 Top3；也处理用户输入"1/2/3/以上都不符合"。 | 输出 `products`、`selected_product_code`、`service_type`、`phase` |
 | `coverage_node` | 托管维修商品校验维保卡覆盖范围；非托管维修跳过；范围外时 `effective_service_type` 可降级为单次维修。 | 输出 `coverage_result`、`effective_service_type`、`order_submit_route` |
-| `prepare_order_context_node` | 读取维保卡、用户资料、地址、全局配置等默认值，并由 `graph/order_fields.py` 生成前端卡片字段。 | 输出 `order_context`、`order_card_fields`、`ui_phase=pre_order` |
-| `validate_order_node` | 按最终服务类型校验必填字段，合并卡片必填项，决定继续追问还是进入确认。 | 输出 `missing_info`、`status=collecting/confirming` |
+| `prepare_order_context_node` | 读取维保卡、用户资料、地址、全局配置等默认值，并由 `graph/order_fields.py` 生成前端卡片字段。 | 输出 `order_context`、`order_card_fields`、`phase=pre_order` |
+| `validate_order_node` | 按最终服务类型校验必填字段，合并卡片必填项，决定继续追问还是进入确认。 | 输出 `missing_info`、`phase=pre_order` |
 | `ask_node` | 对缺失字段生成追问；处理商品不合适、偏题、重复追问等场景。 | 输出 AI 消息、`off_topic_count` |
 | `assist_node` | 无活跃订单时，使用 `create_agent()` 辅助智能体处理闲聊或简单问题。 | 输出辅助回复 |
-| `confirm_node` | 信息完整后生成确认提示；如果本轮已经明确 `user_confirmed=true`，路由会进入提交。 | 输出确认话术、`status=confirming` |
-| `submit_node` | 调用 `graph/submission.py::submit_order_from_state`，构造真实参数并提交订单。成功后写入 `last_order` 并清空活跃订单状态。 | 输出 `real_order_payload`、`real_order_result`、`status=submitted` |
-| `cancel_node` | 用户取消时清空当前订单相关状态。 | 输出 `status=cancelled`、空 `order_info/products` |
+| `confirm_node` | 信息完整后生成确认提示；如果本轮已经明确 `user_confirmed=true`，路由会进入提交。 | 输出确认话术、`phase=pre_order` |
+| `submit_node` | 调用 `graph/submission.py::submit_order_from_state`，构造真实参数并提交订单。成功后写入 `submitted_order/last_order` 并清空活跃订单状态。 | 输出 `submission`、`phase=submitted/pre_order` |
+| `cancel_node` | 用户取消时清空当前订单相关状态。 | 输出 `phase=cancelled`、空 `order_info/products` |
 
 ## 状态字段与生命周期
 
 `AgentState` 是整个系统的"共享记忆"。LangGraph checkpoint 会按用户和会话保存它，所以多轮对话不是靠前端记忆，而是靠后端状态恢复。
 
-常见生命周期：
+常见主流程：
 
 ```text
 idle
   ↓ 用户开始下单
 collecting
-  ↓ 商品已选、字段补齐
-confirming
+  ↓ 匹配到候选商品
+product_selection
+  ↓ 商品已选
+pre_order
   ↓ 确认并真实提交成功
 submitted
 
-任意 collecting/confirming 阶段都可以取消：
-collecting / confirming → cancelled
+任意 collecting/product_selection/pre_order 阶段都可以取消：
+collecting / product_selection / pre_order → cancelled
 ```
 
-两个字段容易混淆：
+真实提交动作不再混在主流程字段里，而是由 `submission.state` 单独表达：
 
-- `status`：订单业务生命周期，控制能否确认、取消、提交。
-- `ui_phase`：前端展示阶段，控制展示商品选择卡、预下单卡、提交成功卡。
+```text
+not_attempted → submitting → succeeded
+                         ↘ failed / disabled
+```
 
 关键状态字段：
 
@@ -147,6 +151,7 @@ collecting / confirming → cancelled
 | `messages` | LangGraph 消息历史，使用 `add_messages` 追加 |
 | `user_id` | 当前会话所属用户，用于越权校验 |
 | `intent` | 本轮意图：`create_order`、`confirm_order`、`cancel_order`、`smalltalk`、`unknown` |
+| `phase` | 订单主流程阶段：`idle`、`collecting`、`product_selection`、`pre_order`、`submitted`、`cancelled` |
 | `order_info` | LLM 抽取和前端卡片编辑后合并的订单信息 |
 | `products` | 商品检索结果 Top3 |
 | `selected_product_code` | 当前选中的标准商品编码；未选中时为空 |
@@ -156,8 +161,8 @@ collecting / confirming → cancelled
 | `order_context` | 从用户端接口得到的地址、联系人、维保卡、配置等默认值 |
 | `order_card_fields` | 后端生成、前端直接渲染的预下单卡片字段 |
 | `missing_info` | 还需要用户补充的字段 |
-| `real_order_payload` | 构造出的真实下单请求参数 |
-| `real_order_result` | 真实下单接口返回 |
+| `submission` | 真实提交动作状态、请求参数、接口返回和失败原因 |
+| `submitted_order` | 成功提交后的订单快照，供成功卡片展示 |
 | `last_order` | 最近一次成功提交的订单摘要 |
 
 ## AI 对话与确定性操作
@@ -436,9 +441,9 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 ```json
 {"type":"session","session_id":"demo-session"}
 {"type":"status","step":"intent_node","message":"正在理解您的需求并提取订单信息..."}
-{"type":"preview","step":"search_product_node","order_preview":{"ui_phase":"product_selection"}}
+{"type":"preview","step":"search_product_node","order_preview":{"phase":"product_selection"}}
 {"type":"token","step":"confirm_node","content":"好的，收到。"}
-{"type":"final","session_id":"demo-session","answer":"好的，收到。信息已齐全...","order_preview":{"status":"confirming"}}
+{"type":"final","session_id":"demo-session","answer":"好的，收到。信息已齐全...","order_preview":{"phase":"pre_order"}}
 ```
 
 ### 非流式发起对话
@@ -456,8 +461,7 @@ curl -X POST http://localhost:8000/api/chat \
   "session_id": "demo-session",
   "answer": "请确认订单信息...",
   "order_preview": {
-    "ui_phase": "pre_order",
-    "status": "confirming",
+    "phase": "pre_order",
     "service_type": "托管维修",
     "effective_service_type": "托管维修",
     "order_info": {
@@ -490,10 +494,16 @@ curl -X POST http://localhost:8000/api/chat \
     },
     "missing_info": [],
     "submission": {
-      "payload": {},
-      "result": {},
-      "missing_fields": []
-    }
+      "attempted": false,
+      "state": "not_attempted",
+      "order_no": null,
+      "failure_code": null,
+      "failure_message": null,
+      "missing_fields": [],
+      "request_payload": {},
+      "response_payload": {}
+    },
+    "submitted_order": null
   }
 }
 ```
@@ -750,14 +760,14 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 
 | 前端 computed | 来源 | 用途 |
 | --- | --- | --- |
-| `uiPhase` | `order_preview.ui_phase` | 判断展示商品选择还是预下单卡 |
-| `previewStatus` | `order_preview.status` | 判断是否 collecting / confirming / submitted |
+| `phase` | `order_preview.phase` | 判断展示商品选择、预下单、成功还是取消状态 |
+| `submissionState` | `order_preview.submission.state` | 判断提交中、提交成功、提交失败或真实提交关闭 |
 | `productItems` | `order_preview.products.items` | 渲染候选商品 |
 | `selectedProductCode` | `order_preview.products.selected_code` | 判断当前选中商品 |
 | `orderFields` | `order_preview.order_card.fields` | 渲染后端生成的预下单字段 |
 | `missingInfoText` | `order_preview.missing_info` | 展示缺失字段 |
 | `coverageNotice` | `order_preview.coverage` | 展示维保范围提示 |
-| `submittedOrderId` | `order_preview.submission.result` | 展示真实单号 |
+| `submittedOrderId` | `order_preview.submission.order_no` / `order_preview.submitted_order.order_no` | 展示真实单号 |
 
 前端调用链：
 
@@ -774,7 +784,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 - 商品卡片必须使用后端返回的 `selected_code` 判断选中态，不要按数组下标保存选择。
 - 卡片编辑后必须调用后端更新 checkpoint，否则真实提交会继续使用旧字段。
 - 确认按钮不要再发送普通聊天消息，应该调用确定性 `/confirm` 接口。
-- 提交成功后后端会清空活跃订单字段，前端如果看到 `status=submitted`，只展示成功状态和单号，不应继续展示可编辑预下单卡。
+- 提交成功后后端会清空活跃订单字段，前端如果看到 `phase=submitted` 或 `submission.state=succeeded`，只展示成功卡片和 `submitted_order` 快照，不应继续展示可编辑预下单卡。
 - `apiParams` 只是本地调试辅助，生产环境应由网关或登录态注入真实 header。
 
 ## 后端注意事项
@@ -784,7 +794,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 - 修改订单字段时，要同步 `graph/order_fields.py`、`schemas/order_preview.py`、`frontend/src/types/order.ts`。
 - 修改状态字段时，要同步 `graph/state.py`、`build_order_preview_model()` 和前端 computed。
 - `order_card_fields` 是前端卡片的契约，字段 `key` 一旦发布要谨慎修改。
-- `submit_order_from_state()` 成功后必须清空 `products`、`selected_product_code`、`order_info`、`real_order_payload` 等活跃订单字段，否则后续对话会重新显示旧卡片。
+- `submit_order_from_state()` 成功后必须清空 `products`、`selected_product_code`、`order_info` 等活跃订单字段，但要保留 `submission` 和 `submitted_order` 给成功卡片展示。
 - `last_order` 用来回答"刚才那个订单"这类追问，不等于当前活跃订单。
 - 所有会话读取和更新前都要调用 `ensure_session_access()`，避免用户访问别人的 checkpoint。
 

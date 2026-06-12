@@ -38,21 +38,19 @@ class AgentState(TypedDict, total=False):
     # 下单卡片字段列表，由后端按当前订单类型生成，前端直接渲染。
     order_card_fields: list[dict[str, Any]]
 
-    # 前端展示阶段：idle、product_selection、pre_order、submitted、cancelled。
-    ui_phase: str | None
+    # 订单主流程阶段，同时决定前端展示哪类主卡片。
+    phase: str | None
 
     # 用户选择“以上都不符合”后，用于触发重新描述和重新检索。
     product_selection_rejected: bool
-
-    # 当前订单生命周期：idle、collecting、confirming、submitted、cancelled。
-    status: str | None
 
     # 已从用户输入中提取出的结构化订单信息，例如 room_number、product、fault、
     # expected_start_time、goods_arrival_status、managed_repair_scope。
     order_info: dict[str, Any]
 
-    # 最近一次已提交的订单，供用户追问“刚才那个单号”时使用。
+    # 最近一次已提交的订单，供成功卡片和用户追问“刚才那个单号”时使用。
     last_order: dict[str, Any]
+    submitted_order: dict[str, Any]
 
     # 商品检索结果（按相似度排序）。
     products: list[dict[str, Any]]
@@ -60,10 +58,8 @@ class AgentState(TypedDict, total=False):
     # 当前选中的商品编码；未指定时默认取 products[0]。
     selected_product_code: str | None
 
-    # 按用户端 App 结构构造出的真实下单参数，以及真实接口返回结果。
-    real_order_payload: dict[str, Any]
-    real_order_result: dict[str, Any]
-    real_order_missing_fields: list[str]
+    # 真实提交动作状态，包括请求参数、接口返回、失败原因和订单号。
+    submission: dict[str, Any]
 
     # 仍然缺失、需要继续追问用户的订单信息名。
     missing_info: list[str]

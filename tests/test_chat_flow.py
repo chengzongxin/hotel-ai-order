@@ -75,8 +75,8 @@ def service_type(result: dict) -> str | None:
     return (result.get("order_preview") or {}).get("service_type")
 
 
-def status(result: dict) -> str | None:
-    return (result.get("order_preview") or {}).get("status")
+def phase(result: dict) -> str | None:
+    return (result.get("order_preview") or {}).get("phase")
 
 
 # ── 单轮完整信息 ──────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ class TestSingleTurnComplete:
             assert "制冷" in (info.get("fault") or "")
             # 单次维修服务类型会要求 expected_start_time，missing 中只剩该字段是正常的
             assert missing(result) in ([], ["expected_start_time"])
-            assert status(result) in ("confirming", "collecting")
+            assert phase(result) in ("pre_order", "collecting")
         finally:
             await clear_checkpoint_session(sid, user=TEST_USER)
 
@@ -138,14 +138,14 @@ class TestMissingField:
             products = (first_preview.get("products") or {}).get("items") or []
 
             # 新流程：只要匹配到商品，第一轮先让用户选商品，而不是马上追问房号。
-            assert first_preview.get("ui_phase") == "product_selection"
+            assert first_preview.get("phase") == "product_selection"
             assert products
 
             result = await chat(sid, "第一个")
 
             # 选完商品后进入信息校验，此时才应该发现缺少客房房号。
             assert "room_number" in missing(result)
-            assert status(result) == "collecting"
+            assert phase(result) in ("pre_order", "collecting")
             # AI 的回复里应有追问房号的意图
             answer = result.get("answer", "")
             assert any(kw in answer for kw in ("房间", "房号", "几号", "哪个房"))
@@ -163,8 +163,8 @@ class TestMissingField:
             info = order_info(result)
             assert info.get("room_number") == "1208"
             assert info.get("product") == "空调"
-            # 系统接受模糊 fault，进入后续步骤（collecting 或 confirming）
-            assert status(result) in ("collecting", "confirming")
+            # 系统接受模糊 fault，进入后续步骤（收集或预下单）
+            assert phase(result) in ("collecting", "pre_order")
         finally:
             await clear_checkpoint_session(sid, user=TEST_USER)
 
@@ -233,7 +233,7 @@ class TestCancelAndSmallTalk:
         try:
             await chat(sid, "1208房间空调不制冷。")
             result = await chat(sid, "取消，不用了。")
-            s = status(result)
+            s = phase(result)
             assert s in ("cancelled", "idle", None)
         finally:
             await clear_checkpoint_session(sid, user=TEST_USER)

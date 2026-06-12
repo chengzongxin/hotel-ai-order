@@ -16,6 +16,7 @@ const props = withDefaults(defineProps<{
   isSubmittingOrder?: boolean
   hasSubmissionFailure?: boolean
   submissionMissingText?: string
+  submissionFailureMessage?: string
   isUpdatingOrderInfo?: boolean
   updatingFieldKey?: string | null
   canConfirmOrder?: boolean
@@ -94,6 +95,7 @@ function displayValue(field: UiOrderField): string {
         :is-submitting-order="isSubmittingOrder"
         :has-submission-failure="hasSubmissionFailure"
         :submission-missing-text="submissionMissingText"
+        :submission-failure-message="submissionFailureMessage"
       />
 
       <div

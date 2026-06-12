@@ -86,7 +86,7 @@ async def test_first_turn_recommends_products_then_selects_first(monkeypatch, tr
     first_preview = preview(state)
     trace_step("order_preview after recommendations", preview=first_preview)
 
-    assert first_preview["ui_phase"] == "product_selection"
+    assert first_preview["phase"] == "product_selection"
     assert first_preview["products"]["selected_code"] is None
     assert [item["code"] for item in first_preview["products"]["items"]] == [
         "FAUCET_SMALL",
@@ -110,7 +110,7 @@ async def test_first_turn_recommends_products_then_selects_first(monkeypatch, tr
     selected_preview = preview(state)
     trace_step("order_preview after selection", preview=selected_preview)
 
-    assert selected_preview["ui_phase"] == "pre_order"
+    assert selected_preview["phase"] == "pre_order"
     assert selected_preview["products"]["selected_code"] == "FAUCET_SMALL"
     assert selected_preview["products"]["items"][0]["is_selected"] is True
     assert state["selected_product_code"] == "FAUCET_SMALL"
@@ -151,7 +151,7 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
     rejected_preview = preview(state)
     trace_step("order_preview after rejection", preview=rejected_preview)
 
-    assert rejected_preview["ui_phase"] == "collecting"
+    assert rejected_preview["phase"] == "collecting"
     assert rejected_preview["products"]["selection_rejected"] is True
     assert rejected_preview["products"]["items"] == []
     assert route_after_search_product(state) == "ask_node"
@@ -191,7 +191,7 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
     refined_preview = preview(state)
     trace_step("order_preview after refined search", preview=refined_preview)
 
-    assert refined_preview["ui_phase"] == "product_selection"
+    assert refined_preview["phase"] == "product_selection"
     assert refined_preview["products"]["selection_rejected"] is False
     assert [item["code"] for item in refined_preview["products"]["items"]] == [
         "AC_FAN_CLEAN",
@@ -253,7 +253,7 @@ async def test_managed_product_selection_keeps_hosting_coverage(monkeypatch, tra
     managed_preview = preview(state)
     trace_step("order_preview after coverage", preview=managed_preview)
 
-    assert managed_preview["ui_phase"] == "pre_order"
+    assert managed_preview["phase"] == "pre_order"
     assert managed_preview["service_type"] == "托管维修"
     assert managed_preview["effective_service_type"] == "托管维修"
     assert managed_preview["coverage"]["checked"] is True
@@ -310,7 +310,7 @@ async def test_install_and_measure_flows_select_first_product(
 
     first_preview = preview(state)
     trace_step("order_preview before install/measure selection", preview=first_preview)
-    assert first_preview["ui_phase"] == "product_selection"
+    assert first_preview["phase"] == "product_selection"
     assert first_preview["service_type"] == expected_service_type
     assert first_preview["products"]["selected_code"] is None
 
@@ -331,7 +331,7 @@ async def test_install_and_measure_flows_select_first_product(
     selected_preview = preview(state)
     trace_step("order_preview after install/measure selection", preview=selected_preview)
 
-    assert selected_preview["ui_phase"] == "pre_order"
+    assert selected_preview["phase"] == "pre_order"
     assert selected_preview["service_type"] == expected_service_type
     assert selected_preview["effective_service_type"] == expected_service_type
     assert selected_preview["products"]["selected_code"] == expected_code

@@ -7,6 +7,17 @@ const props = defineProps<{
   serviceType?: string | null
   selectedProduct?: ProductOption | null
   fields?: UiOrderField[]
+  submittedOrder?: {
+    order_no?: string | null
+    service_type?: string | null
+    effective_service_type?: string | null
+    product_name?: string | null
+    room_number?: string | null
+    area?: string | null
+    expected_start_time?: string | null
+    contacts?: string | null
+    phone?: string | null
+  } | null
 }>()
 
 function valueOf(keys: string[]): string | null {
@@ -14,10 +25,13 @@ function valueOf(keys: string[]): string | null {
   return field?.value?.trim() || null
 }
 
-const roomText = computed(() => valueOf(['area_room', 'room_number', 'roomNumber']) || '已记录')
-const contactText = computed(() => valueOf(['contacts']) || '已记录')
-const phoneText = computed(() => valueOf(['phone']) || '已记录')
-const expectedTimeText = computed(() => valueOf(['expected_time', 'expectedStartTime']) || '待服务人员确认')
+const orderNoText = computed(() => props.submittedOrder?.order_no || props.orderId || '系统已生成')
+const serviceTypeText = computed(() => props.submittedOrder?.effective_service_type || props.submittedOrder?.service_type || props.serviceType || '已识别')
+const productNameText = computed(() => props.submittedOrder?.product_name || props.selectedProduct?.name || '已匹配')
+const roomText = computed(() => props.submittedOrder?.room_number || props.submittedOrder?.area || valueOf(['area_room', 'room_number', 'roomNumber']) || '已记录')
+const contactText = computed(() => props.submittedOrder?.contacts || valueOf(['contacts']) || '已记录')
+const phoneText = computed(() => props.submittedOrder?.phone || valueOf(['phone']) || '已记录')
+const expectedTimeText = computed(() => props.submittedOrder?.expected_start_time || valueOf(['expected_time', 'expectedStartTime']) || '待服务人员确认')
 </script>
 
 <template>
@@ -47,18 +61,18 @@ const expectedTimeText = computed(() => valueOf(['expected_time', 'expectedStart
         <span class="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-700">已提交</span>
       </div>
       <p class="mt-3 break-all font-mono text-[15px] font-bold text-slate-800">
-        {{ orderId || '系统已生成' }}
+        {{ orderNoText }}
       </p>
     </div>
 
     <div class="relative mt-4 grid grid-cols-2 gap-3">
       <div class="rounded-2xl border border-white/70 bg-white/70 px-3.5 py-3">
         <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">服务类型</p>
-        <p class="mt-1 truncate text-[13px] font-semibold text-slate-800">{{ serviceType || '已识别' }}</p>
+        <p class="mt-1 truncate text-[13px] font-semibold text-slate-800">{{ serviceTypeText }}</p>
       </div>
       <div class="rounded-2xl border border-white/70 bg-white/70 px-3.5 py-3">
         <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">商品</p>
-        <p class="mt-1 truncate text-[13px] font-semibold text-slate-800">{{ selectedProduct?.name || '已匹配' }}</p>
+        <p class="mt-1 truncate text-[13px] font-semibold text-slate-800">{{ productNameText }}</p>
       </div>
       <div class="rounded-2xl border border-white/70 bg-white/70 px-3.5 py-3">
         <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">位置</p>

@@ -6,9 +6,31 @@ export interface ChatMessage {
   content: string
   time: string
   variant?: 'order_success'
+  orderSuccess?: {
+    orderId?: string | null
+    serviceType?: string | null
+    selectedProduct?: ProductOption | null
+    fields?: UiOrderField[]
+    submittedOrder?: SubmittedOrder | null
+  }
 }
 
 export type UrgencyLevel = 'low' | 'medium' | 'high' | 'urgent'
+
+export type OrderPhase =
+  | 'idle'
+  | 'collecting'
+  | 'product_selection'
+  | 'pre_order'
+  | 'submitted'
+  | 'cancelled'
+
+export type SubmissionState =
+  | 'not_attempted'
+  | 'submitting'
+  | 'succeeded'
+  | 'failed'
+  | 'disabled'
 
 export interface ProductOption {
   code?: string
@@ -74,13 +96,29 @@ export interface UiOrderField {
   options: Array<{ label: string; value: string }>
 }
 
+export interface SubmittedOrder {
+  order_no?: string | null
+  service_type?: string | null
+  effective_service_type?: string | null
+  product_code?: string | null
+  product_name?: string | null
+  room_number?: string | null
+  product?: string | null
+  fault?: string | null
+  area?: string | null
+  urgency?: UrgencyLevel | string | null
+  expected_start_time?: string | null
+  goods_arrival_status?: string | null
+  contacts?: string | null
+  phone?: string | null
+}
+
 export interface OrderPreview {
-  ui_phase?: string | null
+  phase?: OrderPhase | string | null
   service_type?: string | null
   service_type_display?: string | null
   effective_service_type?: string | null
   effective_service_type_display?: string | null
-  status?: string | null
   order_info?: {
     room_number?: string | null
     product?: string | null
@@ -95,10 +133,16 @@ export interface OrderPreview {
   coverage?: CoverageSection
   missing_info?: string[]
   submission?: {
-    payload?: Record<string, unknown>
-    result?: Record<string, unknown>
+    attempted?: boolean
+    state?: SubmissionState | string
+    order_no?: string | null
+    failure_code?: string | null
+    failure_message?: string | null
     missing_fields?: string[]
+    request_payload?: Record<string, unknown>
+    response_payload?: Record<string, unknown>
   }
+  submitted_order?: SubmittedOrder | null
 }
 
 export interface StreamEvent {

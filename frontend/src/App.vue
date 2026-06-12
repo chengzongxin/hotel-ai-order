@@ -70,8 +70,9 @@ const totalFieldCount = computed(() => Math.max(orderFields.value.length, 1))
 const orderCompleteness = computed(() => Math.round((filledCount.value / totalFieldCount.value) * 100))
 
 const orderInfo = computed(() => orderPreview.value?.order_info ?? {})
-const uiPhase = computed(() => orderPreview.value?.ui_phase ?? null)
-const previewStatus = computed(() => orderPreview.value?.status ?? null)
+const phase = computed(() => orderPreview.value?.phase ?? null)
+const submission = computed(() => orderPreview.value?.submission ?? {})
+const submittedOrder = computed(() => orderPreview.value?.submitted_order ?? null)
 const serviceTypeDisplay = computed(
   () => orderPreview.value?.service_type_display ?? orderPreview.value?.service_type ?? null,
 )
@@ -93,36 +94,31 @@ const selectedProduct = computed(
 )
 const backendOrderFields = computed(() => orderPreview.value?.order_card?.fields ?? [])
 const hasBackendOrderFields = computed(() => backendOrderFields.value.length > 0)
-const isProductSelectionPhase = computed(() => uiPhase.value === 'product_selection')
-const isPreOrderPhase = computed(() => uiPhase.value === 'pre_order' || previewStatus.value === 'confirming')
+const isProductSelectionPhase = computed(() => phase.value === 'product_selection')
+const isPreOrderPhase = computed(() => phase.value === 'pre_order')
 const isAwaitingProductSelection = computed(
   () => isProductSelectionPhase.value && hasProductOptions.value && !selectedProductCode.value && !productSelectionRejected.value,
 )
 const showDraftOrderCard = computed(() => isPreOrderPhase.value && Boolean(selectedProductCode.value) && hasBackendOrderFields.value)
-const submittedOrderId = computed(() => extractOrderId(orderPreview.value?.submission?.result))
-const isSubmittingOrder = computed(() => isSending.value && previewStatus.value === 'confirming')
-const submissionMissingFields = computed(() => orderPreview.value?.submission?.missing_fields ?? [])
-const hasSubmissionFailure = computed(
-  () =>
-    previewStatus.value === 'confirming'
-    && Boolean(orderPreview.value?.submission?.payload)
-    && !submittedOrderId.value
-    && (submissionMissingFields.value.length > 0 || Boolean(orderPreview.value?.submission?.result)),
-)
+const submittedOrderId = computed(() => submittedOrder.value?.order_no || submission.value.order_no || null)
+const submissionState = computed(() => submission.value.state ?? 'not_attempted')
+const isSubmittingOrder = computed(() => submissionState.value === 'submitting' || (isSending.value && isPreOrderPhase.value))
+const submissionMissingFields = computed(() => submission.value.missing_fields ?? [])
+const hasSubmissionFailure = computed(() => submissionState.value === 'failed' || submissionState.value === 'disabled')
+const submissionFailureMessage = computed(() => submission.value.failure_message || '')
 
 const canSubmit = computed(() =>
-  previewStatus.value === 'confirming' && missingInfo.value.length === 0
+  isPreOrderPhase.value && missingInfo.value.length === 0 && submissionState.value !== 'succeeded'
 )
 
 const hasProductOptions = computed(() => productItems.value.length > 0)
 
-const isOrderSubmitted = computed(() => previewStatus.value === 'submitted')
+const isOrderSubmitted = computed(() => phase.value === 'submitted' || submissionState.value === 'succeeded')
 
 const showChatOrderPanel = computed(() => {
-  const status = previewStatus.value
-  if (status === 'submitted') return false
-  if (status === 'cancelled') return false
-  if (!status || status === 'idle') return false
+  if (phase.value === 'submitted') return false
+  if (phase.value === 'cancelled') return false
+  if (!phase.value || phase.value === 'idle') return false
   if (productSelectionRejected.value) return false
   return (isProductSelectionPhase.value && productItems.value.length > 0) || showDraftOrderCard.value
 })
@@ -132,8 +128,7 @@ const canConfirmOrder = computed(
 )
 
 const canCancelOrder = computed(() => {
-  const status = previewStatus.value
-  return (status === 'collecting' || status === 'confirming') && !isSending.value
+  return ['collecting', 'product_selection', 'pre_order'].includes(String(phase.value)) && !isSending.value
 })
 
 const missingInfoLabels: Record<string, string> = {
@@ -360,9 +355,25 @@ function setMessageContent(id: number, content: string) {
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
 }
 
-function setMessageVariant(id: number, variant?: ChatMessage['variant']) {
+function buildOrderSuccessSnapshot(): NonNullable<ChatMessage['orderSuccess']> {
+  return {
+    orderId: submittedOrderId.value,
+    serviceType: effectiveServiceTypeDisplay.value,
+    selectedProduct: selectedProduct.value ? { ...selectedProduct.value } : null,
+    fields: orderFields.value.map((field) => ({
+      ...field,
+      options: field.options.map((option) => ({ ...option })),
+    })),
+    submittedOrder: submittedOrder.value ? { ...submittedOrder.value } : null,
+  }
+}
+
+function setMessageOrderSuccess(id: number) {
   const message = messages.value.find((item) => item.id === id)
-  if (message) message.variant = variant
+  if (message) {
+    message.variant = 'order_success'
+    message.orderSuccess = buildOrderSuccessSnapshot()
+  }
 }
 
 function appendMessageContent(id: number, content: string) {
@@ -387,17 +398,8 @@ function isProductSelected(item: ProductOption): boolean {
   return Boolean(item.is_selected || (item.code && item.code === activeCode))
 }
 
-function extractOrderId(result?: Record<string, unknown>): string | null {
-  if (!result) return null
-  const candidates = [result.parent_order_no, result.order_id, result.order_no]
-  for (const value of candidates) {
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return null
-}
-
 function isSubmittedPreview(preview?: OrderPreview | null): boolean {
-  return preview?.status === 'submitted'
+  return preview?.phase === 'submitted' || preview?.submission?.state === 'succeeded'
 }
 
 function formatMatchScore(score?: number | null): string {
@@ -521,7 +523,7 @@ async function confirmOrder() {
     const data = await res.json()
     applyOrderPreview(data.order_preview)
     if (isSubmittedPreview(data.order_preview)) {
-      setMessageVariant(assistantMessageId, 'order_success')
+      setMessageOrderSuccess(assistantMessageId)
     }
     setMessageContent(assistantMessageId, data.answer || '已处理确认下单请求。')
   } catch (err) {
@@ -627,7 +629,7 @@ async function sendStreamingMessage(content: string, assistantMessageId: number)
       }
       applyOrderPreview(event.order_preview)
       if (isSubmittedPreview(event.order_preview)) {
-        setMessageVariant(assistantMessageId, 'order_success')
+        setMessageOrderSuccess(assistantMessageId)
       }
       setMessageContent(assistantMessageId, streamedAnswer || event.answer || '我已收到，会继续为您处理。')
       return
@@ -883,10 +885,11 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                     <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
                     <OrderSuccessCard
                       v-if="message.variant === 'order_success'"
-                      :order-id="submittedOrderId"
-                      :service-type="effectiveServiceTypeDisplay"
-                      :selected-product="selectedProduct"
-                      :fields="orderFields"
+                      :order-id="message.orderSuccess?.orderId"
+                      :service-type="message.orderSuccess?.serviceType"
+                      :selected-product="message.orderSuccess?.selectedProduct"
+                      :fields="message.orderSuccess?.fields"
+                      :submitted-order="message.orderSuccess?.submittedOrder"
                     />
                     <div v-else-if="message.content" class="prose prose-sm" v-html="renderMarkdown(message.content)"></div>
                     <p v-else class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-[12px] text-indigo-600">
@@ -932,6 +935,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       :is-submitting-order="isSubmittingOrder"
                       :has-submission-failure="hasSubmissionFailure"
                       :submission-missing-text="submissionMissingText"
+                      :submission-failure-message="submissionFailureMessage"
                     />
 
                     <ProductSelectionCard
@@ -962,6 +966,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       :updating-field-key="updatingFieldKey"
                       :can-confirm-order="canConfirmOrder"
                       :can-cancel-order="canCancelOrder"
+                      :submission-failure-message="submissionFailureMessage"
                       @update-field="updateOrderInfoField"
                       @confirm="confirmOrder"
                       @cancel="cancelOrder"
@@ -1051,6 +1056,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
           :is-submitting-order="isSubmittingOrder"
           :has-submission-failure="hasSubmissionFailure"
           :submission-missing-text="submissionMissingText"
+          :submission-failure-message="submissionFailureMessage"
           :is-updating-order-info="isUpdatingOrderInfo"
           :updating-field-key="updatingFieldKey"
           :can-confirm-order="canConfirmOrder"

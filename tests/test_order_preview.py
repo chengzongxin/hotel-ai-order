@@ -61,8 +61,7 @@ def test_build_product_section_does_not_select_top1_without_user_choice():
 def test_build_order_preview_model_marks_product_selection_phase():
     preview = build_order_preview_model(
         {
-            "ui_phase": "product_selection",
-            "status": "collecting",
+            "phase": "product_selection",
             "order_info": {"room_number": "301", "product": "门锁", "fault": "打不开"},
             "products": [
                 {
@@ -79,7 +78,7 @@ def test_build_order_preview_model_marks_product_selection_phase():
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert payload["ui_phase"] == "product_selection"
+    assert payload["phase"] == "product_selection"
     assert payload["products"]["selected_code"] is None
     assert payload["order_card"]["fields"] == []
 
@@ -95,7 +94,7 @@ def test_build_order_preview_model_uses_single_products_field():
         {
             "service_type": "托管维修",
             "service_type_display": "托管维修（客房）",
-            "status": "confirming",
+            "phase": "pre_order",
             "order_info": {"room_number": "301", "product": "门锁", "fault": "打不开"},
             "products": [
                 {
@@ -122,7 +121,7 @@ def test_build_order_preview_model_includes_effective_service_type_and_coverage(
         {
             "service_type": "托管维修",
             "effective_service_type": "单次维修服务",
-            "status": "collecting",
+            "phase": "pre_order",
             "order_info": {"room_number": "301", "product": "门锁", "fault": "打不开"},
             "products": [
                 {
@@ -154,7 +153,7 @@ def test_build_order_preview_model_includes_effective_service_type_and_coverage(
 def test_build_order_preview_model_warns_for_low_confidence_products():
     preview = build_order_preview_model(
         {
-            "status": "collecting",
+            "phase": "product_selection",
             "order_info": {"room_number": "301", "product": "吹风的东西", "fault": "不冷"},
             "products": [
                 {
@@ -177,7 +176,7 @@ def test_build_order_preview_model_warns_for_low_confidence_products():
 def test_build_order_preview_model_warns_for_ambiguous_products():
     preview = build_order_preview_model(
         {
-            "status": "collecting",
+            "phase": "product_selection",
             "order_info": {"room_number": "301", "product": "门锁", "fault": "打不开"},
             "products": [
                 {

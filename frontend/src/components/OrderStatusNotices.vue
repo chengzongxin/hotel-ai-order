@@ -7,6 +7,7 @@ defineProps<{
   isSubmittingOrder?: boolean
   hasSubmissionFailure?: boolean
   submissionMissingText?: string
+  submissionFailureMessage?: string
 }>()
 </script>
 
@@ -57,7 +58,7 @@ defineProps<{
     >
       {{
         hasSubmissionFailure
-          ? (submissionMissingText ? `还需补齐：${submissionMissingText}` : '订单参数已生成，请确认接口返回后重试。')
+          ? (submissionFailureMessage || (submissionMissingText ? `还需补齐：${submissionMissingText}` : '提交未完成，请检查下单接口返回。'))
           : '正在调用下单接口，请不要关闭页面。'
       }}
     </p>

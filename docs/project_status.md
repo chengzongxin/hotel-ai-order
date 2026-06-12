@@ -255,7 +255,7 @@ USER_APP_DEFAULT_ADDRESS=...
 | --- | --- |
 | 低置信商品让用户点选 | 前端商品卡片 + `POST /select-product` |
 | ASR 容错 | 文档有 asr_001/002 用例，代码无置信度/二次确认逻辑 |
-| 确认/取消短路 | `status=confirming` 时减少重复 intent LLM 调用 |
+| 确认/取消短路 | `phase=pre_order` 时减少重复 intent LLM 调用 |
 | 长对话压缩 | 接入 `conversation_summary` 到 intent/ask 节点 |
 | 恶意输入防护 | fixtures 有 malicious case，缺代码级 guard |
 | CI 友好测试 | mock LLM / record-replay，降低集成测试成本 |
