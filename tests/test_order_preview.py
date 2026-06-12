@@ -199,3 +199,33 @@ def test_build_order_preview_model_warns_for_ambiguous_products():
     assert preview is not None
     payload = preview.model_dump(mode="json")
     assert "多个相近" in payload["products"]["feedback"]
+
+
+def test_build_order_preview_model_ignores_last_order_outside_submitted_phase():
+    preview = build_order_preview_model(
+        {
+            "phase": "idle",
+            "order_info": {},
+            "products": [],
+            "submitted_order": {"order_no": "SO123"},
+            "last_order": {"order_no": "SO123"},
+        }
+    )
+
+    assert preview is None
+
+
+def test_build_order_preview_model_keeps_last_order_for_submitted_phase():
+    preview = build_order_preview_model(
+        {
+            "phase": "submitted",
+            "order_info": {},
+            "products": [],
+            "last_order": {"order_no": "SO123"},
+        }
+    )
+
+    assert preview is not None
+    payload = preview.model_dump(mode="json")
+    assert payload["phase"] == "submitted"
+    assert payload["submitted_order"]["order_no"] == "SO123"

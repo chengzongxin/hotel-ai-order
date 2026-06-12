@@ -399,7 +399,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         phase = PHASE_COLLECTING
         emit_status("intent_node", "正在整理订单信息...")
     elif intent in {"smalltalk", "unknown"} and not has_active_order(state):
-        phase = state.get("phase") or PHASE_IDLE
+        phase = PHASE_IDLE if state.get("phase") == PHASE_SUBMITTED else state.get("phase") or PHASE_IDLE
         emit_status("intent_node", "正在准备辅助回复...")
     elif intent == "cancel_order":
         emit_status("intent_node", "已收到取消请求...")
@@ -475,6 +475,13 @@ async def intent_node(state: AgentState) -> dict[str, object]:
                 "order_card_fields": [],
                 "submitted_order": {},
                 "product_selection_rejected": False,
+            }
+        )
+    elif intent in {"smalltalk", "unknown"} and state.get("phase") == PHASE_SUBMITTED:
+        output.update(
+            {
+                "submission": empty_submission(),
+                "submitted_order": {},
             }
         )
     trace_logger("node.intent.output", **output)

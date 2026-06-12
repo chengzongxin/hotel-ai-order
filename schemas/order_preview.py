@@ -264,9 +264,30 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     products = state.get("products") or []
     selected_code = state.get("selected_product_code")
     submission_raw = state.get("submission") or {}
+    phase = state.get("phase")
+    submission_state = submission_raw.get("state")
     request_payload = submission_raw.get("request_payload") or {}
     response_payload = submission_raw.get("response_payload") or {}
-    submitted_order_raw = state.get("submitted_order") or state.get("last_order") or None
+    submitted_order_candidate = state.get("submitted_order") or state.get("last_order") or None
+    has_submitted_snapshot = (
+        isinstance(submitted_order_candidate, dict)
+        and bool(submitted_order_candidate.get("order_no"))
+    )
+    if not phase:
+        if has_submitted_snapshot or submission_state == SubmissionState.SUCCEEDED:
+            phase = OrderPhase.SUBMITTED
+        elif state.get("product_selection_rejected"):
+            phase = OrderPhase.COLLECTING
+        elif selected_code and state.get("order_card_fields"):
+            phase = OrderPhase.PRE_ORDER
+        elif products:
+            phase = OrderPhase.PRODUCT_SELECTION
+        elif order_info_raw:
+            phase = OrderPhase.COLLECTING
+        else:
+            phase = OrderPhase.IDLE
+    is_submitted_preview = phase == OrderPhase.SUBMITTED or phase == OrderPhase.SUBMITTED.value
+    submitted_order_raw = submitted_order_candidate if is_submitted_preview else None
     coverage_result = state.get("coverage_result") or {}
 
     if (
@@ -285,20 +306,6 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     if not service_type and products:
         selected = get_selected_product(products, selected_code, default_to_first=False)
         service_type = selected.get("service_order_type") or None
-    phase = state.get("phase")
-    if not phase:
-        if submitted_order_raw:
-            phase = OrderPhase.SUBMITTED
-        elif state.get("product_selection_rejected"):
-            phase = OrderPhase.COLLECTING
-        elif selected_code and state.get("order_card_fields"):
-            phase = OrderPhase.PRE_ORDER
-        elif products:
-            phase = OrderPhase.PRODUCT_SELECTION
-        elif order_info_raw:
-            phase = OrderPhase.COLLECTING
-        else:
-            phase = OrderPhase.IDLE
 
     submission = SubmissionSection.model_validate(submission_raw)
     submitted_order = None

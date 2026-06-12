@@ -251,12 +251,37 @@ const progressOffset = computed(() =>
   +(progressCircumference.value - (orderCompleteness.value / 100) * progressCircumference.value).toFixed(2)
 )
 
-const suggestions = [
+type SuggestionChip = {
+  icon: string
+  text: string
+}
+
+const suggestionPool: SuggestionChip[] = [
   { icon: '❄️', text: '1208 空调不制冷，比较急' },
   { icon: '💧', text: '0316 卫生间水龙头漏水' },
   { icon: '🔑', text: 'B栋 301 门锁打不开' },
   { icon: '📺', text: '0501 房间电视没有信号' },
+  { icon: '🚿', text: '816 卫生间花洒出水很小' },
+  { icon: '💡', text: '大堂灯闪烁，麻烦安排维修' },
+  { icon: '🧺', text: '洗衣房洗衣机需要安装，货已经到了' },
+  { icon: '🪟', text: '1506 窗户关不上，有点漏风' },
+  { icon: '🚪', text: '公区仓库门合页松动，需要修一下' },
+  { icon: '🧊', text: '餐厅冰柜温度降不下来' },
+  { icon: '📡', text: '0902 网络连不上，请尽快处理' },
+  { icon: '🛁', text: '2301 浴缸下水很慢' },
 ]
+const SUGGESTION_COUNT = 4
+const suggestions = ref<SuggestionChip[]>(buildRandomSuggestions())
+
+function buildRandomSuggestions(): SuggestionChip[] {
+  return [...suggestionPool]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, SUGGESTION_COUNT)
+}
+
+function refreshSuggestions() {
+  suggestions.value = buildRandomSuggestions()
+}
 
 function currentTime() {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date())
@@ -706,7 +731,7 @@ function createNewSession() {
   sessionId.value = createSessionId()
   localStorage.setItem(SESSION_KEY, sessionId.value)
   inputText.value = ''; errorMessage.value = ''; isListening.value = false; isSending.value = false
-  messages.value = []; resetOrder(); showHistory.value = false
+  messages.value = []; resetOrder(); refreshSuggestions(); showHistory.value = false
   nextTick(() => chatBodyRef.value?.scrollTo({ top: 0 }))
 }
 
