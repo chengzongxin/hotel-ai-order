@@ -61,7 +61,7 @@ export interface OrderCardField {
   required?: boolean
   source?: string
   editable?: boolean
-  input_type?: 'text' | 'textarea' | 'select' | 'datetime'
+  input_type?: 'text' | 'textarea' | 'select' | 'datetime' | 'number'
   options?: Array<{ label: string; value: string }>
 }
 
@@ -92,7 +92,7 @@ export interface UiOrderField {
   value: string | null
   required: boolean
   editable: boolean
-  inputType: 'text' | 'textarea' | 'select' | 'datetime'
+  inputType: 'text' | 'textarea' | 'select' | 'datetime' | 'number'
   options: Array<{ label: string; value: string }>
 }
 
@@ -109,6 +109,7 @@ export interface SubmittedOrder {
   urgency?: UrgencyLevel | string | null
   expected_start_time?: string | null
   goods_arrival_status?: string | null
+  product_quantity?: number | null
   contacts?: string | null
   phone?: string | null
 }
@@ -127,6 +128,7 @@ export interface OrderPreview {
     urgency?: UrgencyLevel | null
     expected_start_time?: string | null
     goods_arrival_status?: string | null
+    product_quantity?: number | null
   }
   products?: ProductSection
   order_card?: OrderCardSection

@@ -442,6 +442,7 @@ function iconForOrderField(key: string): string {
     total_fee: '¥',
     expected_time: '🕒',
     goods_arrival_status: '🚚',
+    product_quantity: '×',
   }
   return icons[key] || '•'
 }

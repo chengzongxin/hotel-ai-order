@@ -66,6 +66,7 @@ class OrderInfo(BaseModel):
     urgency: UrgencyLevel | str | None = Field(default=None, description="紧急程度")
     expected_start_time: str | None = Field(default=None, description="期待开工时间")
     goods_arrival_status: str | None = Field(default=None, description="货物是否到场")
+    product_quantity: int | None = Field(default=None, ge=1, description="商品数量")
     user_confirmed: bool = Field(default=False, description="用户是否已确认下单")
     user_cancelled: bool = Field(default=False, description="用户是否已取消当前预下单")
 
@@ -113,7 +114,7 @@ class OrderCardField(BaseModel):
     required: bool = Field(default=False, description="是否必填")
     source: str = Field(default="system", description="字段来源：user / system / product")
     editable: bool = Field(default=True, description="前端是否可编辑")
-    input_type: str = Field(default="text", description="输入类型：text / textarea / select / datetime")
+    input_type: str = Field(default="text", description="输入类型：text / textarea / select / datetime / number")
     options: list[dict[str, str]] = Field(default_factory=list, description="可选项，仅 select 使用")
 
 
@@ -172,6 +173,7 @@ class SubmittedOrder(BaseModel):
     urgency: UrgencyLevel | str | None = None
     expected_start_time: str | None = None
     goods_arrival_status: str | None = None
+    product_quantity: int | None = None
     contacts: str | None = None
     phone: str | None = None
 

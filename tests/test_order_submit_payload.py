@@ -22,6 +22,7 @@ async def test_single_order_payload_uses_edited_contacts_and_phone(monkeypatch, 
         "product": "窗把手",
         "fault": "损坏",
         "expected_start_time": "明天上午",
+        "product_quantity": 4,
         "contacts": "新联系人",
         "phone": "13900001111",
     }
@@ -74,6 +75,9 @@ async def test_single_order_payload_uses_edited_contacts_and_phone(monkeypatch, 
     trace_step("submit_single_order output", result=result, request_payload=payload)
     assert payload["contacts"] == "新联系人"
     assert payload["phone"] == "13900001111"
+    order_goods = payload["categorySaveReqVOS"][0]["goodsSaveReqVOList"][0]
+    assert order_goods["num"] == 4
+    assert order_goods["quantity"] == "4"
 
 
 @pytest.mark.asyncio
@@ -84,6 +88,7 @@ async def test_managed_order_payload_uses_edited_contacts_and_phone(trace_step):
         "room_number": "301",
         "product": "门锁",
         "fault": "打不开",
+        "product_quantity": 2,
         "contacts": "新联系人",
         "phone": "13900001111",
     }
@@ -140,3 +145,5 @@ async def test_managed_order_payload_uses_edited_contacts_and_phone(trace_step):
     trace_step("submit_managed_repair_order output", result=result, request_payload=payload)
     assert payload["contacts"] == "新联系人"
     assert payload["phone"] == "13900001111"
+    order_spu = payload["orderDetailList"][0]["orderSpuList"][0]
+    assert order_spu["num"] == 2

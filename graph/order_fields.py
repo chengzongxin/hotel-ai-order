@@ -3,6 +3,7 @@
 from typing import Any
 
 DEFAULT_URGENCY = "medium"
+DEFAULT_PRODUCT_QUANTITY = 1
 VALID_GOODS_ARRIVAL_STATUSES = {"未到场", "已到场", "已到物流站"}
 PUBLIC_AREA_KEYWORDS = (
     "公区",
@@ -88,6 +89,20 @@ def _display_value(*values: object) -> object | None:
     return None
 
 
+def normalize_product_quantity(value: object) -> int:
+    """把卡片输入的商品数量归一化为正整数。"""
+
+    if value in (None, ""):
+        return DEFAULT_PRODUCT_QUANTITY
+    try:
+        quantity = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("商品数量必须是正整数") from exc
+    if quantity < 1:
+        raise ValueError("商品数量必须大于 0")
+    return quantity
+
+
 def build_order_card_fields(
     service_type: str | None,
     order_info: dict[str, object],
@@ -102,6 +117,7 @@ def build_order_card_fields(
     remark = _display_value(order_info.get("remark"), order_info.get("fault"), "无")
     total_fee = _display_value(order_info.get("total_fee"), "¥0")
     expected_time = _display_value(order_info.get("expected_start_time"))
+    product_quantity = normalize_product_quantity(order_info.get("product_quantity"))
 
     def field(
         key: str,
@@ -142,6 +158,7 @@ def build_order_card_fields(
                 options=URGENCY_OPTIONS,
             ),
             field("remark", "备注", remark, source="user", input_type="textarea"),
+            field("product_quantity", "商品数量", product_quantity, required=True, source="user", input_type="number"),
             field("contacts", "联系人", contacts, required=True),
             field("phone", "联系电话", phone, required=True),
             field("total_fee", "费用总计", total_fee, editable=False),
@@ -165,6 +182,7 @@ def build_order_card_fields(
     common_single.extend(
         [
             field("remark", "备注", remark, source="user", input_type="textarea"),
+            field("product_quantity", "商品数量", product_quantity, required=True, source="user", input_type="number"),
             field("contacts", "联系人", contacts, required=True),
             field("phone", "联系电话", phone, required=True),
             field("total_fee", "费用总计", total_fee, editable=False),
@@ -178,6 +196,7 @@ def get_missing_fields_from_card(card_fields: list[dict[str, object]]) -> list[s
     key_map = {
         "area_room": "room_number",
         "expected_time": "expected_start_time",
+        "product_quantity": "product_quantity",
         "contacts": "contacts",
         "phone": "phone",
     }
@@ -234,6 +253,8 @@ def normalize_order_card_update(
             normalized["phone"] = value
         elif key == "remark":
             normalized["remark"] = value
+        elif key == "product_quantity":
+            normalized["product_quantity"] = normalize_product_quantity(value)
         elif key == "urgency":
             urgency_alias = {
                 "普通": "medium",

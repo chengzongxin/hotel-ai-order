@@ -133,6 +133,17 @@ function displayValue(field: UiOrderField): string {
             @change="emit('updateField', field.key, ($event.target as HTMLTextAreaElement).value)"
           ></textarea>
           <input
+            v-else-if="field.editable && field.inputType === 'number'"
+            class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[13px] text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+            type="number"
+            min="1"
+            step="1"
+            inputmode="numeric"
+            :value="field.value || ''"
+            :disabled="isUpdatingOrderInfo"
+            @change="emit('updateField', field.key, ($event.target as HTMLInputElement).value)"
+          />
+          <input
             v-else-if="field.editable"
             class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[13px] text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
             type="text"

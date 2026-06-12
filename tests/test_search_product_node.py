@@ -2,6 +2,8 @@
 
 import pytest
 
+from graph.order_fields import build_order_card_fields
+
 from graph.builder import (
     build_order_preview,
     build_missing_info_fallback_question,
@@ -93,6 +95,7 @@ def test_normalize_order_card_update_maps_editable_fields():
             "area_room": "301",
             "urgency": "紧急",
             "remark": "晚上不要打扰住客",
+            "product_quantity": "3",
             "contacts": "李四",
             "phone": "13600000000",
         },
@@ -103,8 +106,23 @@ def test_normalize_order_card_update_maps_editable_fields():
     assert updated["managed_repair_scope"] == "客房"
     assert updated["urgency"] == "urgent"
     assert updated["remark"] == "晚上不要打扰住客"
+    assert updated["product_quantity"] == 3
     assert updated["contacts"] == "李四"
     assert updated["phone"] == "13600000000"
+
+
+def test_order_card_includes_editable_product_quantity():
+    fields = build_order_card_fields(
+        service_type="单次维修服务",
+        order_info={"expected_start_time": "明天上午", "product_quantity": 2},
+        order_context={"contacts": "张三", "phone": "13800000000"},
+    )
+
+    quantity_field = next(field for field in fields if field["key"] == "product_quantity")
+    assert quantity_field["label"] == "商品数量"
+    assert quantity_field["value"] == 2
+    assert quantity_field["editable"] is True
+    assert quantity_field["input_type"] == "number"
 
 
 @pytest.mark.asyncio

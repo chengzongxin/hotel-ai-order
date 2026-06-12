@@ -46,6 +46,19 @@ def _clean_text(value: object, default: str = "") -> str:
     return str(value).strip() or default
 
 
+def resolve_product_quantity(order_info: JsonDict) -> int:
+    """商品数量来自预下单卡片；缺省时保持历史行为：1 件。"""
+
+    value = order_info.get("product_quantity")
+    if value in (None, ""):
+        return 1
+    try:
+        quantity = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 1
+    return max(quantity, 1)
+
+
 def _is_placeholder(value: str) -> bool:
     text = _clean_text(value)
     return bool(text and any(marker in text for marker in PLACEHOLDER_MARKERS))
@@ -502,17 +515,18 @@ def build_single_order_payload(
     )
     unit_name = _clean_text(_first_present(spu.get("measureUnitName"), unit.get("name")), "个")
     unit_type = _first_present(spu.get("measureUnitType"), unit.get("type"), "0")
+    product_quantity = resolve_product_quantity(order_info)
 
     order_goods: JsonDict = {
         "goodsId": spu.get("id"),
         "goodsNo": _clean_text(spu.get("code")),
         "templateCode": _clean_text(spu.get("code")),
         "templateName": _clean_text(spu.get("name")) or _clean_text(order_info.get("product")),
-        "num": 1,
+        "num": product_quantity,
         "unit": unit_name,
         "templatePhoto": _clean_text(spu.get("icon")),
         "unitType": str(unit_type),
-        "quantity": "1",
+        "quantity": str(product_quantity),
         "erpCodeId": _first_present(spu.get("categoryId"), spu.get("erpCodeId"), category_id),
         "erpCode": _clean_text(_first_present(spu.get("categoryCode"), spu.get("erpCode"), category_code)),
         "erpName": _clean_text(_first_present(spu.get("categoryName"), spu.get("erpName"), category_name)),
@@ -650,6 +664,7 @@ def build_managed_repair_order_payload(
 
     second_area_id = matched_area.get("managedRepairAreaId")
     second_area_name = _clean_text(matched_area.get("managedRepairAreaName")) or None
+    product_quantity = resolve_product_quantity(order_info)
 
     order_spu: JsonDict = {
         "spuId": spu.get("id"),
@@ -658,7 +673,7 @@ def build_managed_repair_order_payload(
         "templateCode": _clean_text(spu.get("code")),
         "templateName": _clean_text(spu.get("name")),
         "templatePhoto": _clean_text(spu.get("icon")),
-        "num": 1,
+        "num": product_quantity,
         "unit": _clean_text(spu.get("measureUnitName"), "个"),
         "unitType": "0",
         "spuFaultPhenomenonList": spu_fault_list,
