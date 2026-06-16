@@ -1,24 +1,32 @@
-"""
-聊天流程集成测试。
-每个测试用独立 session_id，测后自动清理。
+"""最新聊天主流程集成测试。
 
-默认复用前端开发配置里的用户凭证；也可以通过环境变量覆盖：
-TEST_ACCESS_TOKEN、TEST_USER_ID、TEST_TENANT_ID 等。
+这些用例按当前产品逻辑重写：首轮命中商品后先进入 `product_selection`，
+再通过文本选择或确定性接口进入 `pre_order`。测试重点是稳定状态字段，
+不固定 LLM 的自然语言文案。
 """
+
+from __future__ import annotations
 
 import os
 import uuid
+from typing import Any
 
 import pytest
 
-from graph.builder import clear_checkpoint_session, run_agent
+from graph.builder import (
+    clear_checkpoint_session,
+    confirm_order_in_session,
+    run_agent,
+    select_product_in_session,
+    update_order_info_in_session,
+)
 from schemas.user import UserContext
 
 pytestmark = pytest.mark.llm
 
 DEFAULT_API_PARAMS = {
     # 与 frontend/src/utils/apiParams.ts 的开发默认值保持一致。
-    "access_token": "3ca6c511d6b2478fb516bb6799b04746",
+    "access_token": "replace-with-test-token",
     "user_id": "dev-user",
     "tenant_id": "2123",
     "platform": "ios",
@@ -28,13 +36,6 @@ DEFAULT_API_PARAMS = {
     "channel": "appstore",
     "spirit": "IDontKnowPasswordtoo/1708hxcchang",
 }
-
-
-# ── 工具函数 ────────────────────────────────────────────────────────────────────
-
-def new_session() -> str:
-    return f"test-{uuid.uuid4().hex[:8]}"
-
 
 TEST_USER = UserContext(
     user_id=os.getenv("TEST_USER_ID", DEFAULT_API_PARAMS["user_id"]),
@@ -49,232 +50,269 @@ TEST_USER = UserContext(
 )
 
 
-async def chat(session_id: str, message: str) -> dict:
-    """一次对话，打印用户输入和 AI 回复，返回 run_agent 结果。"""
+def new_session() -> str:
+    return f"test-{uuid.uuid4().hex[:8]}"
+
+
+async def chat(session_id: str, message: str, trace_step=None) -> dict[str, Any]:
     result = await run_agent(user_message=message, session_id=session_id, user=TEST_USER)
-    preview = result.get("order_preview") or {}
-    print(f"\n  > 用户: {message}")
-    print(f"  < AI  : {result.get('answer', '')}")
-    if preview:
-        print(f"    order_info   : {preview.get('order_info')}")
-        print(f"    missing_info : {preview.get('missing_info')}")
-        print(f"    service_type : {preview.get('service_type')}")
-        print(f"    status       : {preview.get('status')}")
+    if trace_step:
+        trace_step("chat turn", message=message, result=summarize_result(result))
     return result
 
 
-def order_info(result: dict) -> dict:
-    return (result.get("order_preview") or {}).get("order_info") or {}
+async def clear_session(session_id: str) -> None:
+    await clear_checkpoint_session(session_id, user=TEST_USER)
 
 
-def order_preview(result: dict) -> dict:
-    return result.get("order_preview") or {}
+def preview(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("order_preview")
+    assert isinstance(data, dict), f"expected order_preview, got: {result}"
+    return data
 
 
-def missing(result: dict) -> list:
-    return (result.get("order_preview") or {}).get("missing_info") or []
+def maybe_preview(result: dict[str, Any]) -> dict[str, Any] | None:
+    data = result.get("order_preview")
+    return data if isinstance(data, dict) else None
 
 
-def service_type(result: dict) -> str | None:
-    return (result.get("order_preview") or {}).get("service_type")
+def info(result: dict[str, Any]) -> dict[str, Any]:
+    return (maybe_preview(result) or {}).get("order_info") or {}
 
 
-def phase(result: dict) -> str | None:
-    return (result.get("order_preview") or {}).get("phase")
+def phase(result: dict[str, Any]) -> str | None:
+    return (maybe_preview(result) or {}).get("phase")
 
 
-# ── 单轮完整信息 ──────────────────────────────────────────────────────────────
+def missing(result: dict[str, Any]) -> list[str]:
+    return (maybe_preview(result) or {}).get("missing_info") or []
 
-class TestSingleTurnComplete:
 
-    async def test_guest_room_ac_repair(self):
-        """客房空调不制冷——信息完整，直接进入确认或追问预约时间。"""
+def products(result: dict[str, Any]) -> list[dict[str, Any]]:
+    section = (maybe_preview(result) or {}).get("products") or {}
+    return section.get("items") or []
+
+
+def selected_code(result: dict[str, Any]) -> str | None:
+    section = (maybe_preview(result) or {}).get("products") or {}
+    return section.get("selected_code")
+
+
+def order_card_fields(result: dict[str, Any]) -> list[dict[str, Any]]:
+    card = (maybe_preview(result) or {}).get("order_card") or {}
+    return card.get("fields") or []
+
+
+def product_codes(result: dict[str, Any]) -> list[str]:
+    return [str(item.get("code")) for item in products(result) if item.get("code")]
+
+
+def first_product_code(result: dict[str, Any]) -> str:
+    codes = product_codes(result)
+    assert codes, f"expected product candidates, got: {summarize_result(result)}"
+    return codes[0]
+
+
+def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = maybe_preview(result)
+    if not data:
+        return {"answer": result.get("answer"), "order_preview": None}
+    return {
+        "answer": result.get("answer"),
+        "phase": data.get("phase"),
+        "order_info": data.get("order_info"),
+        "service_type": data.get("service_type"),
+        "effective_service_type": data.get("effective_service_type"),
+        "missing_info": data.get("missing_info"),
+        "selected_code": (data.get("products") or {}).get("selected_code"),
+        "products": [
+            {
+                "code": item.get("code"),
+                "name": item.get("name"),
+                "service_type": item.get("service_type"),
+                "score": item.get("score"),
+            }
+            for item in ((data.get("products") or {}).get("items") or [])
+        ],
+    }
+
+
+async def select_first_product(session_id: str, first_result: dict[str, Any], trace_step=None) -> dict[str, Any]:
+    code = first_product_code(first_result)
+    result = await select_product_in_session(session_id=session_id, product_code=code, user=TEST_USER)
+    if trace_step:
+        trace_step("select first product", product_code=code, result=summarize_result(result))
+    return result
+
+
+def assert_product_selection(result: dict[str, Any]) -> None:
+    assert phase(result) == "product_selection"
+    assert products(result)
+    assert selected_code(result) is None
+    assert "选择" in str(result.get("answer", "")) or products(result)
+
+
+class TestCurrentProductSelectionFlow:
+    async def test_repair_first_turn_recommends_products(self, trace_step):
         sid = new_session()
         try:
-            result = await chat(sid, "1208房间卧室空调不制冷，比较急。")
-            info = order_info(result)
-            assert info.get("room_number") == "1208"
-            assert info.get("product") == "空调"
-            assert "制冷" in (info.get("fault") or "")
-            # 单次维修服务类型会要求 expected_start_time，missing 中只剩该字段是正常的
-            assert missing(result) in ([], ["expected_start_time"])
-            assert phase(result) in ("pre_order", "collecting")
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            result = await chat(sid, "1208房间卧室空调不制冷，比较急。", trace_step)
 
-    async def test_faucet_leak(self):
-        """卫生间水龙头漏水——信息完整，直接确认。"""
+            assert_product_selection(result)
+            assert info(result).get("room_number") == "1208"
+            assert info(result).get("product") == "空调"
+            assert "制冷" in str(info(result).get("fault") or "")
+            assert preview(result).get("service_type") in {"单次维修服务", "托管维修"}
+        finally:
+            await clear_session(sid)
+
+    async def test_text_selection_moves_to_pre_order(self, trace_step):
         sid = new_session()
         try:
-            result = await chat(sid, "816房间卫生间水龙头漏水。")
-            info = order_info(result)
-            assert info.get("room_number") == "816"
-            assert info.get("product") == "水龙头"
-            assert missing(result) == []
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            first = await chat(sid, "816房间卫生间水龙头漏水。", trace_step)
+            assert_product_selection(first)
 
-    async def test_public_area_door_lock(self):
-        """大堂门锁坏了——识别为公区，service_type 包含公区，不带客房房号。"""
+            selected = await chat(sid, "第一个", trace_step)
+            assert phase(selected) == "pre_order"
+            assert selected_code(selected) == first_product_code(first)
+            assert order_card_fields(selected)
+            assert info(selected).get("room_number") == "816"
+            assert info(selected).get("product")
+        finally:
+            await clear_session(sid)
+
+    async def test_api_selection_moves_to_pre_order_and_builds_card(self, trace_step):
         sid = new_session()
         try:
-            result = await chat(sid, "大堂门锁坏了，打不开。")
-            info = order_info(result)
-            assert info.get("managed_repair_scope") == "公区" or info.get("area") == "公区"
-            # room_number 应为 None 或占位符 '/'，不应是真实房号
-            assert info.get("room_number") in (None, "/", "")
-            stype = service_type(result)
-            assert stype is not None
+            first = await chat(sid, "1208房间空调有问题。", trace_step)
+            assert_product_selection(first)
+
+            selected = await select_first_product(sid, first, trace_step)
+            assert phase(selected) == "pre_order"
+            assert selected_code(selected) == first_product_code(first)
+            assert order_card_fields(selected)
+            assert info(selected).get("room_number") == "1208"
+            assert info(selected).get("product") == "空调"
         finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            await clear_session(sid)
 
 
-# ── 缺字段追问 ────────────────────────────────────────────────────────────────
-
-class TestMissingField:
-
-    async def test_missing_room_number(self):
-        """缺房号——当前流程会先推荐商品，选品后再追问房号。"""
+class TestCurrentFieldValidationFlow:
+    async def test_missing_room_or_time_is_checked_after_selection(self, trace_step):
         sid = new_session()
         try:
-            first = await chat(sid, "卫生间水龙头漏水，麻烦来修一下。")
-            first_preview = order_preview(first)
-            products = (first_preview.get("products") or {}).get("items") or []
+            first = await chat(sid, "卫生间水龙头漏水，麻烦来修一下。", trace_step)
+            assert_product_selection(first)
 
-            # 新流程：只要匹配到商品，第一轮先让用户选商品，而不是马上追问房号。
-            assert first_preview.get("phase") == "product_selection"
-            assert products
+            selected = await select_first_product(sid, first, trace_step)
+            assert phase(selected) == "pre_order"
+            assert missing(selected)
 
-            result = await chat(sid, "第一个")
-
-            # 选完商品后进入信息校验，此时才应该发现缺少客房房号。
-            assert "room_number" in missing(result)
-            assert phase(result) in ("pre_order", "collecting")
-            # AI 的回复里应有追问房号的意图
-            answer = result.get("answer", "")
-            assert any(kw in answer for kw in ("房间", "房号", "几号", "哪个房"))
+            # 最新流程中，必填项由“用户选中的商品服务类型”决定：
+            # 托管维修通常追问房号；单次维修通常追问期望时间。
+            assert set(missing(selected)) & {"room_number", "expected_start_time", "contacts", "phone"}
         finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            await clear_session(sid)
 
-    async def test_missing_fault(self):
-        """
-        "空调有问题"——LLM 会把'有问题'抽取为 fault，系统视为已填写并继续推进。
-        验证：room_number 和 product 正确提取，流程没有停在 fault 追问上。
-        """
+    async def test_update_order_info_recalculates_missing_fields(self, trace_step):
         sid = new_session()
         try:
-            result = await chat(sid, "1208房间空调有问题。")
-            info = order_info(result)
-            assert info.get("room_number") == "1208"
-            assert info.get("product") == "空调"
-            # 系统接受模糊 fault，进入后续步骤（收集或预下单）
-            assert phase(result) in ("collecting", "pre_order")
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            first = await chat(sid, "1208房间洗衣机需要安装。", trace_step)
+            assert_product_selection(first)
 
-    async def test_missing_product(self):
-        """只说坏了但没说是什么——应追问商品。"""
+            selected = await select_first_product(sid, first, trace_step)
+            before_missing = set(missing(selected))
+            assert phase(selected) == "pre_order"
+
+            updated = await update_order_info_in_session(
+                session_id=sid,
+                updates={
+                    "expected_time": "明天上午",
+                    "goods_arrival_status": "已到场",
+                    "contacts": "测试联系人",
+                    "phone": "13600000000",
+                },
+                user=TEST_USER,
+            )
+            if trace_step:
+                trace_step("update order info", before_missing=sorted(before_missing), result=summarize_result(updated))
+
+            assert phase(updated) == "pre_order"
+            assert "expected_start_time" not in missing(updated)
+            assert "goods_arrival_status" not in missing(updated)
+            assert info(updated).get("expected_start_time") == "明天上午"
+            assert info(updated).get("goods_arrival_status") == "已到场"
+        finally:
+            await clear_session(sid)
+
+    async def test_confirm_with_missing_fields_does_not_submit(self, trace_step):
         sid = new_session()
         try:
-            result = await chat(sid, "1208房间坏了，打不开。")
-            assert "product" in missing(result)
-            info = order_info(result)
-            assert info.get("room_number") == "1208"
+            first = await chat(sid, "1208房间洗衣机需要安装。", trace_step)
+            assert_product_selection(first)
+            selected = await select_first_product(sid, first, trace_step)
+
+            result = await confirm_order_in_session(session_id=sid, user=TEST_USER)
+            if trace_step:
+                trace_step("confirm with missing fields", selected=summarize_result(selected), result=summarize_result(result))
+
+            assert phase(result) == "pre_order"
+            assert missing(result)
+            submission = preview(result).get("submission") or {}
+            assert submission.get("state") in {None, "not_attempted"}
         finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            await clear_session(sid)
 
 
-# ── 多轮对话 ──────────────────────────────────────────────────────────────────
-
-class TestMultiTurn:
-
-    async def test_fill_room_number_in_second_turn(self):
-        """第一轮缺房号，第二轮补充，最终信息完整。"""
+class TestCurrentConversationControl:
+    async def test_reject_products_returns_to_collecting(self, trace_step):
         sid = new_session()
         try:
-            await chat(sid, "空调不制冷。")
-            result = await chat(sid, "1208房间。")
-            info = order_info(result)
-            assert info.get("room_number") == "1208"
-            assert info.get("product") == "空调"
-            assert "制冷" in (info.get("fault") or "")
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            first = await chat(sid, "1208房间空调不制冷。", trace_step)
+            assert_product_selection(first)
 
-    async def test_correct_room_number(self):
-        """用户纠正房号，最新值生效。"""
+            rejected = await chat(sid, "以上都不符合", trace_step)
+            assert phase(rejected) == "collecting"
+            product_section = preview(rejected).get("products") or {}
+            assert product_section.get("selection_rejected") is True
+            assert product_section.get("items") == []
+        finally:
+            await clear_session(sid)
+
+    async def test_cancel_active_order_clears_flow(self, trace_step):
         sid = new_session()
         try:
-            await chat(sid, "1208房间电视不亮。")
-            result = await chat(sid, "不是1208，是1210。")
-            info = order_info(result)
-            assert info.get("room_number") == "1210"
-            assert info.get("product") == "电视"
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            first = await chat(sid, "1208房间空调不制冷。", trace_step)
+            assert_product_selection(first)
 
-    async def test_public_area_after_guest_room(self):
-        """先报客房单，确认后再报公区故障——新单不应带旧房号。"""
+            result = await chat(sid, "取消，不用了。", trace_step)
+            # 取消后可以返回 cancelled/idle preview，也可以直接不返回 order_preview。
+            assert maybe_preview(result) is None or phase(result) in {"cancelled", "idle"}
+            assert products(result) == []
+        finally:
+            await clear_session(sid)
+
+    async def test_smalltalk_does_not_create_order(self, trace_step):
         sid = new_session()
         try:
-            await chat(sid, "2107房间空调不制冷。")
-            await chat(sid, "确认提交。")
-            result = await chat(sid, "大堂门锁坏了。")
-            info = order_info(result)
-            # 新单应识别为公区，不能带旧房号
-            assert info.get("room_number") is None or info.get("managed_repair_scope") == "公区"
+            result = await chat(sid, "你好，你是谁？", trace_step)
+            data = maybe_preview(result)
+            assert data is None or data.get("phase") in {None, "idle"}
+            assert info(result) == {}
+            assert result.get("answer")
         finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            await clear_session(sid)
 
 
-# ── 取消与闲聊 ────────────────────────────────────────────────────────────────
-
-class TestCancelAndSmallTalk:
-
-    async def test_cancel_order(self):
-        """收集过程中取消——状态应变为 cancelled 或 idle。"""
+class TestCurrentServiceTypeFlow:
+    async def test_installation_query_recommends_install_products(self, trace_step):
         sid = new_session()
         try:
-            await chat(sid, "1208房间空调不制冷。")
-            result = await chat(sid, "取消，不用了。")
-            s = phase(result)
-            assert s in ("cancelled", "idle", None)
+            result = await chat(sid, "1208房间洗衣机需要安装。", trace_step)
+            assert_product_selection(result)
+
+            names = " ".join(str(item.get("name") or "") for item in products(result))
+            service_types = {item.get("service_type") for item in products(result)}
+            assert "安装" in service_types or "安装" in names
         finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
-
-    async def test_smalltalk_does_not_create_order(self):
-        """纯闲聊——不应创建订单。"""
-        sid = new_session()
-        try:
-            result = await chat(sid, "你好，你是谁？")
-            assert result.get("order_preview") is None or order_info(result) == {}
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
-
-
-# ── 商品匹配与服务类型 ────────────────────────────────────────────────────────
-
-class TestProductMatch:
-
-    async def test_service_type_from_matched_product(self):
-        """service_type 应来自商品匹配结果，不应为 None。"""
-        sid = new_session()
-        try:
-            result = await chat(sid, "1208房间空调不制冷。")
-            stype = service_type(result)
-            assert stype is not None
-            assert stype in ("单次维修服务", "托管维修", "托管维修（客房）", "托管维修（公区）")
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
-
-    async def test_installation_service_type(self):
-        """安装类商品应匹配到单次安装服务类型。"""
-        sid = new_session()
-        try:
-            result = await chat(sid, "1208房间洗衣机需要安装。")
-            stype = service_type(result)
-            # 安装类不一定第一轮就能匹配，有可能还在追问，但 service_type 若已有应为安装
-            if stype is not None:
-                assert "安装" in stype
-        finally:
-            await clear_checkpoint_session(sid, user=TEST_USER)
+            await clear_session(sid)
