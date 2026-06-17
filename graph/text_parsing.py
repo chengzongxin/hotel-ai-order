@@ -7,8 +7,10 @@ import re
 from graph.constants import (
     CANCEL_ORDER_KEYWORDS,
     GUEST_ROOM_KEYWORDS,
+    GUEST_SECOND_AREA_KEYWORDS,
     PRODUCT_NONE_SELECTIONS,
     PUBLIC_AREA_KEYWORDS,
+    PUBLIC_SECOND_AREA_KEYWORDS,
 )
 
 
@@ -81,6 +83,23 @@ def is_guest_room_text(text: str | None) -> bool:
     if not text:
         return False
     return any(keyword in text for keyword in GUEST_ROOM_KEYWORDS)
+
+
+def infer_second_area(text: str | None, first_area: str | None = None) -> str | None:
+    if not text:
+        return None
+
+    def match(mapping: dict[str, tuple[str, ...]]) -> str | None:
+        for second_area, keywords in mapping.items():
+            if any(keyword in text for keyword in keywords):
+                return second_area
+        return None
+
+    if first_area == "公区":
+        return match(PUBLIC_SECOND_AREA_KEYWORDS)
+    if first_area == "客房":
+        return match(GUEST_SECOND_AREA_KEYWORDS)
+    return match(PUBLIC_SECOND_AREA_KEYWORDS) or match(GUEST_SECOND_AREA_KEYWORDS)
 
 
 def extract_room_number(text: str | None) -> str | None:

@@ -63,6 +63,7 @@ export interface OrderCardField {
   editable?: boolean
   input_type?: 'text' | 'textarea' | 'select' | 'datetime' | 'number'
   options?: Array<{ label: string; value: string }>
+  hint?: string | null
 }
 
 export interface OrderCardSection {
@@ -77,6 +78,22 @@ export interface CoverageSection {
   reason?: string | null
   effective_service_type?: string | null
   hosting_card_name?: string | null
+  area_match?: {
+    checked?: boolean
+    matched?: boolean | null
+    inferred_second_area?: string | null
+    match_source?: string | null
+    matched_second_area?: string | null
+    matched_first_area?: string | null
+    available_second_areas?: string[]
+    available_second_area_options?: Array<{
+      label?: string | null
+      value?: string | null
+      second_area_id?: string | null
+      second_area?: string | null
+      first_area?: string | null
+    }>
+  }
 }
 
 export interface CoverageNotice {
@@ -94,6 +111,7 @@ export interface UiOrderField {
   editable: boolean
   inputType: 'text' | 'textarea' | 'select' | 'datetime' | 'number'
   options: Array<{ label: string; value: string }>
+  hint?: string | null
 }
 
 export interface SubmittedOrder {
@@ -106,6 +124,7 @@ export interface SubmittedOrder {
   product?: string | null
   fault?: string | null
   area?: string | null
+  second_area?: string | null
   urgency?: UrgencyLevel | string | null
   expected_start_time?: string | null
   goods_arrival_status?: string | null
@@ -125,6 +144,7 @@ export interface OrderPreview {
     product?: string | null
     fault?: string | null
     area?: string | null
+    second_area?: string | null
     urgency?: UrgencyLevel | null
     expected_start_time?: string | null
     goods_arrival_status?: string | null

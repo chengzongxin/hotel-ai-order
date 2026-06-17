@@ -3,6 +3,7 @@ import type { CoverageNotice } from '../types/order'
 
 defineProps<{
   coverageNotice?: CoverageNotice | null
+  productFeedback?: string | null
   missingInfoText?: string
   isSubmittingOrder?: boolean
   hasSubmissionFailure?: boolean
@@ -12,6 +13,16 @@ defineProps<{
 </script>
 
 <template>
+  <div
+    v-if="productFeedback"
+    class="rounded-xl border border-indigo-100 bg-indigo-50 px-3.5 py-3"
+  >
+    <p class="text-[12px] font-semibold text-indigo-800">商品与区域匹配提示</p>
+    <p class="mt-1 whitespace-pre-line text-[12px] leading-5 text-indigo-700/90">
+      {{ productFeedback }}
+    </p>
+  </div>
+
   <div
     v-if="coverageNotice"
     class="rounded-xl border px-3.5 py-3"

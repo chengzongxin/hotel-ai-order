@@ -4,6 +4,7 @@
 - 商品/设备：{{product}}
 - 故障：{{fault}}
 - 区域：{{area}}
+- 二级区域：{{second_area}}
 - 紧急度：{{urgency}}
 - 期待开工时间：{{expected_start_time}}
 - 货物是否到场：{{goods_arrival_status}}

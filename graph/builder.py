@@ -22,6 +22,7 @@ from graph.expected_time import (
 )
 from graph.order_fields import (
     DEFAULT_URGENCY,
+    build_order_card_fields,
     collect_missing_order_info,
     get_required_order_fields,
     normalize_goods_arrival_status,
@@ -77,6 +78,7 @@ from graph.text_parsing import (
     parse_product_selection,
 )
 from tools.hosting_coverage import check_hosting_product_coverage
+from tools.order_payload_managed import align_order_second_area_with_spu
 from tools.product_search import search_product_tool
 
 def get_order_workflow_service() -> OrderWorkflowService:
@@ -145,6 +147,7 @@ def get_product_search_feedback(state: AgentState) -> str | None:
         order_info=state.get("order_info") or {},
         selected_product=selected_product,
         service_type=get_effective_service_type(state) or selected_product.get("service_order_type"),
+        coverage_result=state.get("coverage_result") or {},
     )
 
 
@@ -225,11 +228,13 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         if detected_fields.get("managed_repair_scope") == "公区":
             cleaned_existing.pop("room_number", None)
             cleaned_existing.pop("area", None)
+            cleaned_existing.pop("second_area", None)
             cleaned_existing.pop("managed_repair_scope", None)
         # 新输入明确了房号（客房），清除旧单遗留的公区信息
         elif detected_fields.get("room_number") or detected_fields.get("managed_repair_scope") == "客房":
             cleaned_existing.pop("managed_repair_scope", None)
             cleaned_existing.pop("area", None)
+            cleaned_existing.pop("second_area", None)
 
         order_info = {
             **cleaned_existing,
@@ -408,6 +413,7 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         order_info=state.get("order_info") or {},
         matched_product=selected_product,
         user=user_from_runtime_config(),
+        last_user_message=state.get("last_user_message", ""),
     )
     coverage_data = coverage_result.get("data") or {}
     effective_service_type = coverage_data.get("effective_service_type") or service_type
@@ -416,9 +422,19 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         order_info=state.get("order_info", {}),
         last_user_message=state.get("last_user_message", ""),
     )
+    spu_detail = coverage_data.get("spu_detail") if isinstance(coverage_data.get("spu_detail"), dict) else {}
+    if effective_service_type == "托管维修" and spu_detail:
+        order_info, area_match = align_order_second_area_with_spu(
+            order_info,
+            spu_detail,
+            source_text=state.get("last_user_message", ""),
+        )
+        coverage_data = {**coverage_data, "area_match": area_match}
 
     if effective_service_type != service_type:
         emit_status("coverage_node", "该商品不在维保范围内，将按单次维修继续下单。")
+    elif (coverage_data.get("area_match") or {}).get("matched") is False:
+        emit_status("coverage_node", "该商品关联区域需要进一步确认。")
     else:
         emit_status("coverage_node", "该商品在维保范围内，可继续托管维修下单。")
 
@@ -529,6 +545,7 @@ def build_missing_info_fallback_question(missing_info: list[str]) -> str:
         "product": "是哪样东西坏了？",
         "fault": "具体是什么故障呢？",
         "area": "请问是客房还是公区？",
+        "second_area": "请问具体在哪个区域？",
         "expected_start_time": "还需补充：期待开工时间。请问具体什么时间？比如明天上午或3月20日",
         "goods_arrival_status": "请问货物是否到场？",
         "contacts": "请问联系人姓名是什么？",
@@ -733,6 +750,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
             product=order_info.get("product"),
             fault=order_info.get("fault"),
             area=order_info.get("area"),
+            second_area=order_info.get("second_area") or "无",
             urgency=format_urgency(order_info.get("urgency") or DEFAULT_URGENCY),
             expected_start_time=order_info.get("expected_start_time") or "无",
             goods_arrival_status=order_info.get("goods_arrival_status") or "无",
@@ -931,8 +949,33 @@ def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
 
     enriched_state = dict(state)
     enriched_state["service_type"] = service_type
+    coverage_result = state.get("coverage_result") or {}
+    effective_service_type = state.get("effective_service_type") or service_type
+    spu_detail = coverage_result.get("spu_detail") if isinstance(coverage_result, dict) and isinstance(coverage_result.get("spu_detail"), dict) else {}
+    if effective_service_type == "托管维修" and spu_detail:
+        aligned_order_info, area_match = align_order_second_area_with_spu(
+            dict(order_info),
+            spu_detail,
+            source_text=str(state.get("last_user_message") or ""),
+        )
+        order_info = aligned_order_info
+        enriched_state["order_info"] = order_info
+        enriched_state["coverage_result"] = {**coverage_result, "area_match": area_match}
+        second_area_field = next(
+            (
+                field
+                for field in (state.get("order_card_fields") or [])
+                if isinstance(field, dict) and field.get("key") == "second_area"
+            ),
+            {},
+        )
+        if second_area_field.get("input_type") != "select" or not second_area_field.get("options"):
+            enriched_state["order_card_fields"] = build_order_card_fields(
+                service_type=effective_service_type,
+                order_info=order_info,
+                order_context=state.get("order_context") if isinstance(state.get("order_context"), dict) else {},
+            )
     enriched_state["service_type_display"] = format_service_type(service_type, order_info)
-    effective_service_type = state.get("effective_service_type")
     if effective_service_type:
         enriched_state["effective_service_type_display"] = format_service_type(
             str(effective_service_type),

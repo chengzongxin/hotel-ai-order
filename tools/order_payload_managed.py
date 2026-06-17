@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from graph.text_parsing import infer_second_area
 from tools.order_context import resolve_first_area, resolve_response_time
 from tools.order_submit_common import JsonDict, clean_text, resolve_product_quantity
 
@@ -27,6 +28,237 @@ def match_fault_phenomenon(fault: str, fault_list: list[JsonDict]) -> JsonDict |
 _match_fault_phenomenon = match_fault_phenomenon
 
 
+def match_area_from_spu(
+    area_list: list[JsonDict],
+    area_scope: str,
+    second_area: str = "",
+    second_area_id: str = "",
+) -> JsonDict:
+    if not area_list:
+        return {}
+
+    scoped_items = [
+        item
+        for item in area_list
+        if clean_text(item.get("managedRepairAreaParentName")) == area_scope
+    ] or area_list
+
+    if second_area_id:
+        for item in scoped_items:
+            item_id = clean_text(item.get("managedRepairAreaId"))
+            if item_id and item_id == second_area_id:
+                return item
+
+    if second_area:
+        for item in scoped_items:
+            name = clean_text(item.get("managedRepairAreaName"))
+            if name and (name == second_area or second_area in name or name in second_area):
+                return item
+
+    return scoped_items[0] if scoped_items else {}
+
+
+def get_spu_area_list(spu: JsonDict | None) -> list[JsonDict]:
+    if not isinstance(spu, dict):
+        return []
+    area_list = spu.get("areaList") or []
+    return [item for item in area_list if isinstance(item, dict)] if isinstance(area_list, list) else []
+
+
+def find_matching_second_area(
+    area_list: list[JsonDict],
+    area_scope: str = "",
+    second_area: str = "",
+    second_area_id: str = "",
+) -> JsonDict:
+    if not area_list or not (second_area or second_area_id):
+        return {}
+    scoped_items = [
+        item
+        for item in area_list
+        if not area_scope or clean_text(item.get("managedRepairAreaParentName")) == area_scope
+    ]
+    if second_area_id:
+        for item in scoped_items:
+            item_id = clean_text(item.get("managedRepairAreaId"))
+            if item_id and item_id == second_area_id:
+                return item
+
+    for item in scoped_items:
+        name = clean_text(item.get("managedRepairAreaName"))
+        if name and (name == second_area or second_area in name or name in second_area):
+            return item
+    return {}
+
+
+def _scoped_area_items(area_list: list[JsonDict], area_scope: str = "") -> list[JsonDict]:
+    scoped_items = [
+        item
+        for item in area_list
+        if not area_scope or clean_text(item.get("managedRepairAreaParentName")) == area_scope
+    ]
+    if not scoped_items and area_scope:
+        scoped_items = area_list
+    return scoped_items
+
+
+def infer_second_area_from_spu_scope(
+    area_list: list[JsonDict],
+    area_scope: str = "",
+    source_text: str = "",
+) -> tuple[JsonDict, str | None]:
+    scoped_items = _scoped_area_items(area_list, area_scope)
+    if not scoped_items:
+        return {}, None
+
+    text = clean_text(source_text)
+    if text:
+        for item in scoped_items:
+            name = clean_text(item.get("managedRepairAreaName"))
+            if name and name in text:
+                return item, "source_text"
+
+        inferred = infer_second_area(text, area_scope)
+        if inferred:
+            matched = find_matching_second_area(scoped_items, "", inferred)
+            if matched:
+                return matched, "source_text"
+
+    if len(scoped_items) == 1:
+        return scoped_items[0], "single_option"
+    return {}, None
+
+
+def list_spu_second_area_options(area_list: list[JsonDict], area_scope: str = "") -> list[str]:
+    options: list[str] = []
+    for item in area_list:
+        if area_scope and clean_text(item.get("managedRepairAreaParentName")) != area_scope:
+            continue
+        name = clean_text(item.get("managedRepairAreaName"))
+        if name and name not in options:
+            options.append(name)
+    if options or not area_scope:
+        return options
+    return list_spu_second_area_options(area_list)
+
+
+def _second_area_option(item: JsonDict) -> JsonDict:
+    second_area_id = clean_text(item.get("managedRepairAreaId"))
+    second_area_name = clean_text(item.get("managedRepairAreaName"))
+    first_area_name = clean_text(item.get("managedRepairAreaParentName"))
+    label = second_area_name
+    if first_area_name:
+        label = f"{second_area_name}（{first_area_name}）"
+    return {
+        "label": label,
+        "value": second_area_id or f"{first_area_name}|{second_area_name}",
+        "second_area_id": second_area_id or None,
+        "second_area": second_area_name or None,
+        "first_area": first_area_name or None,
+    }
+
+
+def list_spu_second_area_option_details(area_list: list[JsonDict], area_scope: str = "") -> list[JsonDict]:
+    scoped_items = _scoped_area_items(area_list, area_scope)
+
+    options: list[JsonDict] = []
+    seen_values: set[str] = set()
+    for item in scoped_items:
+        option = _second_area_option(item)
+        if not option.get("second_area"):
+            continue
+        value = clean_text(option.get("value"))
+        if value and value not in seen_values:
+            options.append(option)
+            seen_values.add(value)
+    return options
+
+
+def align_order_second_area_with_spu(
+    order_info: JsonDict,
+    spu: JsonDict | None,
+    source_text: str = "",
+) -> tuple[JsonDict, JsonDict]:
+    """Infer/validate second area inside the selected product's areaList."""
+
+    area_list = get_spu_area_list(spu)
+    normalized = dict(order_info)
+    area_scope = clean_text(normalized.get("managed_repair_scope") or normalized.get("area"))
+    second_area = clean_text(normalized.get("second_area"))
+    second_area_id = clean_text(normalized.get("second_area_id"))
+    options = list_spu_second_area_options(area_list)
+    option_details = list_spu_second_area_option_details(area_list)
+    result: JsonDict = {
+        "checked": bool(area_list),
+        "matched": None,
+        "inferred_second_area": second_area or None,
+        "match_source": None,
+        "matched_second_area": None,
+        "matched_first_area": None,
+        "available_second_areas": options,
+        "available_second_area_options": option_details,
+    }
+    if not area_list:
+        return normalized, result
+
+    match_source: str | None = None
+    matched_area = find_matching_second_area(area_list, area_scope, second_area, second_area_id)
+    if matched_area:
+        match_source = "selected" if second_area_id else "existing"
+    else:
+        infer_source = " ".join(
+            str(value)
+            for value in (
+                source_text,
+                normalized.get("product"),
+                normalized.get("fault"),
+            )
+            if value
+        )
+        matched_area, match_source = infer_second_area_from_spu_scope(area_list, area_scope, infer_source)
+
+    if matched_area:
+        matched_second_area_id = clean_text(matched_area.get("managedRepairAreaId"))
+        matched_second_area = clean_text(matched_area.get("managedRepairAreaName"))
+        matched_first_area = clean_text(matched_area.get("managedRepairAreaParentName"))
+        if matched_second_area_id:
+            normalized["second_area_id"] = matched_second_area_id
+        normalized["second_area"] = matched_second_area
+        if matched_first_area:
+            normalized["area"] = matched_first_area
+            normalized["managed_repair_scope"] = matched_first_area
+            if matched_first_area == "公区":
+                normalized["room_number"] = "/"
+        normalized.pop("second_area_needs_confirmation", None)
+        if options:
+            normalized["available_second_areas"] = options
+        else:
+            normalized.pop("available_second_areas", None)
+        if option_details:
+            normalized["available_second_area_options"] = option_details
+        else:
+            normalized.pop("available_second_area_options", None)
+        result.update(
+            {
+                "matched": True,
+                "matched_second_area_id": matched_second_area_id or None,
+                "matched_second_area": matched_second_area or None,
+                "matched_first_area": matched_first_area or None,
+                "inferred_second_area": second_area or matched_second_area or None,
+                "match_source": match_source,
+            }
+        )
+        return normalized, result
+
+    normalized.pop("second_area", None)
+    normalized.pop("second_area_id", None)
+    normalized["second_area_needs_confirmation"] = True
+    normalized["available_second_areas"] = options
+    normalized["available_second_area_options"] = option_details
+    result["matched"] = False
+    return normalized, result
+
+
 def build_managed_repair_order_payload(
     order_info: JsonDict,
     spu: JsonDict,
@@ -47,20 +279,15 @@ def build_managed_repair_order_payload(
             "commonRepairType": matched_fault.get("commonRepairType") or [],
         }]
 
-    area_list: list[JsonDict] = spu.get("areaList") or []
+    area_list = get_spu_area_list(spu)
     area_scope = clean_text(order_info.get("managed_repair_scope") or order_info.get("area"))
+    second_area = clean_text(order_info.get("second_area"))
+    second_area_id = clean_text(order_info.get("second_area_id"))
     room_num = clean_text(order_info.get("room_number"))
     urgency = clean_text(order_info.get("urgency"))
     emergency_flag = 1 if urgency in {"urgent", "紧急"} else 0
 
-    matched_area: JsonDict = {}
-    if area_list and area_scope:
-        for item in area_list:
-            if clean_text(item.get("managedRepairAreaParentName")) == area_scope:
-                matched_area = item
-                break
-        if not matched_area:
-            matched_area = area_list[0]
+    matched_area = match_area_from_spu(area_list, area_scope, second_area, second_area_id) if area_scope else {}
 
     first_area_id, first_area_name = resolve_first_area(area_tree, area_scope)
     if first_area_id is None and area_scope:

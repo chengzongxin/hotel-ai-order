@@ -24,6 +24,7 @@ from services.order_context_service import load_order_context
 from services.order_normalizer import normalize_order_defaults
 from services.order_routing import resolve_order_submit_route
 from tools.hosting_coverage import check_hosting_product_coverage
+from tools.order_payload_managed import align_order_second_area_with_spu
 
 JsonDict = dict[str, Any]
 NormalizeOrderDefaults = Callable[[str | None, JsonDict, str], JsonDict]
@@ -147,6 +148,7 @@ class OrderWorkflowService:
                 order_info=order_info,
                 matched_product=selected,
                 user=user,
+                last_user_message=str(state.get("last_user_message") or ""),
             )
             coverage_data = coverage_result.get("data") or {}
             effective_service_type = str(coverage_data.get("effective_service_type") or service_type)
@@ -155,6 +157,14 @@ class OrderWorkflowService:
                 order_info,
                 str(state.get("last_user_message") or ""),
             )
+            spu_detail = coverage_data.get("spu_detail") if isinstance(coverage_data.get("spu_detail"), dict) else {}
+            if effective_service_type == "托管维修" and spu_detail:
+                order_info, area_match = align_order_second_area_with_spu(
+                    order_info,
+                    spu_detail,
+                    source_text=str(state.get("last_user_message") or ""),
+                )
+                coverage_data = {**coverage_data, "area_match": area_match}
         else:
             coverage_data = {
                 "checked": False,

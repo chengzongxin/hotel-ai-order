@@ -62,6 +62,7 @@ class OrderInfo(BaseModel):
     product: str | None = Field(default=None, description="用户描述的商品/设备")
     fault: str | None = Field(default=None, description="故障现象")
     area: str | None = Field(default=None, description="区域，如 客房、公区")
+    second_area: str | None = Field(default=None, description="二级区域，如 客房设备、电梯、大堂")
     managed_repair_scope: str | None = Field(default=None, description="托管维修范围：客房 / 公区")
     urgency: UrgencyLevel | str | None = Field(default=None, description="紧急程度")
     expected_start_time: str | None = Field(default=None, description="期待开工时间")
@@ -116,6 +117,7 @@ class OrderCardField(BaseModel):
     editable: bool = Field(default=True, description="前端是否可编辑")
     input_type: str = Field(default="text", description="输入类型：text / textarea / select / datetime / number")
     options: list[dict[str, str]] = Field(default_factory=list, description="可选项，仅 select 使用")
+    hint: str | None = Field(default=None, description="字段辅助说明，展示在输入控件下方")
 
 
 class OrderCardSection(BaseModel):
@@ -128,6 +130,8 @@ class OrderCardSection(BaseModel):
 
 class CoverageSection(BaseModel):
     """托管维修维保范围校验结果。"""
+
+    model_config = ConfigDict(extra="allow")
 
     checked: bool = Field(default=False, description="是否已校验维保范围")
     covered: bool | None = Field(default=None, description="是否在当前维保卡范围内；非托管维修为 null")
@@ -169,6 +173,7 @@ class SubmittedOrder(BaseModel):
     product: str | None = None
     fault: str | None = None
     area: str | None = None
+    second_area: str | None = None
     managed_repair_scope: str | None = None
     urgency: UrgencyLevel | str | None = None
     expected_start_time: str | None = None

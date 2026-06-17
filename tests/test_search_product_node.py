@@ -3,6 +3,7 @@
 import pytest
 
 from graph.order_fields import build_order_card_fields
+from graph.order_fields import collect_missing_order_info
 
 from graph.builder import (
     build_order_preview,
@@ -86,6 +87,16 @@ def test_expected_start_time_missing_prompt_is_explicit():
     assert "请问具体什么时间" in question
 
 
+def test_managed_repair_missing_second_area_prompt():
+    missing = collect_missing_order_info(
+        "托管维修",
+        {"managed_repair_scope": "公区", "area": "公区", "product": "灯", "fault": "不亮"},
+    )
+
+    assert missing == ["second_area"]
+    assert build_missing_info_fallback_question(missing) == "请问具体在哪个区域？"
+
+
 def test_normalize_order_card_update_maps_editable_fields():
     order_info = {"product": "门锁", "fault": "打不开"}
 
@@ -123,6 +134,140 @@ def test_order_card_includes_editable_product_quantity():
     assert quantity_field["value"] == 2
     assert quantity_field["editable"] is True
     assert quantity_field["input_type"] == "number"
+
+
+def test_managed_order_card_uses_structured_second_area_options():
+    fields = build_order_card_fields(
+        service_type="托管维修",
+        order_info={
+            "managed_repair_scope": "客房",
+            "area": "客房",
+            "room_number": "301",
+            "second_area_id": "1545054022",
+            "second_area": "客房区域",
+            "available_second_area_options": [
+                {
+                    "label": "客房区域（客房）",
+                    "value": "1545054022",
+                    "second_area_id": "1545054022",
+                    "second_area": "客房区域",
+                    "first_area": "客房",
+                },
+                {
+                    "label": "洗衣房（公区）",
+                    "value": "1545054019",
+                    "second_area_id": "1545054019",
+                    "second_area": "洗衣房",
+                    "first_area": "公区",
+                },
+            ],
+        },
+        order_context={"contacts": "张三", "phone": "13800000000"},
+    )
+
+    second_area_field = next(field for field in fields if field["key"] == "second_area")
+    assert second_area_field["input_type"] == "select"
+    assert second_area_field["value"] == "1545054022"
+    assert second_area_field["options"] == [
+        {"label": "客房区域（客房）", "value": "1545054022"},
+        {"label": "洗衣房（公区）", "value": "1545054019"},
+    ]
+    assert second_area_field["hint"] == "该商品可选二级区域：客房区域（客房）、洗衣房（公区）"
+
+
+def test_order_preview_rebuilds_stale_second_area_text_field_from_spu_detail():
+    preview = build_order_preview(
+        {
+            "phase": "pre_order",
+            "service_type": "托管维修",
+            "effective_service_type": "托管维修",
+            "last_user_message": "1506 窗户关不上，有点漏风",
+            "order_info": {
+                "managed_repair_scope": "客房",
+                "area": "客房",
+                "room_number": "1506",
+                "product": "窗户",
+                "fault": "关不上，有点漏风",
+            },
+            "products": [
+                {
+                    "service_product_code": "WINDOW_HINGE",
+                    "service_product_name": "窗户铰链(中修)",
+                    "service_order_type": "托管维修",
+                }
+            ],
+            "selected_product_code": "WINDOW_HINGE",
+            "coverage_result": {
+                "checked": True,
+                "covered": True,
+                "reason": "该商品在当前维保卡维保范围内，可下托管维修单",
+                "effective_service_type": "托管维修",
+                "spu_detail": {
+                    "areaList": [
+                        {
+                            "managedRepairAreaId": 1545054022,
+                            "managedRepairAreaName": "客房区域",
+                            "managedRepairAreaParentName": "客房",
+                        },
+                        {
+                            "managedRepairAreaId": 1545054019,
+                            "managedRepairAreaName": "洗衣房",
+                            "managedRepairAreaParentName": "公区",
+                        },
+                    ],
+                },
+            },
+            "order_context": {"contacts": "张三", "phone": "13800000000"},
+            "order_card_fields": [
+                {
+                    "key": "second_area",
+                    "label": "二级区域",
+                    "value": None,
+                    "required": True,
+                    "editable": True,
+                    "input_type": "text",
+                    "options": [],
+                }
+            ],
+        }
+    )
+
+    assert preview is not None
+    second_area_field = next(field for field in preview["order_card"]["fields"] if field["key"] == "second_area")
+    assert second_area_field["input_type"] == "select"
+    assert second_area_field["value"] == "1545054022"
+    assert second_area_field["options"] == [
+        {"label": "客房区域（客房）", "value": "1545054022"},
+        {"label": "洗衣房（公区）", "value": "1545054019"},
+    ]
+
+
+def test_normalize_order_card_update_maps_second_area_option_parent():
+    updated = normalize_order_card_update(
+        order_info={
+            "managed_repair_scope": "客房",
+            "area": "客房",
+            "room_number": "301",
+            "second_area": "客房区域",
+            "available_second_area_options": [
+                {
+                    "label": "洗衣房（公区）",
+                    "value": "1545054019",
+                    "second_area_id": "1545054019",
+                    "second_area": "洗衣房",
+                    "first_area": "公区",
+                }
+            ],
+        },
+        updates={"second_area": "1545054019"},
+        service_type="托管维修",
+    )
+
+    assert updated["second_area_id"] == "1545054019"
+    assert updated["second_area"] == "洗衣房"
+    assert updated["managed_repair_scope"] == "公区"
+    assert updated["area"] == "公区"
+    assert updated["room_number"] == "/"
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from schemas.user import UserContext
 JsonDict = dict[str, Any]
 
 ADMIN_API_SPU_PAGE = "/admin-api/system/service-spu/page"
+ADMIN_API_SPU_GET = "/admin-api/system/service-spu/get"
 CREATE_MANAGED_REPAIR_ORDER = "/app-api/order/company-managed-repair-order/create"
 CHECK_SINGLE_ORDER = "/app-api/order/publish-order/checkDouble"
 CREATE_SINGLE_ORDER = "/app-api/order/publish-order/create"
@@ -120,6 +121,18 @@ _post_admin = post_admin
 _post_app = post_app
 
 
+async def get_admin(path: str, params: JsonDict, user: UserContext) -> JsonDict:
+    url = settings.admin_api_base_url.rstrip("/") + path
+    async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
+        response = await client.get(url, headers=_admin_headers(user), params=params)
+    response.raise_for_status()
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
+_get_admin = get_admin
+
+
 async def fetch_app_data(path: str, user: UserContext, payload: JsonDict | None = None) -> JsonDict | None:
     if not has_login_config(user):
         return None
@@ -146,6 +159,87 @@ async def query_spu_by_name(name: str, user: UserContext) -> JsonDict | None:
         if clean_text(item.get("name")) == name:
             return item
     return items[0]
+
+
+def _response_data(data: JsonDict) -> JsonDict | None:
+    body = data.get("data")
+    return body if isinstance(body, dict) else None
+
+
+async def query_spu_by_id(spu_id: int | str, user: UserContext) -> JsonDict | None:
+    if spu_id in (None, ""):
+        return None
+    data = await get_admin(ADMIN_API_SPU_GET, {"id": spu_id}, user)
+    if data.get("code") != 200:
+        return None
+    return _response_data(data)
+
+
+async def query_spu_by_code(code: str, user: UserContext) -> JsonDict | None:
+    """Reserved for the future exact-code query support.
+
+    The backend does not fully support querying by service product code yet.
+    Until it does, only accept responses whose code exactly matches the
+    requested code, so an ignored filter cannot select the wrong product.
+    """
+
+    product_code = clean_text(code)
+    if not product_code:
+        return None
+    data = await post_admin(
+        ADMIN_API_SPU_PAGE,
+        {"pageNo": 1, "pageSize": 10, "code": product_code},
+        user,
+    )
+    items: list[JsonDict] = (data.get("data") or {}).get("list") or []
+    for item in items:
+        if clean_text(item.get("code")) != product_code:
+            continue
+        spu_id = item.get("id") or item.get("spuId")
+        detail = await query_spu_by_id(spu_id, user) if spu_id else None
+        return detail or item
+    return None
+
+
+def _pick_product_spu_id(product: JsonDict) -> object:
+    for key in ("id", "spu_id", "spuId", "service_product_id", "serviceProductId"):
+        value = product.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+async def query_spu_detail(matched_product: JsonDict, user: UserContext) -> JsonDict | None:
+    spu_id = _pick_product_spu_id(matched_product)
+    if spu_id:
+        try:
+            detail = await query_spu_by_id(spu_id, user)
+        except httpx.HTTPError:
+            detail = None
+        if detail:
+            return detail
+
+    product_code = clean_text(matched_product.get("service_product_code") or matched_product.get("code"))
+    if product_code:
+        try:
+            detail = await query_spu_by_code(product_code, user)
+        except httpx.HTTPError:
+            detail = None
+        if detail:
+            return detail
+
+    product_name = clean_text(matched_product.get("service_product_name") or matched_product.get("name"))
+    if not product_name:
+        return None
+    spu = await query_spu_by_name(product_name, user)
+    if not spu:
+        return None
+    spu_id = spu.get("id") or spu.get("spuId")
+    if spu_id:
+        detail = await query_spu_by_id(spu_id, user)
+        if detail:
+            return detail
+    return spu
 
 
 def extract_order_no(response: JsonDict) -> str | None:

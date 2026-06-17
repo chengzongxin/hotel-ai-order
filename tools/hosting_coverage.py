@@ -4,7 +4,11 @@ from typing import Any
 
 from schemas.user import UserContext
 from tools.hosting_card import fetch_hosting_card_with_diagnostics
-from tools.order_submit import query_spu_by_name
+from tools.order_payload_managed import (
+    align_order_second_area_with_spu,
+    match_area_from_spu,
+)
+from tools.order_submit_common import query_spu_detail
 from tools.protocol import ToolErrorCode, ToolResult, error_response, success_response
 
 JsonDict = dict[str, Any]
@@ -35,15 +39,7 @@ def _match_area_from_spu(spu: JsonDict, area_scope: str) -> JsonDict:
     area_list = spu.get("areaList") or []
     if not isinstance(area_list, list):
         return {}
-
-    for item in area_list:
-        if not isinstance(item, dict):
-            continue
-        parent_name = _clean_text(item.get("managedRepairAreaParentName"))
-        if parent_name and parent_name == area_scope:
-            return item
-
-    return area_list[0] if area_list and isinstance(area_list[0], dict) else {}
+    return match_area_from_spu(area_list, area_scope)
 
 
 def _is_scope_match(scope_item: JsonDict, spu_id: int, second_area_id: int | None) -> bool:
@@ -60,7 +56,7 @@ def _is_scope_match(scope_item: JsonDict, spu_id: int, second_area_id: int | Non
 def _build_result(
     *,
     checked: bool,
-    covered: bool,
+    covered: bool | None,
     reason: str,
     effective_service_type: str,
     hosting_card: JsonDict | None = None,
@@ -78,6 +74,7 @@ def _build_result(
         "hosting_card_name": hosting_card.get("comboName") if hosting_card else None,
         "spu_id": _pick_spu_id(spu_detail or {}),
         "spu_name": (spu_detail or {}).get("name"),
+        "spu_detail": spu_detail or {},
         "second_area_id": second_area_id,
         "interface_response": interface_response or {},
     }
@@ -87,6 +84,8 @@ async def check_hosting_product_coverage(
     order_info: JsonDict,
     matched_product: JsonDict,
     user: UserContext,
+    spu_detail: JsonDict | None = None,
+    last_user_message: str = "",
 ) -> ToolResult:
     """检查托管维修商品是否在当前用户维保卡范围内。
 
@@ -94,15 +93,14 @@ async def check_hosting_product_coverage(
     未命中、无维保卡或查询失败时，保守降级为单次维修服务。
     """
 
-    product_name = _clean_text(matched_product.get("service_product_name"))
-    if not product_name:
+    if not _clean_text(matched_product.get("service_product_name") or matched_product.get("service_product_code")):
         return error_response(
             error_code=ToolErrorCode.INVALID_INPUT,
-            message="cannot check hosting coverage without matched product name",
+            message="cannot check hosting coverage without matched product",
             data=_build_result(
                 checked=False,
                 covered=False,
-                reason="缺少匹配商品名称，无法校验维保范围",
+                reason="缺少匹配商品，无法校验维保范围",
                 effective_service_type="单次维修服务",
             ),
         )
@@ -147,21 +145,23 @@ async def check_hosting_product_coverage(
             message="hosting card scope is empty",
         )
 
-    try:
-        spu = await query_spu_by_name(product_name, user)
-    except Exception as exc:
-        return error_response(
-            error_code=ToolErrorCode.UPSTREAM_ERROR,
-            message=f"query managed repair spu failed: {exc}",
-            data=_build_result(
-                checked=True,
-                covered=False,
-                reason="查询托管维修商品详情失败，只能按单次维修下单",
-                effective_service_type="单次维修服务",
-                hosting_card=hosting_card,
-                interface_response=interface_response,
-            ),
-        )
+    spu = spu_detail if isinstance(spu_detail, dict) else None
+    if not spu:
+        try:
+            spu = await query_spu_detail(matched_product, user)
+        except Exception as exc:
+            return error_response(
+                error_code=ToolErrorCode.UPSTREAM_ERROR,
+                message=f"query managed repair spu failed: {exc}",
+                data=_build_result(
+                    checked=True,
+                    covered=False,
+                    reason="查询托管维修商品详情失败，只能按单次维修下单",
+                    effective_service_type="单次维修服务",
+                    hosting_card=hosting_card,
+                    interface_response=interface_response,
+                ),
+            )
 
     if not spu:
         return success_response(
@@ -191,8 +191,29 @@ async def check_hosting_product_coverage(
             message="managed repair spu id is missing",
         )
 
-    area_scope = _clean_text(order_info.get("managed_repair_scope") or order_info.get("area"))
-    matched_area = _match_area_from_spu(spu, area_scope)
+    aligned_order_info, area_match = align_order_second_area_with_spu(
+        order_info,
+        spu,
+        source_text=last_user_message,
+    )
+    if area_match.get("checked") and area_match.get("matched") is False:
+        data = _build_result(
+            checked=False,
+            covered=None,
+            reason="二级区域待确认，暂不校验维保范围",
+            effective_service_type="托管维修",
+            hosting_card=hosting_card,
+            spu_detail=spu,
+            interface_response=interface_response,
+        )
+        data["area_match"] = area_match
+        return success_response(data=data, message="managed repair second area needs confirmation")
+
+    area_scope = _clean_text(aligned_order_info.get("managed_repair_scope") or aligned_order_info.get("area"))
+    second_area = _clean_text(aligned_order_info.get("second_area"))
+    second_area_id_value = _clean_text(aligned_order_info.get("second_area_id"))
+    area_list = spu.get("areaList") or []
+    matched_area = match_area_from_spu(area_list, area_scope, second_area, second_area_id_value) if isinstance(area_list, list) else {}
     second_area_id = _to_int(matched_area.get("managedRepairAreaId"))
 
     covered = any(
@@ -224,7 +245,7 @@ async def check_hosting_product_coverage(
             hosting_card=hosting_card,
             spu_detail=spu,
             second_area_id=second_area_id,
-        interface_response=interface_response,
+            interface_response=interface_response,
         ),
         message="hosting product is not covered",
     )

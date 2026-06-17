@@ -262,6 +262,145 @@ async def test_managed_product_selection_keeps_hosting_coverage(monkeypatch, tra
 
 
 @pytest.mark.asyncio
+async def test_coverage_node_clears_unmatched_second_area(monkeypatch, trace_step):
+    products = [
+        product("WALLPAPER_MANAGED", "壁纸/墙布(≤3平米小修)", "托管维修"),
+    ]
+
+    async def fake_check_hosting_product_coverage(**kwargs):
+        return {
+            "status": "success",
+            "data": {
+                "checked": False,
+                "covered": None,
+                "reason": "二级区域待确认，暂不校验维保范围",
+                "effective_service_type": "托管维修",
+                "spu_detail": {
+                    "id": 1772,
+                    "code": "FWSP01643",
+                    "name": "壁纸/墙布(≤3平米小修)",
+                    "areaList": [
+                        {
+                            "managedRepairAreaId": 1545054022,
+                            "managedRepairAreaName": "客房区域",
+                            "managedRepairAreaParentName": "客房",
+                        },
+                        {
+                            "managedRepairAreaId": 1545054023,
+                            "managedRepairAreaName": "卫生间区域",
+                            "managedRepairAreaParentName": "客房",
+                        },
+                    ],
+                },
+            },
+        }
+
+    monkeypatch.setattr("graph.builder.check_hosting_product_coverage", fake_check_hosting_product_coverage)
+    monkeypatch.setattr(
+        "graph.builder.user_from_runtime_config",
+        lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
+    )
+
+    state = {
+        "service_type": "托管维修",
+        "products": products,
+        "selected_product_code": "WALLPAPER_MANAGED",
+        "last_user_message": "201房间空调不制冷",
+        "order_info": {
+            "managed_repair_scope": "客房",
+            "area": "客房",
+            "room_number": "201",
+            "second_area": "客房设备",
+            "product": "壁纸",
+            "fault": "破损",
+        },
+    }
+
+    update = await coverage_node(state)
+    trace_step("coverage_node output: unmatched second area", update=update)
+
+    assert update["effective_service_type"] == "托管维修"
+    assert "second_area" not in update["order_info"]
+    assert update["order_info"]["second_area_needs_confirmation"] is True
+    assert update["order_info"]["available_second_areas"] == ["客房区域", "卫生间区域"]
+    assert update["coverage_result"]["area_match"]["matched"] is False
+
+
+@pytest.mark.asyncio
+async def test_coverage_node_auto_selects_single_product_second_area(monkeypatch, trace_step):
+    products = [
+        product("WINDOW_HINGE", "窗户铰链(中修)", "托管维修"),
+    ]
+
+    async def fake_check_hosting_product_coverage(**kwargs):
+        return {
+            "status": "success",
+            "data": {
+                "checked": True,
+                "covered": True,
+                "reason": "该商品在当前维保卡维保范围内，可下托管维修单",
+                "effective_service_type": "托管维修",
+                "spu_detail": {
+                    "id": 1772,
+                    "code": "WINDOW_HINGE",
+                    "name": "窗户铰链(中修)",
+                    "areaList": [
+                        {
+                            "managedRepairAreaId": 1545054022,
+                            "managedRepairAreaName": "客房区域",
+                            "managedRepairAreaParentName": "客房",
+                        },
+                        {
+                            "managedRepairAreaId": 1545054019,
+                            "managedRepairAreaName": "洗衣房",
+                            "managedRepairAreaParentName": "公区",
+                        },
+                        {
+                            "managedRepairAreaId": 1545054017,
+                            "managedRepairAreaName": "健身房",
+                            "managedRepairAreaParentName": "公区",
+                        }
+                    ],
+                },
+            },
+        }
+
+    monkeypatch.setattr("graph.builder.check_hosting_product_coverage", fake_check_hosting_product_coverage)
+    monkeypatch.setattr(
+        "graph.builder.user_from_runtime_config",
+        lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
+    )
+
+    state = {
+        "service_type": "托管维修",
+        "products": products,
+        "selected_product_code": "WINDOW_HINGE",
+        "last_user_message": "1506 窗户关不上，有点漏风",
+        "order_info": {
+            "managed_repair_scope": "客房",
+            "area": "客房",
+            "room_number": "1506",
+            "product": "窗户",
+            "fault": "关不上，有点漏风",
+        },
+    }
+
+    update = await coverage_node(state)
+    trace_step("coverage_node output: single second area", update=update)
+
+    assert update["order_info"]["second_area"] == "客房区域"
+    assert update["order_info"]["second_area_id"] == "1545054022"
+    assert update["order_info"]["available_second_areas"] == ["客房区域", "洗衣房", "健身房"]
+    assert [item["label"] for item in update["order_info"]["available_second_area_options"]] == [
+        "客房区域（客房）",
+        "洗衣房（公区）",
+        "健身房（公区）",
+    ]
+    assert update["coverage_result"]["area_match"]["matched"] is True
+    assert update["coverage_result"]["area_match"]["match_source"] == "single_option"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("message", "order_info", "products", "expected_service_type", "expected_code"),
     [

@@ -11,6 +11,7 @@ const props = withDefaults(defineProps<{
   orderCompleteness: number
   effectiveServiceTypeDisplay?: string | null
   selectedProduct?: ProductOption | null
+  productFeedback?: string | null
   coverageNotice?: CoverageNotice | null
   missingInfoText?: string
   isSubmittingOrder?: boolean
@@ -90,6 +91,7 @@ function displayValue(field: UiOrderField): string {
 
     <div :class="variant === 'sidebar' ? 'flex-1 overflow-y-auto p-3.5 space-y-2' : 'space-y-3'">
       <OrderStatusNotices
+        :product-feedback="productFeedback"
         :coverage-notice="coverageNotice"
         :missing-info-text="missingInfoText"
         :is-submitting-order="isSubmittingOrder"
@@ -154,6 +156,9 @@ function displayValue(field: UiOrderField): string {
           <span v-else class="mt-1 block truncate text-[13px] font-medium text-slate-800">
             {{ displayValue(field) }}
           </span>
+          <p v-if="field.hint" class="mt-1 text-[11px] leading-4 text-slate-500">
+            {{ field.hint }}
+          </p>
         </label>
         <p v-if="updatingFieldKey === field.key" class="mt-1 text-[10px] text-indigo-500">正在保存...</p>
       </div>

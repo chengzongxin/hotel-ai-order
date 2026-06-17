@@ -28,6 +28,7 @@ from tools.order_submit_common import (
     nested_dict,
     post_app,
     post_admin,
+    query_spu_detail,
     query_spu_by_name,
     resolve_product_quantity,
 )
@@ -65,16 +66,14 @@ async def submit_real_order(
     order_context = await load_managed_repair_order_context(active_user)
     final_service_type = effective_service_type or service_type or matched_product.get("service_order_type")
 
-    product_name = clean_text(matched_product.get("service_product_name"))
     spu: JsonDict = {}
     spu_query_error: str | None = None
-    if product_name:
-        try:
-            result = await query_spu_by_name(product_name, active_user)
-            if result:
-                spu = result
-        except Exception as exc:
-            spu_query_error = f"{type(exc).__name__}: {exc}"
+    try:
+        result = await query_spu_detail(matched_product, active_user)
+        if result:
+            spu = result
+    except Exception as exc:
+        spu_query_error = f"{type(exc).__name__}: {exc}"
 
     if final_service_type == "托管维修":
         from tools.order_submit_managed import submit_managed_repair_order
@@ -136,6 +135,7 @@ __all__ = [
     "build_managed_repair_order_payload",
     "build_single_order_payload",
     "load_managed_repair_order_context",
+    "query_spu_detail",
     "query_single_order_app_spu",
     "query_single_order_category_context",
     "query_spu_by_name",

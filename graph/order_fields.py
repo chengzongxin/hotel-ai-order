@@ -71,8 +71,8 @@ def normalize_goods_arrival_status(value: str | None) -> str | None:
 def get_required_order_fields(service_type: str | None, order_info: dict[str, object]) -> list[str]:
     if service_type == "托管维修":
         if order_info.get("managed_repair_scope") == "公区":
-            return ["area", "product", "fault"]
-        return ["area", "room_number", "product", "fault"]
+            return ["area", "second_area", "product", "fault"]
+        return ["area", "second_area", "room_number", "product", "fault"]
     if service_type == "单次维修服务":
         return ["product", "fault", "expected_start_time"]
     if service_type == "单次安装":
@@ -129,6 +129,7 @@ def build_order_card_fields(
         editable: bool = True,
         input_type: str = "text",
         options: list[dict[str, str]] | None = None,
+        hint: str | None = None,
     ) -> dict[str, object]:
         return {
             "key": key,
@@ -139,6 +140,7 @@ def build_order_card_fields(
             "editable": editable,
             "input_type": input_type,
             "options": options or [],
+            "hint": hint,
         }
 
     if service_type == "托管维修":
@@ -147,8 +149,49 @@ def build_order_card_fields(
             order_info.get("area"),
             selected_address.get("houseNumber") if isinstance(selected_address, dict) else None,
         )
+        structured_second_area_options = [
+            {
+                "label": str(item.get("label") or item.get("second_area") or item.get("value")),
+                "value": str(item.get("value") or item.get("second_area_id") or item.get("second_area")),
+            }
+            for item in (order_info.get("available_second_area_options") or [])
+            if isinstance(item, dict) and (item.get("value") or item.get("second_area_id") or item.get("second_area"))
+        ]
+        second_area_options = [
+            {"label": str(item), "value": str(item)}
+            for item in (order_info.get("available_second_areas") or [])
+            if item
+        ]
+        second_area_value = _display_value(order_info.get("second_area_id"), order_info.get("second_area"))
+        if structured_second_area_options and not order_info.get("second_area_id") and order_info.get("second_area"):
+            for raw_option in order_info.get("available_second_area_options") or []:
+                if not isinstance(raw_option, dict):
+                    continue
+                if str(raw_option.get("second_area") or "").strip() == str(order_info.get("second_area") or "").strip():
+                    second_area_value = raw_option.get("value") or raw_option.get("second_area")
+                    break
+        second_area_option_labels = [
+            option["label"]
+            for option in (structured_second_area_options or second_area_options)
+            if option.get("label")
+        ]
+        second_area_hint = (
+            f"该商品可选二级区域：{'、'.join(second_area_option_labels)}"
+            if second_area_option_labels
+            else None
+        )
         return [
             field("area_room", "区域/房号", area_room, required=True, source="user"),
+            field(
+                "second_area",
+                "二级区域",
+                second_area_value,
+                required=True,
+                source="user",
+                input_type="select" if (structured_second_area_options or second_area_options) else "text",
+                options=structured_second_area_options or second_area_options,
+                hint=second_area_hint,
+            ),
             field(
                 "urgency",
                 "紧急度",
@@ -233,6 +276,21 @@ def normalize_order_card_update(
     """把前端可编辑卡片字段写回内部 order_info。"""
 
     normalized = dict(order_info)
+
+    def resolve_second_area_option(raw: str) -> dict[str, object] | None:
+        for item in normalized.get("available_second_area_options") or []:
+            if not isinstance(item, dict):
+                continue
+            candidates = {
+                str(item.get("value") or "").strip(),
+                str(item.get("second_area_id") or "").strip(),
+                str(item.get("second_area") or "").strip(),
+                str(item.get("label") or "").strip(),
+            }
+            if raw in candidates:
+                return item
+        return None
+
     for key, raw_value in updates.items():
         value = str(raw_value).strip() if raw_value is not None else ""
         if key == "area_room":
@@ -266,6 +324,30 @@ def normalize_order_card_update(
         elif key == "goods_arrival_status":
             normalized_status = normalize_goods_arrival_status(value)
             normalized["goods_arrival_status"] = normalized_status or value
-        elif key in {"room_number", "area", "fault", "product", "expected_start_time", "goods_arrival_status"}:
+        elif key == "second_area":
+            option = resolve_second_area_option(value)
+            if option:
+                second_area_id = str(option.get("second_area_id") or option.get("value") or "").strip()
+                second_area = str(option.get("second_area") or "").strip()
+                first_area = str(option.get("first_area") or "").strip()
+                if second_area_id:
+                    normalized["second_area_id"] = second_area_id
+                if second_area:
+                    normalized["second_area"] = second_area
+                if first_area:
+                    normalized["area"] = first_area
+                    normalized["managed_repair_scope"] = first_area
+                    if first_area == "公区":
+                        normalized["room_number"] = "/"
+                    elif normalized.get("room_number") == "/":
+                        normalized.pop("room_number", None)
+            else:
+                normalized["second_area"] = value
+                normalized.pop("second_area_id", None)
+            if value:
+                normalized.pop("second_area_needs_confirmation", None)
+        elif key in {"room_number", "area", "second_area", "fault", "product", "expected_start_time", "goods_arrival_status"}:
             normalized[key] = value
+            if key == "second_area" and value:
+                normalized.pop("second_area_needs_confirmation", None)
     return normalized

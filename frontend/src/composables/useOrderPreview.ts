@@ -7,6 +7,7 @@ const MISSING_INFO_LABELS: Record<string, string> = {
   product: '商品/设备',
   fault: '故障现象',
   area: '区域',
+  second_area: '二级区域',
   expected_start_time: '期待开工时间',
   goods_arrival_status: '货物到场状态',
   contacts: '联系人',
@@ -29,12 +30,14 @@ function makeReadonlyField(
     editable: false,
     inputType: 'text',
     options: [],
+    hint: null,
   }
 }
 
 export function iconForOrderField(key: string): string {
   const icons: Record<string, string> = {
     area_room: '📍',
+    second_area: '⌖',
     urgency: '!',
     remark: '✎',
     contacts: '👤',
@@ -178,6 +181,7 @@ export function useOrderPreview(
         editable: field.editable !== false,
         inputType: field.input_type || 'text',
         options: field.options || [],
+        hint: field.hint ?? null,
       }))
     }
 
@@ -213,6 +217,7 @@ export function useOrderPreview(
       ...base,
       makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
       makeReadonlyField('area', '📍', '所在区域', orderInfo.value.area),
+      makeReadonlyField('secondArea', '⌖', '二级区域', orderInfo.value.second_area),
       makeReadonlyField('roomNumber', '🏠', '房间号', orderInfo.value.room_number),
     ]
   })

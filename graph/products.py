@@ -85,6 +85,7 @@ def build_product_search_feedback(
     order_info: dict[str, Any],
     selected_product: dict[str, Any],
     service_type: str | None,
+    coverage_result: dict[str, Any] | None = None,
 ) -> str | None:
     product_name = selected_product.get("service_product_name")
     if not product_name:
@@ -92,10 +93,56 @@ def build_product_search_feedback(
 
     described_issue = order_info.get("fault") or order_info.get("product") or "需求"
     service_type_text = format_service_type_display(service_type, order_info) or "待确认"
-    return (
+    feedback = (
         f"根据您描述的【{described_issue}】，已为您匹配到【{product_name}】，"
         f"服务类型为【{service_type_text}】。"
     )
+    area_feedback = build_second_area_match_feedback(order_info, coverage_result or {})
+    if area_feedback:
+        feedback = f"{feedback}\n{area_feedback}"
+    return feedback
+
+
+def build_second_area_match_feedback(
+    order_info: dict[str, Any],
+    coverage_result: dict[str, Any],
+) -> str | None:
+    area_match = coverage_result.get("area_match") if isinstance(coverage_result, dict) else None
+    if not isinstance(area_match, dict) or not area_match.get("checked"):
+        return None
+
+    inferred = area_match.get("inferred_second_area") or order_info.get("second_area")
+    matched = area_match.get("matched_second_area") or order_info.get("second_area")
+    options = [
+        str(item)
+        for item in (area_match.get("available_second_areas") or order_info.get("available_second_areas") or [])
+        if item
+    ]
+    options_text = "、".join(options)
+
+    if area_match.get("matched") is True:
+        match_source = area_match.get("match_source")
+        if match_source == "single_option" and matched:
+            return f"区域匹配：该商品在当前区域下仅绑定【{matched}】，已自动选择；如不对，可在预下单卡片修改。"
+        if match_source == "source_text" and matched:
+            return f"区域匹配：已根据您的描述和商品绑定区域匹配为【{matched}】；如不对，可在预下单卡片修改。"
+        if inferred and matched and inferred != matched:
+            return f"区域匹配：系统初步识别的二级区域【{inferred}】已按商品绑定区域归一为【{matched}】；如不对，可在预下单卡片修改。"
+        if matched:
+            return f"区域匹配：当前二级区域为【{matched}】，已匹配该商品绑定区域；如不对，可在预下单卡片修改。"
+        return None
+
+    if area_match.get("matched") is False:
+        if inferred and options_text:
+            return f"区域待确认：系统初步识别的二级区域【{inferred}】不在该商品绑定区域内，可选【{options_text}】，请补充或在卡片中修改。"
+        if options_text:
+            return f"区域待确认：该商品绑定的二级区域为【{options_text}】，请补充或在卡片中选择。"
+        if inferred:
+            return f"区域待确认：系统初步识别的二级区域【{inferred}】未匹配到该商品绑定区域，请补充确认。"
+
+    if options_text:
+        return f"区域提示：该商品绑定的二级区域为【{options_text}】，请确认是否正确。"
+    return None
 
 
 def _score(product: dict[str, Any]) -> float | None:
@@ -138,7 +185,7 @@ def derive_product_section_fields(state: dict[str, Any]) -> tuple[str | None, st
     selected = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
     service_type = state.get("service_type") or selected.get("service_order_type")
     feedback = (
-        build_product_search_feedback(order_info, selected, service_type)
+        build_product_search_feedback(order_info, selected, service_type, state.get("coverage_result") or {})
         if selected
         else build_product_selection_feedback(products, search_query)
     )
