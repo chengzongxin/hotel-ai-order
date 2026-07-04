@@ -587,7 +587,7 @@ QWEN_EMBEDDING_API_KEY=...           # 商品向量
 |------|------|
 | [project_status.md](./project_status.md) | 功能清单与完成度（偏产品） |
 | [workflow.md](./workflow.md) | LangGraph 流程图 |
-| [embedding_recall.md](./embedding_recall.md) | 商品检索原理 |
+| [product_hybrid_search.md](./product_hybrid_search.md) | 商品 BM25 + Chroma 混合检索 |
 | [order_test_cases.md](./order_test_cases.md) | 业务测试用例 |
 | [sqlite_memory.md](./sqlite_memory.md) | 会话 checkpoint 说明 |
 | [prompts.md](./prompts.md) | Prompt 目录规范 |

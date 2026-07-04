@@ -354,7 +354,7 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 | `tests/fixtures/product_recall_cases.json` | 商品召回 golden set |
 | `docs/api_order_preview.md` | 前端契约字段 |
 | `docs/order_test_cases.md` | 业务测试用例说明 |
-| `docs/embedding_recall.md` | 商品检索说明 |
+| `docs/product_hybrid_search.md` | 商品混合检索说明 |
 | `docs/workflow.md` | LangGraph 流程图 |
 
 ---
@@ -375,7 +375,7 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 
 - [README.md](../README.md) — 项目总览与运行说明
 - [docs/workflow.md](./workflow.md) — LangGraph 流程图
-- [docs/embedding_recall.md](./embedding_recall.md) — 商品检索原理
+- [docs/product_hybrid_search.md](./product_hybrid_search.md) — 商品 BM25 + Chroma 混合检索
 - [docs/order_test_cases.md](./order_test_cases.md) — 业务测试用例
 - [docs/prompts.md](./prompts.md) — Prompt 目录规范
 - [docs/langsmith_tracing.md](./langsmith_tracing.md) — LangSmith 追踪

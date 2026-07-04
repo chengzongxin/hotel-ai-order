@@ -7,6 +7,7 @@ import jieba
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+from rank_bm25 import BM25Okapi
 
 from config.settings import settings
 from rag.qwen_embedding import QwenEmbeddingClient
@@ -19,29 +20,36 @@ INDEX_TEXT_VERSION = "product-name-fault-v2"
 
 # 有故障词时对"无故障描述"商品（安装/测量类）的分数惩罚值
 NO_FAULT_PENALTY = 0.15
+VECTOR_SCORE_WEIGHT = 0.65
+BM25_SCORE_WEIGHT = 0.35
 
 
-def _keyword_overlap_tokens(text: str, *, expand_chars: bool) -> set[str]:
-    """提取用于关键词重叠判断的 token 集合。
-
-    expand_chars=True 时，对多字中文词补充单字，缓解 jieba 整词切分造成的匹配断层
-    （如 query「门把手」与商品「门五金」）；商品名侧不展开，避免单字误匹配。
-    """
-    tokens: set[str] = set()
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """BM25 分词：jieba 搜索模式，过滤空 token。"""
+    tokens: list[str] = []
     for token in jieba.cut_for_search(text):
         token = token.strip()
-        if not token:
-            continue
-        tokens.add(token)
-        if expand_chars and len(token) >= 2 and all("\u4e00" <= c <= "\u9fff" for c in token):
-            tokens.update(token)
+        if token:
+            tokens.append(token)
     return tokens
 
 
-def _has_keyword_overlap(query: str, product_name: str) -> bool:
-    query_tokens = _keyword_overlap_tokens(query, expand_chars=True)
-    product_tokens = _keyword_overlap_tokens(product_name, expand_chars=False)
-    return bool(query_tokens & product_tokens)
+def _normalize_score_map(scores: dict[str, float]) -> dict[str, float]:
+    """将分数字典按最大值归一化到 0-1。"""
+    if not scores:
+        return {}
+    max_score = max(scores.values())
+    if max_score <= 0:
+        return {key: 0.0 for key in scores}
+    return {key: value / max_score for key, value in scores.items()}
+
+
+def _compute_hybrid_score(vector_score: float, bm25_score: float) -> float:
+    return VECTOR_SCORE_WEIGHT * vector_score + BM25_SCORE_WEIGHT * bm25_score
+
+
+def _product_code(doc: Document) -> str:
+    return str(doc.metadata.get("service_product_code") or "")
 
 
 class QwenEmbeddings(Embeddings):
@@ -66,10 +74,65 @@ class ProductVectorStore:
             persist_directory=PERSIST_DIR,
         )
         self._documents: list[Document] = []
+        self._bm25: BM25Okapi | None = None
         self.load_products()
 
     def get_retriever(self, k: int = 5):
         return self.vector_store.as_retriever(search_kwargs={"k": k})
+
+    def _build_bm25_index(self) -> None:
+        """基于商品名构建内存 BM25 索引，每次 load_products 时重建。"""
+        corpus = [
+            _tokenize_for_bm25(str(doc.metadata.get("service_product_name") or ""))
+            for doc in self._documents
+        ]
+        self._bm25 = BM25Okapi(corpus) if corpus else None
+
+    def _bm25_recall(self, query_tokens: list[str], fetch_k: int) -> list[tuple[int, float]]:
+        if not self._bm25 or not query_tokens:
+            return []
+        scores = self._bm25.get_scores(query_tokens)
+        ranked = sorted(range(len(scores)), key=lambda index: scores[index], reverse=True)
+        results: list[tuple[int, float]] = []
+        for index in ranked[:fetch_k]:
+            score = float(scores[index])
+            if score > 0:
+                results.append((index, score))
+        return results
+
+    def _merge_hybrid_candidates(
+        self,
+        *,
+        vector_results: list[tuple[Document, float]],
+        bm25_results: list[tuple[int, float]],
+    ) -> dict[str, dict[str, object]]:
+        """按 service_product_code 合并向量与 BM25 候选。"""
+        candidates: dict[str, dict[str, object]] = {}
+
+        for doc, vector_score in vector_results:
+            code = _product_code(doc)
+            if not code:
+                continue
+            entry = candidates.setdefault(
+                code,
+                {"doc": doc, "vector_score": 0.0, "bm25_score": 0.0},
+            )
+            entry["vector_score"] = max(float(entry["vector_score"]), float(vector_score))
+
+        for index, bm25_score in bm25_results:
+            if index >= len(self._documents):
+                continue
+            doc = self._documents[index]
+            code = _product_code(doc)
+            if not code:
+                continue
+            entry = candidates.setdefault(
+                code,
+                {"doc": doc, "vector_score": 0.0, "bm25_score": 0.0},
+            )
+            entry["bm25_score"] = max(float(entry["bm25_score"]), float(bm25_score))
+
+        return candidates
 
     def search(
         self,
@@ -79,46 +142,49 @@ class ProductVectorStore:
         has_fault: bool = False,
     ) -> list[dict]:
         """
-        混合检索：关键词过滤 + 向量排名 + 故障惩罚。
+        混合检索：BM25 关键词召回 + 向量语义召回 + 分数融合 + 故障惩罚。
 
         has_fault: 当为 True 时，对没有故障描述的商品（安装/测量类）扣减分数，
                    确保用户描述了故障时优先匹配维修商品。
         """
-        # ── 关键词过滤：剔除与 query 无词级重叠的商品 ─────────────────────────
-        # 向量负责语义排序；此处只做轻量过滤，query 侧对多字中文词做字级展开
         query = query.strip()
         if not query:
             return []
         min_score = threshold if threshold is not None else settings.product_search_threshold
         fetch_k = top_k * 4
+        query_tokens = _tokenize_for_bm25(query)
 
-        # ── 向量检索（语义排名）──────────────────────────────────────────────
         vector_results = self.vector_store.similarity_search_with_relevance_scores(query, k=fetch_k)
+        bm25_results = self._bm25_recall(query_tokens, fetch_k)
+        candidates = self._merge_hybrid_candidates(
+            vector_results=vector_results,
+            bm25_results=bm25_results,
+        )
+        if not candidates:
+            return []
 
-        # ── 过滤 + 故障惩罚 + 排序 ──────────────────────────────────────────
+        bm25_norm = _normalize_score_map(
+            {code: float(entry["bm25_score"]) for code, entry in candidates.items()}
+        )
+
         scored: list[tuple[float, Document]] = []
-        for doc, v_score in vector_results:
-            product_name = doc.metadata.get("service_product_name", "")
-            if product_name and not _has_keyword_overlap(query, product_name):
-                continue
-            # 故障惩罚：有故障描述时，对无故障文本的商品（安装/测量类）降权
-            adjusted = float(v_score)
+        for code, entry in candidates.items():
+            doc = entry["doc"]
+            assert isinstance(doc, Document)
+            vector_score = float(entry["vector_score"])
+            bm25_score = bm25_norm.get(code, 0.0)
+            final_score = _compute_hybrid_score(vector_score, bm25_score)
             if has_fault and not doc.metadata.get("fault_phenomenon"):
-                adjusted -= NO_FAULT_PENALTY
-            scored.append((adjusted, doc))
+                final_score -= NO_FAULT_PENALTY
+            scored.append((final_score, doc))
 
-        # 分数不足时回退到纯向量结果（避免过滤过严导致空返回）
-        if len(scored) < top_k:
-            scored = [(float(s), d) for d, s in vector_results]
+        scored.sort(key=lambda item: item[0], reverse=True)
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        output = []
-        for adjusted_score, doc in scored[:top_k]:
-            if adjusted_score < min_score:
+        output: list[dict] = []
+        for final_score, doc in scored[:top_k]:
+            if final_score < min_score:
                 continue
-            output.append({"score": round(adjusted_score, 4), **doc.metadata})
-
+            output.append({"score": round(final_score, 4), **doc.metadata})
         return output
 
     def build_product_index_text(self, record) -> str:
@@ -130,8 +196,8 @@ class ProductVectorStore:
 
     def load_products(self):
         """
-        从 Excel 加载商品数据，构建向量库。
-        Chroma 向量库仅在 Excel 或版本变化时重建。
+        从 Excel 加载商品数据，构建向量库与 BM25 索引。
+        Chroma 向量库仅在 Excel 或版本变化时重建；BM25 每次启动重建。
         """
         excel_path = PROJECT_ROOT / settings.spu_excel_path
         current_meta = {
@@ -149,6 +215,7 @@ class ProductVectorStore:
             )
             for r in records
         ]
+        self._build_bm25_index()
 
         metadata_path = Path(METADATA_FILE)
         if metadata_path.exists():

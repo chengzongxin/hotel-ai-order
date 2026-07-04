@@ -28,7 +28,7 @@
         "top1_service_order_type": "单次维修服务",
         "top3_forbidden_name_contains": ["安装"]
       },
-      "source": "embedding_recall.md"
+      "source": "product_hybrid_search.md"
     },
     {
       "id": "recall_ac_leak_not_water_cabinet",
@@ -41,7 +41,7 @@
         "top1_name_contains": ["空调"],
         "top3_forbidden_name_contains": ["水柜"]
       },
-      "source": "embedding_recall.md"
+      "source": "product_hybrid_search.md"
     },
     {
       "id": "recall_door_lock",
@@ -93,7 +93,7 @@
         "top1_name_contains": ["马桶"],
         "top1_service_order_type": "单次维修服务"
       },
-      "source": "embedding_recall.md"
+      "source": "product_hybrid_search.md"
     },
     {
       "id": "recall_tv_no_signal",

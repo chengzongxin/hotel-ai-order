@@ -433,16 +433,19 @@ SQLite Checkpoint
 1. `SpuExcelLoader` 读取 Excel，过滤下架商品。
 2. 每条商品生成索引文本：`服务商品名称 + 关联故障现象`。安装、测量类商品无故障现象，只用商品名。
 3. 用 Qwen `text-embedding-v4` 将索引文本向量化，写入 Chroma 向量库（`data/chroma_db/`）。
-4. 同时对商品名建立 BM25 倒排索引（in-memory，每次启动重建，用 jieba 搜索模式分词）。
+4. 同时对商品名建立 BM25 内存索引（`rank-bm25` + jieba 搜索模式分词，每次启动随 Excel 重建，不依赖 ES）。
 5. 索引版本写入 `data/chroma_db/build_metadata.json`，版本或文件变化时向量库自动重建。
 
-**检索**（`search_product_node`）：
+**检索**（`search_product_node` → `search_product_tool` → `ProductVectorStore.search()`）：
 
 1. 检索 query = `用户说的商品名 + 故障现象`。安装场景无故障现象，query 追加"安装"关键词；测量场景 query 退化为只有商品名。
-2. **BM25 关键词过滤**：用商品名的 BM25 倒排索引（jieba 分词）圈定候选池，排除与 query 无任何关键词重叠的商品（如查"空调漏水"时水柜因名字里没有"空调"而被过滤）。
-3. **向量排名**：Chroma 余弦相似度对过滤后的候选排序，过滤低分结果。
-4. **故障惩罚**（`has_fault=True`）：用户描述了故障时，对无故障描述的商品（纯安装/测量类）扣 0.15 分，确保维修商品优于同名的安装商品（如"水龙头漏水"找维修而非安装）。
-5. `products[0].service_order_type` 即为本次订单的 `service_type`，后续必填字段由此决定。
+2. **BM25 关键词召回**：对商品名（`service_product_name`）用 jieba 搜索模式分词，构建进程内 `rank-bm25` 内存索引（不依赖 ES），取 Top 候选。
+3. **向量语义召回**：Chroma 余弦相似度独立召回 Top 候选。
+4. **分数融合**：按 `service_product_code` 合并两路候选，BM25 分归一化后与向量分加权融合：`final = 0.65 * vector + 0.35 * bm25`。
+5. **故障惩罚**（`has_fault=True`）：用户描述了故障时，对无故障描述的商品（纯安装/测量类）扣 0.15 分，确保维修商品优于同名的安装商品（如"水龙头漏水"找维修而非安装）。
+6. 过滤低于 `PRODUCT_SEARCH_THRESHOLD` 的结果，返回 Top3 供前端选择；Top1 的 `service_order_type` 用于推断 `service_type`，但不会自动选中商品。
+
+更详细的 BM25 与 Chroma 技术对比、实现差异及协作方式见 [`docs/product_hybrid_search.md`](docs/product_hybrid_search.md)。
 
 ## 必填字段与追问逻辑
 
@@ -920,7 +923,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 | 现象 | 优先检查 |
 | --- | --- |
 | LLM 没抽出房号/商品/时间 | `logs/agent_llm_YYYYMMDD.log` 中 `llm.call.payload/response`，以及 `prompts/intent/intent.md` |
-| 商品匹配不对 | `build_product_search_query()`、`tools/product_search.py`、`docs/embedding_recall.md`、`PRODUCT_SEARCH_THRESHOLD` |
+| 商品匹配不对 | `build_product_search_query()`、`tools/product_search.py`、`docs/product_hybrid_search.md`、`PRODUCT_SEARCH_THRESHOLD` |
 | 前端点选商品后没进入预下单 | `/select-product` 响应、`selected_product_code` 是否在当前 `products` 内、`coverage_result` 是否异常 |
 | 卡片编辑后提交仍用旧值 | `PATCH /order-info` 是否成功、`normalize_order_card_update()` 是否映射了该字段 |
 | 确认按钮无效或失败 | `/confirm` 响应里的 `submission.failure_code`、`missing_fields`、`request_payload` |
@@ -1045,7 +1048,7 @@ uv run pytest tests/test_chat_flow.py::TestSingleTurnComplete::test_guest_room_a
 ## 相关文档
 
 - `docs/workflow.md`：LangGraph 流程图。
-- `docs/embedding_recall.md`：商品 embedding 匹配说明。
+- `docs/product_hybrid_search.md`：商品 BM25 + Chroma 混合检索说明。
 - `docs/langsmith_tracing.md`：LangSmith 追踪说明。
 - `docs/sqlite_memory.md`：SQLite checkpoint 记忆说明。
 - `docs/order_test_cases.md`：业务测试用例。

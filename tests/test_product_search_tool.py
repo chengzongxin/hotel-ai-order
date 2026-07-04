@@ -21,13 +21,23 @@ def test_search_product_tool_returns_unified_products(monkeypatch):
 
     class FakeStore:
         def search(self, **kwargs):
+            self.last_kwargs = kwargs
             return fake_products
 
-    monkeypatch.setattr("tools.product_search.get_product_store", lambda: FakeStore())
+    fake_store = FakeStore()
+    monkeypatch.setattr("tools.product_search.get_product_store", lambda: fake_store)
 
-    result = search_product_tool.invoke({"query": "门锁 打不开", "top_k": 3})
+    result = search_product_tool.invoke(
+        {"query": "门锁 打不开", "top_k": 3, "threshold": 0.4, "has_fault": True}
+    )
     data = result["data"]
 
+    assert fake_store.last_kwargs == {
+        "query": "门锁 打不开",
+        "top_k": 3,
+        "threshold": 0.4,
+        "has_fault": True,
+    }
     assert "best_match" not in data
     assert "candidates" not in data
     assert data["products"] == fake_products
