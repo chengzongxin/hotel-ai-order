@@ -71,7 +71,7 @@ async def stream_chat(
 ) -> StreamingResponse:
     """流式对话，响应为 NDJSON（每行一个 JSON 事件）。
 
-    事件类型：session / status / preview / token / final / error。
+    事件类型：session / status / preview / tool_call / token / final / error。
     字段定义见 `docs/api_order_preview.md`。
     """
     async def event_lines() -> AsyncIterator[str]:

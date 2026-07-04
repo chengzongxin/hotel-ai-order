@@ -7,6 +7,7 @@ import OrderPreviewCard from './components/OrderPreviewCard.vue'
 import OrderStatusNotices from './components/OrderStatusNotices.vue'
 import OrderSuccessCard from './components/OrderSuccessCard.vue'
 import ProductSelectionCard from './components/ProductSelectionCard.vue'
+import ToolCallList from './components/ToolCallList.vue'
 import { useChatApi } from './composables/useChatApi'
 import { useChatSession, currentTime } from './composables/useChatSession'
 import {
@@ -62,6 +63,7 @@ const {
   setMessageContent,
   appendMessageContent,
   setMessageOrderSuccess,
+  upsertMessageToolCall,
   summarizeCurrentSession,
   resetMessages,
   setSessionId,
@@ -141,6 +143,7 @@ const chatApi = useChatApi({
   setMessageContent,
   appendMessageContent,
   setMessageOrderSuccess,
+  upsertMessageToolCall,
   buildOrderSuccessSnapshot,
   isProductSelected,
   canConfirmOrder,
@@ -469,6 +472,11 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500"></span>
                       {{ streamStatus || '正在处理您的请求...' }}
                     </p>
+                    <ToolCallList
+                      v-if="message.toolCalls?.length"
+                      class="mt-3"
+                      :items="message.toolCalls"
+                    />
                     <p class="mt-2 text-[11px] text-slate-400">{{ message.time }}</p>
                   </div>
                 </div>

@@ -68,7 +68,13 @@ from graph.constants import (
     PHASE_SUBMITTED,
     VALID_MANAGED_REPAIR_SCOPES,
 )
-from graph.streaming import emit_status, emit_token_text, message_chunk_to_text, stream_llm_text
+from graph.streaming import (
+    emit_status,
+    emit_token_text,
+    message_chunk_to_text,
+    run_traced_tool_call,
+    stream_llm_text,
+)
 from graph.text_parsing import (
     build_product_recommendation_text,
     build_selected_product_text,
@@ -329,14 +335,18 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         trace_logger("node.search_product.skipped", **output)
         return output
 
-    result = await asyncio.to_thread(
-        search_product_tool.invoke,
-        {
-            "query": search_query,
-            "top_k": 3,
-            "threshold": None,
-            "has_fault": bool(fault),
-        },
+    search_params = {
+        "query": search_query,
+        "top_k": 3,
+        "threshold": None,
+        "has_fault": bool(fault),
+    }
+    result = await run_traced_tool_call(
+        step="search_product_node",
+        name="search_product_tool",
+        display_name="商品检索",
+        params=search_params,
+        action=lambda: asyncio.to_thread(search_product_tool.invoke, search_params),
     )
     data = result.get("data", {})
     products = data.get("products") or []
@@ -409,11 +419,22 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         }
 
     emit_status("coverage_node", "正在校验维保卡范围...")
-    coverage_result = await check_hosting_product_coverage(
-        order_info=state.get("order_info") or {},
-        matched_product=selected_product,
-        user=user_from_runtime_config(),
-        last_user_message=state.get("last_user_message", ""),
+    coverage_params = {
+        "order_info": state.get("order_info") or {},
+        "matched_product": selected_product,
+        "last_user_message": state.get("last_user_message", ""),
+    }
+    coverage_result = await run_traced_tool_call(
+        step="coverage_node",
+        name="check_hosting_product_coverage",
+        display_name="维保范围校验",
+        params=coverage_params,
+        action=lambda: check_hosting_product_coverage(
+            order_info=state.get("order_info") or {},
+            matched_product=selected_product,
+            user=user_from_runtime_config(),
+            last_user_message=state.get("last_user_message", ""),
+        ),
     )
     coverage_data = coverage_result.get("data") or {}
     effective_service_type = coverage_data.get("effective_service_type") or service_type
@@ -471,12 +492,25 @@ async def prepare_order_context_node(state: AgentState) -> dict[str, object]:
         }
 
     service_type = get_effective_service_type(state)
-    output = {
-        **await get_order_workflow_service().prepare_pre_order(
+    workflow_service = get_order_workflow_service()
+    prepare_params = {
+        "service_type": service_type,
+        "order_info": state.get("order_info") or {},
+        "selected_product_code": selected_product.get("service_product_code"),
+    }
+    prepared = await run_traced_tool_call(
+        step="prepare_order_context_node",
+        name="prepare_pre_order",
+        display_name="预下单信息准备",
+        params=prepare_params,
+        action=lambda: workflow_service.prepare_pre_order(
             state=state,
             service_type=service_type,
             user=user_from_runtime_config(),
         ),
+    )
+    output = {
+        **prepared,
         "step": "prepare_order_context_node",
     }
     trace_logger("node.prepare_order_context.output", service_type=service_type, **output)
@@ -1280,7 +1314,7 @@ async def stream_agent_events(
                     }
 
                 if part_type == "custom":
-                    if isinstance(data, dict) and data.get("type") in {"status", "token", "preview"}:
+                    if isinstance(data, dict) and data.get("type") in {"status", "token", "preview", "tool_call"}:
                         yield data
                     else:
                         yield {

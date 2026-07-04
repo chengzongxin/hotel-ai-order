@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from config.settings import settings
+from graph.streaming import run_traced_tool_call
 from schemas.user import UserContext
 
 JsonDict = dict[str, Any]
@@ -69,6 +70,25 @@ def has_login_config(user: UserContext) -> bool:
 _has_login_config = has_login_config
 
 
+INTERFACE_DISPLAY_NAMES = {
+    ADMIN_API_SPU_PAGE: "查询 SPU 列表",
+    ADMIN_API_SPU_GET: "查询 SPU 详情",
+    CREATE_MANAGED_REPAIR_ORDER: "创建托管维修订单",
+    CHECK_SINGLE_ORDER: "单次订单重复校验",
+    CREATE_SINGLE_ORDER: "创建单次订单",
+    HOSTING_CARD_GET: "查询维保卡",
+    USER_PROFILE_GET: "查询用户资料",
+    MANAGED_REPAIR_GLOBAL_CONFIG: "查询托管维修全局配置",
+    MANAGED_REPAIR_AREA_TREE_LIST: "查询托管维修区域树",
+    SERVICE_SPU_CATEGORY_TYPE_LIST: "查询单次订单分类",
+    SERVICE_SPU_TYPE_CATEGORY_LIST: "查询单次订单商品",
+}
+
+
+def _interface_display_name(path: str, method: str) -> str:
+    return INTERFACE_DISPLAY_NAMES.get(path, f"{method} {path}")
+
+
 def _admin_headers(user: UserContext) -> dict[str, str]:
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if user.tenant_id:
@@ -100,21 +120,41 @@ def _app_headers(user: UserContext) -> dict[str, str]:
 
 
 async def post_admin(path: str, payload: JsonDict, user: UserContext) -> JsonDict:
-    url = settings.admin_api_base_url.rstrip("/") + path
-    async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
-        response = await client.post(url, headers=_admin_headers(user), json=payload)
-    response.raise_for_status()
-    data = response.json()
-    return data if isinstance(data, dict) else {}
+    async def request() -> JsonDict:
+        url = settings.admin_api_base_url.rstrip("/") + path
+        async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
+            response = await client.post(url, headers=_admin_headers(user), json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    return await run_traced_tool_call(
+        step="interface",
+        kind="interface",
+        name=f"POST {path}",
+        display_name=_interface_display_name(path, "POST"),
+        params={"method": "POST", "path": path, "payload": payload},
+        action=request,
+    )
 
 
 async def post_app(path: str, payload: JsonDict, user: UserContext) -> JsonDict:
-    url = settings.user_app_base_url.rstrip("/") + path
-    async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
-        response = await client.post(url, headers=_app_headers(user), json=payload)
-    response.raise_for_status()
-    data = response.json()
-    return data if isinstance(data, dict) else {}
+    async def request() -> JsonDict:
+        url = settings.user_app_base_url.rstrip("/") + path
+        async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
+            response = await client.post(url, headers=_app_headers(user), json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    return await run_traced_tool_call(
+        step="interface",
+        kind="interface",
+        name=f"POST {path}",
+        display_name=_interface_display_name(path, "POST"),
+        params={"method": "POST", "path": path, "payload": payload},
+        action=request,
+    )
 
 
 _post_admin = post_admin
@@ -122,12 +162,22 @@ _post_app = post_app
 
 
 async def get_admin(path: str, params: JsonDict, user: UserContext) -> JsonDict:
-    url = settings.admin_api_base_url.rstrip("/") + path
-    async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
-        response = await client.get(url, headers=_admin_headers(user), params=params)
-    response.raise_for_status()
-    data = response.json()
-    return data if isinstance(data, dict) else {}
+    async def request() -> JsonDict:
+        url = settings.admin_api_base_url.rstrip("/") + path
+        async with httpx.AsyncClient(timeout=settings.user_app_timeout_seconds, trust_env=False) as client:
+            response = await client.get(url, headers=_admin_headers(user), params=params)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    return await run_traced_tool_call(
+        step="interface",
+        kind="interface",
+        name=f"GET {path}",
+        display_name=_interface_display_name(path, "GET"),
+        params={"method": "GET", "path": path, "params": params},
+        action=request,
+    )
 
 
 _get_admin = get_admin

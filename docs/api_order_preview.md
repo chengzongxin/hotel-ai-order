@@ -92,11 +92,41 @@
 | `session` | 返回 `session_id` |
 | `status` | 节点进度文案 |
 | `preview` | 增量 `order_preview` |
+| `tool_call` | 工具或上游接口调用事件，前端可默认收起并展开查看参数与结果 |
 | `token` | AI 回复 token |
 | `final` | 完整 `answer` + 最终 `order_preview` |
 | `error` | 错误信息 |
 
 `preview` / `final` 中的 `order_preview` 结构与上表一致。
+
+`tool_call` 事件示例：
+
+```json
+{
+  "type": "tool_call",
+  "phase": "end",
+  "call_id": "search_product_node:search_product_tool:7f3a9b2c",
+  "kind": "tool",
+  "step": "search_product_node",
+  "name": "search_product_tool",
+  "display_name": "商品检索",
+  "status": "success",
+  "duration_ms": 128.4,
+  "params": {
+    "query": "空调不制冷",
+    "top_k": 3
+  },
+  "result": {
+    "status": "success",
+    "message": "ok",
+    "data": {}
+  },
+  "summary": "ok"
+}
+```
+
+其中 `kind` 为 `tool` 表示 Agent/业务工具调用，为 `interface` 表示真实上游 HTTP 接口调用。
+后端会对 token、手机号、联系人、地址等敏感字段脱敏，并对过大的参数或结果做截断。
 
 ## 选择商品
 

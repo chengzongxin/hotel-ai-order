@@ -152,7 +152,7 @@ has_fault 惩罚（安装/测量类扣分）
 | 接口 | 功能 |
 | --- | --- |
 | `POST /api/chat` | 同步对话 |
-| `POST /api/chat/stream` | NDJSON 流式（session / status / preview / token / final / error） |
+| `POST /api/chat/stream` | NDJSON 流式（session / status / preview / tool_call / token / final / error） |
 | `POST /api/chat/{session_id}/select-product` | 前端点选商品（确定性，不经 LLM） |
 | `PATCH /api/chat/{session_id}/order-info` | 前端编辑预下单字段（确定性） |
 | `POST /api/chat/{session_id}/confirm` | 前端确认按钮提交（确定性） |

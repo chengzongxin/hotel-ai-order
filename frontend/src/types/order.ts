@@ -1,11 +1,31 @@
 export type Role = 'user' | 'assistant'
 
+export type ToolCallPhase = 'start' | 'end' | 'error'
+
+export type ToolCallStatus = 'running' | 'success' | 'error' | 'fallback' | string
+
+export interface ToolCallRecord {
+  call_id: string
+  phase?: ToolCallPhase | string
+  kind?: 'tool' | 'interface' | string
+  name: string
+  display_name?: string
+  step?: string
+  status?: ToolCallStatus
+  params?: unknown
+  result?: unknown
+  error?: string | null
+  duration_ms?: number | null
+  summary?: string | null
+}
+
 export interface ChatMessage {
   id: number
   role: Role
   content: string
   time: string
   variant?: 'order_success'
+  toolCalls?: ToolCallRecord[]
   orderSuccess?: {
     orderId?: string | null
     serviceType?: string | null
@@ -168,13 +188,24 @@ export interface OrderPreview {
 }
 
 export interface StreamEvent {
-  type: 'session' | 'status' | 'preview' | 'token' | 'final' | 'error'
+  type: 'session' | 'status' | 'preview' | 'token' | 'final' | 'error' | 'tool_call'
   session_id?: string
   step?: string
   message?: string
   content?: string
   answer?: string
   order_preview?: OrderPreview | null
+  phase?: ToolCallPhase | string
+  call_id?: string
+  kind?: 'tool' | 'interface' | string
+  name?: string
+  display_name?: string
+  status?: ToolCallStatus
+  params?: unknown
+  result?: unknown
+  error?: string | null
+  duration_ms?: number | null
+  summary?: string | null
 }
 
 export interface SessionSummary {

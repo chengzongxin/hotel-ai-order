@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage
 from graph.products import format_service_type_display, get_selected_product
 from graph.prompts import render_prompt
 from graph.state import AgentState
+from graph.streaming import run_traced_tool_call
 from domain.events import OrderSubmitted, event_to_state_patch
 from schemas.user import UserContext
 from tools.order_submit import submit_real_order
@@ -150,14 +151,28 @@ async def submit_order_from_state(
         default_to_first=False,
     )
     order_info = state.get("order_info", {})
-    submit_result = await submit_real_order(
-        order_info=order_info,
-        matched_product=selected_product,
-        service_type=state.get("service_type"),
-        effective_service_type=get_effective_service_type(state),
-        coverage_result=state.get("coverage_result") or {},
-        submit=True,
-        user=user,
+    submit_params = {
+        "order_info": order_info,
+        "matched_product": selected_product,
+        "service_type": state.get("service_type"),
+        "effective_service_type": get_effective_service_type(state),
+        "coverage_result": state.get("coverage_result") or {},
+        "submit": True,
+    }
+    submit_result = await run_traced_tool_call(
+        step="submit_node",
+        name="submit_real_order",
+        display_name="创建订单",
+        params=submit_params,
+        action=lambda: submit_real_order(
+            order_info=order_info,
+            matched_product=selected_product,
+            service_type=state.get("service_type"),
+            effective_service_type=get_effective_service_type(state),
+            coverage_result=state.get("coverage_result") or {},
+            submit=True,
+            user=user,
+        ),
     )
     submit_data = submit_result.get("data", {})
     request_payload = submit_data.get("request_payload") or {}

@@ -1,7 +1,7 @@
 import type { Ref } from 'vue'
 import type { ApiRequestParams } from '../utils/apiParams'
 import { buildApiHeaders } from '../utils/apiParams'
-import type { ChatMessage, OrderPreview, ProductOption, StreamEvent } from '../types/order'
+import type { ChatMessage, OrderPreview, ProductOption, StreamEvent, ToolCallRecord } from '../types/order'
 import { SESSION_KEY, applyOrderPreview, mapHistoryRole, currentTime } from './useChatSession'
 import { isSubmittedPreview } from './useOrderPreview'
 
@@ -23,6 +23,7 @@ type ChatApiDeps = {
   setMessageContent: (id: number, content: string) => void
   appendMessageContent: (id: number, content: string) => void
   setMessageOrderSuccess: (id: number, snapshot: NonNullable<import('../types/order').ChatMessage['orderSuccess']>) => void
+  upsertMessageToolCall: (id: number, call: ToolCallRecord) => void
   buildOrderSuccessSnapshot: () => NonNullable<import('../types/order').ChatMessage['orderSuccess']>
   isProductSelected: (item: ProductOption) => boolean
   canConfirmOrder: Ref<boolean>
@@ -129,30 +130,14 @@ export function useChatApi(deps: ChatApiDeps) {
   async function confirmOrder() {
     if (!deps.canConfirmOrder.value || deps.isSending.value) return
     deps.errorMessage.value = ''
-    deps.appendMessage('user', '确认下单')
+    const confirmText = '确认下单'
+    deps.appendMessage('user', confirmText)
     const assistantMessageId = deps.appendMessage('assistant', '')
     deps.isSending.value = true
     deps.streamStatus.value = '正在提交订单...'
 
     try {
-      const res = await fetch(`/api/chat/${encodeURIComponent(deps.sessionId.value)}/confirm`, {
-        method: 'POST',
-        headers: currentApiHeaders(),
-      })
-      if (!res.ok) {
-        let detail = `确认失败 ${res.status}`
-        try {
-          const errBody = await res.json()
-          detail = typeof errBody.detail === 'string' ? errBody.detail : detail
-        } catch { /* ignore */ }
-        throw new Error(detail)
-      }
-      const data = await res.json()
-      applyOrderPreview(deps.orderPreview, deps.chatBodyRef, data.order_preview)
-      if (isSubmittedPreview(data.order_preview)) {
-        deps.setMessageOrderSuccess(assistantMessageId, deps.buildOrderSuccessSnapshot())
-      }
-      deps.setMessageContent(assistantMessageId, data.answer || '已处理确认下单请求。')
+      await sendStreamingMessage(confirmText, assistantMessageId)
     } catch (err) {
       deps.errorMessage.value = err instanceof Error ? err.message : '确认下单失败'
       deps.setMessageContent(assistantMessageId, '确认下单失败，请检查信息后重试。')
@@ -203,6 +188,25 @@ export function useChatApi(deps: ChatApiDeps) {
       }
       if (event.type === 'preview') {
         applyOrderPreview(deps.orderPreview, deps.chatBodyRef, event.order_preview)
+        return
+      }
+      if (event.type === 'tool_call') {
+        if (event.call_id && event.name) {
+          deps.upsertMessageToolCall(assistantMessageId, {
+            call_id: event.call_id,
+            phase: event.phase,
+            kind: event.kind,
+            name: event.name,
+            display_name: event.display_name,
+            step: event.step,
+            status: event.status,
+            params: event.params,
+            result: event.result,
+            error: event.error,
+            duration_ms: event.duration_ms,
+            summary: event.summary,
+          })
+        }
         return
       }
       if (event.type === 'token') {

@@ -1,5 +1,5 @@
 import { computed, nextTick, ref, type Ref } from 'vue'
-import type { ChatMessage, OrderPreview, Role, SessionSummary } from '../types/order'
+import type { ChatMessage, OrderPreview, Role, SessionSummary, ToolCallRecord } from '../types/order'
 import { createSessionId } from '../utils/sessionId'
 
 export const SESSION_KEY = 'order_voice_session_id'
@@ -70,6 +70,24 @@ export function useChatSession(chatBodyRef: Ref<HTMLElement | null>) {
     }
   }
 
+  function upsertMessageToolCall(id: number, call: ToolCallRecord) {
+    const message = messages.value.find((item) => item.id === id)
+    if (!message || !call.call_id || !call.name) return
+
+    const status = call.phase === 'start' && !call.status ? 'running' : call.status
+    const nextCall = { ...call, status }
+    if (!message.toolCalls) message.toolCalls = []
+
+    const existing = message.toolCalls.find((item) => item.call_id === call.call_id)
+    if (existing) {
+      Object.assign(existing, nextCall)
+    } else {
+      message.toolCalls.push(nextCall)
+    }
+
+    nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
+  }
+
   function summarizeCurrentSession(orderInfo: { room_number?: string | null; product?: string | null; fault?: string | null }, canSubmit: boolean) {
     const u = messages.value.find((m) => m.role === 'user')
     if (!u) return
@@ -104,6 +122,7 @@ export function useChatSession(chatBodyRef: Ref<HTMLElement | null>) {
     setMessageContent,
     appendMessageContent,
     setMessageOrderSuccess,
+    upsertMessageToolCall,
     summarizeCurrentSession,
     resetMessages,
     setSessionId,
