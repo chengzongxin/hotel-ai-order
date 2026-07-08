@@ -343,7 +343,6 @@ sequenceDiagram
 
 | type | 含义 |
 |------|------|
-| `session` | 返回 session_id |
 | `status` | 节点处理状态 |
 | `preview` | 预下单卡片数据 `order_preview` |
 | `token` | 打字机文本片段 |

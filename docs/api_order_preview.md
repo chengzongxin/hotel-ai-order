@@ -85,11 +85,10 @@
 
 ## 流式事件（NDJSON）
 
-`POST /api/chat/stream` 每行一个 JSON：
+`POST /api/chat/stream` 要求请求体携带前端生成的 `session_id`；缺失或为空时返回 `400`。响应每行一个 JSON：
 
 | type | 用途 |
 |------|------|
-| `session` | 返回 `session_id` |
 | `status` | 节点进度文案 |
 | `preview` | 增量 `order_preview` |
 | `tool_call` | 工具或上游接口调用事件，前端可默认收起并展开查看参数与结果 |

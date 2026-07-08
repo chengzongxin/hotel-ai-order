@@ -48,15 +48,25 @@ def _session_access_error() -> HTTPException:
     )
 
 
+def _request_session_id(session_id: str | None) -> str:
+    if not session_id or not session_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="缺少 session_id，请由前端生成并传入",
+        )
+    return session_id.strip()
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
     user: UserContext = Depends(get_current_user),
 ) -> ChatResponse:
+    active_session_id = _request_session_id(request.session_id)
     try:
         result = await run_agent(
             user_message=request.message,
-            session_id=request.session_id,
+            session_id=active_session_id,
             user=user,
         )
     except SessionAccessError as exc:
@@ -74,11 +84,13 @@ async def stream_chat(
     事件类型：session / status / preview / tool_call / token / final / error。
     字段定义见 `docs/api_order_preview.md`。
     """
+    active_session_id = _request_session_id(request.session_id)
+
     async def event_lines() -> AsyncIterator[str]:
         try:
             async for event in stream_agent_events(
                 user_message=request.message,
-                session_id=request.session_id,
+                session_id=active_session_id,
                 user=user,
             ):
                 yield json.dumps(event, ensure_ascii=False, default=str) + "\n"

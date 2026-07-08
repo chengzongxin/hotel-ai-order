@@ -280,7 +280,6 @@ Prompt 都放在 `prompts/`，业务策略优先改 Prompt 文件，不要把长
 
 | 类型 | 用途 |
 | --- | --- |
-| `session` | 返回或确认本次 `session_id` |
 | `status` | 更新"正在理解需求/正在匹配商品/正在提交订单"等进度文案 |
 | `preview` | 返回最新 `order_preview`，前端据此刷新商品卡或预下单卡 |
 | `token` | 打字机式追加 AI 回复内容 |
@@ -542,7 +541,6 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 响应是 NDJSON，示意：
 
 ```json
-{"type":"session","session_id":"demo-session"}
 {"type":"status","step":"intent_node","message":"正在理解您的需求并提取订单信息..."}
 {"type":"preview","step":"search_product_node","order_preview":{"phase":"product_selection"}}
 {"type":"token","step":"confirm_node","content":"好的，收到。"}

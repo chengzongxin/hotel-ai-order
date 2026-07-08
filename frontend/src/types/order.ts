@@ -188,7 +188,7 @@ export interface OrderPreview {
 }
 
 export interface StreamEvent {
-  type: 'session' | 'status' | 'preview' | 'token' | 'final' | 'error' | 'tool_call'
+  type: 'status' | 'preview' | 'token' | 'final' | 'error' | 'tool_call'
   session_id?: string
   step?: string
   message?: string

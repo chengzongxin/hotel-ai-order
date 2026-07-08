@@ -7,7 +7,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="用户本轮输入")
     session_id: str | None = Field(
         default=None,
-        description="会话 ID；不传时服务端会自动生成",
+        description="会话 ID；必须由前端生成并传入",
     )
 
 

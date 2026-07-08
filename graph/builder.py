@@ -1,7 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
-from uuid import uuid4
 
 from graph.llm import get_llm, get_llm_run_config
 from graph.prompts import PROMPTS_DIR, render_prompt
@@ -1210,11 +1209,11 @@ STREAMABLE_TOKEN_NODES: set[str] = set()
 
 async def stream_agent_events(
     user_message: str,
-    session_id: str | None,
+    session_id: str,
     user: UserContext,
 ) -> AsyncIterator[dict[str, object]]:
     active_user = require_user(user)
-    active_session_id = session_id or str(uuid4())
+    active_session_id = session_id
 
     trace_logger(
         "agent.stream.start",
@@ -1223,16 +1222,12 @@ async def stream_agent_events(
         user_message=user_message,
     )
     yield {
-        "type": "session",
-        "session_id": active_session_id,
-    }
-    yield {
         "type": "status",
         "step": "intent_node",
         "message": NODE_STATUS_MESSAGES["intent_node"],
     }
 
-    initial_state: AgentState = {
+    turn_input_state: AgentState = {
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
@@ -1255,10 +1250,10 @@ async def stream_agent_events(
             if existing_snapshot.values:
                 ensure_session_access(existing_snapshot.values, active_user)
 
-            latest_state: dict[str, object] = dict(initial_state)
+            latest_state: dict[str, object] = dict(turn_input_state)
             emitted_token = False
             async for part in graph.astream(
-                initial_state,
+                turn_input_state,
                 config=config,
                 stream_mode=["updates", "messages", "custom"],
                 version="v2",
@@ -1370,11 +1365,11 @@ async def stream_agent_events(
 
 async def run_agent(
     user_message: str,
-    session_id: str | None,
+    session_id: str,
     user: UserContext,
 ) -> dict[str, object]:
     active_user = require_user(user)
-    active_session_id = session_id or str(uuid4())
+    active_session_id = session_id
 
     trace_logger(
         "agent.run.start",
@@ -1383,7 +1378,7 @@ async def run_agent(
         user_message=user_message,
     )
 
-    initial_state: AgentState = {
+    turn_input_state: AgentState = {
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
@@ -1405,7 +1400,7 @@ async def run_agent(
         if existing_snapshot.values:
             ensure_session_access(existing_snapshot.values, active_user)
         result = await graph.ainvoke(
-            initial_state,
+            turn_input_state,
             config=config,
         )
         answer = get_interrupt_answer(result) or result["messages"][-1].content

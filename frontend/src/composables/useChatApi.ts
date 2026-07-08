@@ -177,11 +177,6 @@ export function useChatApi(deps: ChatApiDeps) {
     let streamedAnswer = ''
 
     const handleEvent = (event: StreamEvent) => {
-      if (event.type === 'session' && event.session_id) {
-        deps.sessionId.value = event.session_id
-        localStorage.setItem(SESSION_KEY, event.session_id)
-        return
-      }
       if (event.type === 'status') {
         deps.streamStatus.value = event.message || '正在处理您的请求...'
         return

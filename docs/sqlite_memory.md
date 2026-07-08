@@ -41,18 +41,19 @@ LangGraph checkpoint 表由 `AsyncSqliteSaver` 自动创建，不建议手写 SQ
 
 ## 恢复上下文
 
-恢复上下文只依赖同一个 `thread_id=session_id`。
+恢复上下文依赖同一个 `thread_id={user_id}:{session_id}`。`session_id` 必须由前端生成并在每轮请求中传入，后端不再自动生成。
 
 代码中对应配置：
 
 ```python
-config={"configurable": {"thread_id": active_session_id}}
+config={"configurable": {"thread_id": f"{user.user_id}:{session_id}"}}
 ```
 
 每次请求只传入本轮用户消息：
 
 ```python
-initial_state = {
+turn_input_state = {
+    "user_id": active_user.user_id,
     "messages": [HumanMessage(content=user_message)],
     "last_user_message": user_message,
 }
