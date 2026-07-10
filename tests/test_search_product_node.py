@@ -43,6 +43,43 @@ async def test_search_product_node_skips_research_on_confirm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_product_node_skips_research_when_supplementing_info_after_selection(monkeypatch):
+    calls: list[dict] = []
+
+    async def fake_to_thread(func, args):
+        calls.append(args)
+        return {"status": "success", "data": {"products": [], "query": args["query"], "count": 0}}
+
+    monkeypatch.setattr("graph.builder.asyncio.to_thread", fake_to_thread)
+
+    state = {
+        "intent": "create_order",
+        "products": [
+            {
+                "service_product_code": "DOOR_HARDWARE",
+                "service_product_name": "门五金(中修)",
+                "service_order_type": "单次安装",
+            }
+        ],
+        "selected_product_code": "DOOR_HARDWARE",
+        "missing_info": ["second_area"],
+        "order_info": {
+            "area": "公区",
+            "managed_repair_scope": "公区",
+            "product": "消防门",
+            "fault": "需要维修",
+        },
+        "last_user_message": "走廊",
+    }
+
+    result = await search_product_node(state)
+
+    assert calls == []
+    assert result == {"step": "search_product_node"}
+    assert route_after_search_product({**state, **result}) == "coverage_node"
+
+
+@pytest.mark.asyncio
 async def test_search_product_node_preserves_selected_code(monkeypatch):
     tool_products = [
         {"service_product_code": "A", "service_product_name": "Top1", "service_order_type": "托管维修"},

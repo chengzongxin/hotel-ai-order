@@ -63,10 +63,19 @@ class OrderWorkflowService:
             "service_type": service_type,
             "order_info": order_info,
             "product_selection_rejected": False,
+            "missing_info": [] if products else ["product_match"],
             "order_card_fields": [],
             "phase": PHASE_PRODUCT_SELECTION if products else PHASE_COLLECTING,
             "step": "search_product_node",
         }
+        if not products:
+            patch.update(
+                {
+                    "effective_service_type": None,
+                    "coverage_result": {},
+                    "order_submit_route": None,
+                }
+            )
         return event_to_state_patch(ProductMatched(payload=patch))
 
     def reject_products(self) -> JsonDict:

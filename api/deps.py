@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 
 from schemas.user import UserContext
+from services.auth_service import LOGIN_REQUIRED_MESSAGE, LoginRequiredError, ensure_user_logged_in
 
 
 async def get_current_user(
@@ -54,3 +55,16 @@ async def get_current_user(
         contacts=(x_user_contacts or "").strip(),
         phone=(x_user_phone or "").strip(),
     )
+
+
+async def get_logged_in_user(
+    user: UserContext = Depends(get_current_user),
+) -> UserContext:
+    try:
+        await ensure_user_logged_in(user)
+    except LoginRequiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc) or LOGIN_REQUIRED_MESSAGE,
+        ) from exc
+    return user

@@ -201,6 +201,38 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_no_product_match_asks_for_more_precise_product(monkeypatch, trace_step):
+    await mock_product_search(monkeypatch, [])
+
+    state = {
+        "intent": "create_order",
+        "last_user_message": "2301房间浴缸下水很慢",
+        "messages": [HumanMessage(content="2301房间浴缸下水很慢")],
+        "order_info": {"room_number": "2301", "product": "浴缸", "fault": "下水很慢", "area": "客房"},
+    }
+
+    search_update = await search_product_node(state)
+    trace_step("search_product_node output: no product match", update=search_update)
+    state = merge_state(state, search_update)
+    no_match_preview = preview(state)
+
+    assert no_match_preview["phase"] == "collecting"
+    assert no_match_preview["products"]["status"] == "no_match"
+    assert no_match_preview["products"]["items"] == []
+    assert no_match_preview["missing_info"] == ["product_match"]
+    assert route_after_search_product(state) == "ask_node"
+
+    async def fake_emit_token_text(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
+    answer = await ask_node(state)
+
+    assert "商品库没检索到这个商品" in answer["messages"][0].content
+    assert "精确" in answer["messages"][0].content
+
+
+@pytest.mark.asyncio
 async def test_managed_product_selection_keeps_hosting_coverage(monkeypatch, trace_step):
     products = [
         product("AC_MANAGED_MEDIUM", "空调(中修)", "托管维修", repair_category="中修"),

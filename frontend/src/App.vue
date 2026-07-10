@@ -237,6 +237,13 @@ async function sendMessage(text = inputText.value) {
   try {
     await sendStreamingMessage(content, assistantMessageId)
   } catch (err) {
+    if (err instanceof Error && err.name === 'AuthRequiredError') {
+      errorMessage.value = err.message
+      setMessageContent(assistantMessageId, err.message)
+      isSending.value = false
+      streamStatus.value = ''
+      return
+    }
     if (err instanceof Error && err.name === 'StreamEventError') {
       errorMessage.value = err.message
       setMessageContent(assistantMessageId, '智能体处理失败，请稍后重试。')

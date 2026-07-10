@@ -140,6 +140,16 @@ def has_active_order(state: AgentState) -> bool:
     return state.get("phase") in ACTIVE_ORDER_PHASES
 
 
+PRODUCT_RESEARCH_FIELDS = {"selected_product", "product_match", "product", "fault"}
+
+
+def is_collecting_non_product_fields(state: AgentState) -> bool:
+    """已选商品后补充时间、区域等字段时，不需要重新做商品检索。"""
+
+    missing_info = state.get("missing_info") or []
+    return bool(missing_info) and not any(field in PRODUCT_RESEARCH_FIELDS for field in missing_info)
+
+
 def get_product_search_feedback(state: AgentState) -> str | None:
     selected_product = get_selected_product(
         state.get("products") or [],
@@ -316,6 +326,21 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
             "node.search_product.skip",
             reason="confirm_with_existing_products",
             selected_product_code=state.get("selected_product_code"),
+            product_count=len(existing_products),
+        )
+        return {"step": "search_product_node"}
+
+    selected_product = get_selected_product(
+        existing_products,
+        state.get("selected_product_code"),
+        default_to_first=False,
+    )
+    if state.get("intent") == "create_order" and selected_product and is_collecting_non_product_fields(state):
+        trace_logger(
+            "node.search_product.skip",
+            reason="supplement_info_with_selected_product",
+            selected_product_code=state.get("selected_product_code"),
+            missing_info=state.get("missing_info") or [],
             product_count=len(existing_products),
         )
         return {"step": "search_product_node"}
@@ -574,6 +599,7 @@ def build_missing_info_fallback_question(missing_info: list[str]) -> str:
     field = missing_info[0]
     questions = {
         "selected_product": build_product_recommendation_text([]),
+        "product_match": "商品库没检索到这个商品，请您再说得更精确一点。",
         "room_number": "请问您住哪个房间？",
         "product": "是哪样东西坏了？",
         "fault": "具体是什么故障呢？",
@@ -590,6 +616,8 @@ def build_missing_info_fallback_question(missing_info: list[str]) -> str:
 async def build_missing_info_question(state: AgentState) -> str:
     missing_info = state.get("missing_info", [])
     if not missing_info:
+        return build_missing_info_fallback_question(missing_info)
+    if missing_info[0] == "product_match":
         return build_missing_info_fallback_question(missing_info)
     if missing_info[0] == "expected_start_time":
         return build_missing_info_fallback_question(missing_info)
@@ -872,6 +900,8 @@ def route_after_intent(state: AgentState) -> str:
 
 def route_after_search_product(state: AgentState) -> str:
     if state.get("product_selection_rejected"):
+        return "ask_node"
+    if "product_match" in (state.get("missing_info") or []):
         return "ask_node"
     products = state.get("products") or []
     selected_product = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)

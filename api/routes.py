@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from api.deps import get_current_user
+from api.deps import get_current_user, get_logged_in_user
 from graph.builder import (
     build_order_preview,
     clear_checkpoint_session,
@@ -60,7 +60,7 @@ def _request_session_id(session_id: str | None) -> str:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_logged_in_user),
 ) -> ChatResponse:
     active_session_id = _request_session_id(request.session_id)
     try:
@@ -77,7 +77,7 @@ async def chat(
 @router.post("/chat/stream")
 async def stream_chat(
     request: ChatRequest,
-    user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_logged_in_user),
 ) -> StreamingResponse:
     """流式对话，响应为 NDJSON（每行一个 JSON 事件）。
 

@@ -34,6 +34,19 @@ export function useChatApi(deps: ChatApiDeps) {
     return buildApiHeaders(deps.apiParams.value)
   }
 
+  async function buildResponseError(res: Response, fallback: string) {
+    let message = fallback
+    try {
+      const body = await res.json()
+      if (typeof body.detail === 'string' && body.detail.trim()) {
+        message = body.detail.trim()
+      }
+    } catch { /* ignore */ }
+    const err = new Error(message)
+    if (res.status === 401) err.name = 'AuthRequiredError'
+    return err
+  }
+
   async function loadSessionHistory(targetSessionId = deps.sessionId.value) {
     try {
       const res = await fetch(`/api/chat/${encodeURIComponent(targetSessionId)}/history`, {
@@ -153,7 +166,7 @@ export function useChatApi(deps: ChatApiDeps) {
       headers: currentApiHeaders(),
       body: JSON.stringify({ session_id: deps.sessionId.value, message: content }),
     })
-    if (!res.ok) throw new Error(`请求失败 ${res.status}`)
+    if (!res.ok) throw await buildResponseError(res, `请求失败 ${res.status}`)
     const data = await res.json()
     if (data.session_id) {
       deps.sessionId.value = data.session_id
@@ -169,7 +182,8 @@ export function useChatApi(deps: ChatApiDeps) {
       headers: currentApiHeaders(),
       body: JSON.stringify({ session_id: deps.sessionId.value, message: content }),
     })
-    if (!res.ok || !res.body) throw new Error(`请求失败 ${res.status}`)
+    if (!res.ok) throw await buildResponseError(res, `请求失败 ${res.status}`)
+    if (!res.body) throw new Error(`请求失败 ${res.status}`)
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
