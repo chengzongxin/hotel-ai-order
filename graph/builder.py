@@ -6,7 +6,6 @@ from graph.llm import get_llm, get_llm_run_config
 from graph.prompts import PROMPTS_DIR, render_prompt
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
@@ -41,6 +40,7 @@ from services.order_normalizer import normalize_order_defaults
 from services.order_context_service import load_order_context
 from services.order_routing import resolve_order_submit_route
 from memory.postgres_log import save_conversation_log
+from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import (
     SessionAccessError,
     UserContext,
@@ -923,7 +923,7 @@ def route_after_confirm(state: AgentState) -> str:
     return END
 
 
-def build_graph(checkpointer: AsyncSqliteSaver | None = None):
+def build_graph(checkpointer: ReadableAsyncSqliteSaver | None = None):
     graph = StateGraph(AgentState)
     graph.add_node("intent_node", intent_node)
     graph.add_node("search_product_node", search_product_node)
@@ -1057,7 +1057,7 @@ async def select_product_in_session(
 ) -> dict[str, object]:
     """在前端点选商品后，更新会话中的 selected_product_code 与 service_type。"""
     active_user = require_user(user)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
         config = get_graph_config(active_user, session_id)
@@ -1103,7 +1103,7 @@ async def update_order_info_in_session(
     """前端编辑预下单卡片后，同步更新当前会话状态。"""
 
     active_user = require_user(user)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
         config = get_graph_config(active_user, session_id)
@@ -1142,7 +1142,7 @@ async def confirm_order_in_session(
     """前端点击确认按钮时直接提交当前预下单，避免再次依赖 LLM 判断“确认”。"""
 
     active_user = require_user(user)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
         config = get_graph_config(active_user, session_id)
@@ -1272,7 +1272,7 @@ async def stream_agent_events(
     }
 
     try:
-        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+        async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
             await checkpointer.setup()
             graph = build_graph(checkpointer)
             config = get_graph_config(active_user, active_session_id)
@@ -1422,7 +1422,7 @@ async def run_agent(
         ),
     }
 
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
         config = get_graph_config(active_user, active_session_id)

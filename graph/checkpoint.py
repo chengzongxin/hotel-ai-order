@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain_core.messages import BaseMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from config.settings import settings
 from graph.prompts import PROMPTS_DIR
 from graph.state import AgentState
+from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import UserContext, build_thread_id, require_user
 
 
@@ -66,7 +66,7 @@ async def get_checkpoint_state(
     from graph.builder import build_graph, ensure_session_access
 
     active_user = require_user(user)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         graph = build_graph(checkpointer)
         snapshot = await graph.aget_state(get_graph_config(active_user, session_id))
@@ -90,6 +90,6 @@ async def clear_checkpoint_session(
 ) -> None:
     active_user = require_user(user)
     thread_id = build_thread_id(active_user.user_id, session_id)
-    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
         await checkpointer.setup()
         await checkpointer.adelete_thread(thread_id)
