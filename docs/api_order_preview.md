@@ -1,234 +1,176 @@
-# 订单预览 API 说明（前端对接）
+# 前端工作流状态契约
 
-本文档描述 `/api/chat`、`/api/chat/stream`、`/api/chat/{session_id}/history` 返回中的 `order_preview` 结构，以及商品选择接口。
+`/api/chat`、`/api/chat/stream`、会话历史和确定性订单命令统一返回
+`order_preview`。这个名字为兼容现有接口保留；它表示的是**面向客户端的业务状态快照**，
+不是 LangGraph `AgentState`，也不指定 Vue 组件或页面布局。
 
-在线文档：启动服务后访问 `http://localhost:8000/docs`，可看到 Pydantic 模型与示例。
+## 接口字段说明
 
-## 设计原则
+公开字段的名称、类型、必填性、枚举值、说明和示例统一定义在 Pydantic 响应模型中，
+并自动生成到 OpenAPI。启动服务后可直接查看：
 
-1. **商品统一放在数组**：`order_preview.products.items[]`，前端直接渲染卡片列表。
-2. **字段语义化**：对外使用 `code` / `name` / `service_type`，不再暴露 Excel 原始列名。
-3. **选中态明确**：`products.selected_code` + 每个 item 的 `is_selected`。
-4. **阶段单一**：`phase` 同时表示订单主流程阶段和前端主卡片类型。
-5. **提交独立**：真实提交动作放在 `submission` 区块，用 `submission.state` 表达结果。
+- Swagger UI：`/docs`
+- ReDoc：`/redoc`
+- OpenAPI JSON：`/openapi.json`
 
-## order_preview 顶层结构
+Pydantic/OpenAPI 是字段级接口契约的唯一事实来源；本文档只解释职责边界、流程和使用方式，
+避免在 Python、OpenAPI 和 Markdown 中重复维护同一份字段表。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `phase` | string | `idle` / `collecting` / `product_selection` / `pre_order` / `submitted` / `cancelled` |
-| `service_type` | string \| null | 服务类型，如 `托管维修` |
-| `service_type_display` | string \| null | 展示文案，如 `托管维修（客房）` |
-| `order_info` | object | 用户已描述的订单信息 |
-| `products` | object | 商品检索与候选列表 |
-| `missing_info` | string[] | 仍需补充的字段名 |
-| `submission` | object | 真实提交动作状态 |
-| `submitted_order` | object \| null | 提交成功后的订单快照 |
+## 职责边界
 
-### order_info
+后端负责：
 
-| 字段 | 说明 |
-|------|------|
-| `room_number` | 房号 |
-| `product` | 用户描述的设备/商品 |
-| `fault` | 故障现象 |
-| `area` | 区域 |
-| `managed_repair_scope` | 托管维修范围：`客房` / `公区` |
-| `urgency` | `low` / `medium` / `high` / `urgent` |
-| `expected_start_time` | 期待开工时间 |
-| `goods_arrival_status` | 货物到场状态 |
-| `user_confirmed` | 是否已确认 |
-| `user_cancelled` | 是否已取消 |
+- 当前业务 `phase`；
+- 订单、商品、表单和提交结果数据；
+- `validation` 业务校验；
+- `capabilities` 当前允许执行的命令。
 
-### products
+前端负责：
+
+- `phase` 与页面组件的映射；
+- 表单控件、布局、颜色、图标和动画；
+- 根据 `capabilities` 展示或禁用操作按钮。
+
+前端不应重新推导必填规则或能否提交。后端收到命令后仍会再次校验，不能把按钮禁用当作安全边界。
+
+## 顶层结构
 
 | 字段 | 说明 |
-|------|------|
-| `status` | `skipped` / `success` / `no_match` / `error` |
-| `query` | 检索 query，如 `门锁 打不开` |
-| `feedback` | 给用户看的匹配说明 |
-| `selected_code` | 当前选中商品编码 |
-| `items` | 候选商品数组，按 `rank` 排序 |
-
-### products.items[]（商品卡片）
-
-| 字段 | 说明 |
-|------|------|
-| `code` | 商品编码，下单/选择时使用 |
-| `name` | 商品名称 |
-| `service_type` | 服务类型 |
-| `category` | 分类 |
-| `unit` | 单位 |
-| `price` | 参考价 |
-| `price_status` | 价格状态 |
-| `repair_category` | 小修/中修/大修 |
-| `fault_phenomenon` | 标准故障描述 |
-| `related_area` | 适用区域 |
-| `remark` | 服务说明 |
-| `score` | 相似度分数 |
-| `rank` | 推荐排序，1 最高 |
-| `is_recommended` | 是否系统默认 Top1 |
-| `is_selected` | 是否当前选中 |
-
-### submission
-
-| 字段 | 说明 |
-|------|------|
-| `attempted` | 是否尝试过真实提交 |
-| `state` | `not_attempted` / `submitting` / `succeeded` / `failed` / `disabled` |
-| `order_no` | 真实订单号 |
-| `failure_code` | `submit_disabled` / `missing_required_fields` / `order_no_missing` / `api_error` / `unknown` |
-| `failure_message` | 可直接展示给前端用户或运维的失败说明 |
-| `missing_fields` | 仍缺失字段 |
-| `request_payload` | 构造出的真实下单参数 |
-| `response_payload` | 创建订单接口返回 |
-
-## 流式事件（NDJSON）
-
-`POST /api/chat/stream` 要求请求体携带前端生成的 `session_id`；缺失或为空时返回 `400`。响应每行一个 JSON：
-
-| type | 用途 |
-|------|------|
-| `status` | 节点进度文案 |
-| `preview` | 增量 `order_preview` |
-| `tool_call` | 工具或上游接口调用事件，前端可默认收起并展开查看参数与结果 |
-| `token` | AI 回复 token |
-| `final` | 完整 `answer` + 最终 `order_preview` |
-| `error` | 错误信息 |
-
-`preview` / `final` 中的 `order_preview` 结构与上表一致。
-
-`tool_call` 事件示例：
-
-```json
-{
-  "type": "tool_call",
-  "phase": "end",
-  "call_id": "search_product_node:search_product_tool:7f3a9b2c",
-  "kind": "tool",
-  "step": "search_product_node",
-  "name": "search_product_tool",
-  "display_name": "商品检索",
-  "status": "success",
-  "duration_ms": 128.4,
-  "params": {
-    "query": "空调不制冷",
-    "top_k": 3
-  },
-  "result": {
-    "status": "success",
-    "message": "ok",
-    "data": {}
-  },
-  "summary": "ok"
-}
-```
-
-其中 `kind` 为 `tool` 表示 Agent/业务工具调用，为 `interface` 表示真实上游 HTTP 接口调用。
-后端会对 token、手机号、联系人、地址等敏感字段脱敏，并对过大的参数或结果做截断。
-
-## 选择商品
-
-用户在前端点击某张商品卡片后：
-
-```http
-POST /api/chat/{session_id}/select-product
-Content-Type: application/json
-
-{
-  "product_code": "FWSP01537"
-}
-```
-
-响应：
-
-```json
-{
-  "session_id": "4454328f-db92-4d2e-8f09-da0e7c6d63e8",
-  "message": "已选择商品【门锁损坏（困客人）】。",
-  "order_preview": { "...": "同上结构，selected_code 与 is_selected 已更新" }
-}
-```
-
-选择成功后，用户可继续发送 `确认` 走原有下单流程。
-
-## 前端渲染建议
-
-1. 当 `products.items.length > 0` 时展示商品卡片列表。
-2. 用 `item.is_selected` 或对比 `item.code === products.selected_code` 高亮当前选中项。
-3. 点击卡片调用 `select-product`，再用返回的 `order_preview` 刷新 UI。
-4. `phase === "pre_order"` 且 `missing_info` 为空时，展示确认按钮/引导用户回复「确认」。
-5. `submission.state === "failed" | "disabled"` 时，展示 `failure_message`。
-
-## 状态机字段（LangGraph AgentState）
-
-商品相关状态已简化为两个字段：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `products` | object[] | 检索到的全部商品（按相似度排序） |
-| `selected_product_code` | string \| null | 当前选中编码；未指定时默认 Top1 |
-
-对外 `order_preview.products` 由上述状态在 API 层推导（`status` / `query` / `feedback`），前端无需感知状态机细节。
+| --- | --- |
+| `schema_version` | 对外契约版本，当前为 `1` |
+| `phase` | `idle` / `collecting` / `product_selection` / `pre_order` / `submitted` / `cancelled` |
+| `service_type` | 商品决定的原始服务类型 |
+| `service_type_display` | 面向用户的原始服务类型文案 |
+| `effective_service_type` | 维保校验后最终用于提交的服务类型 |
+| `effective_service_type_display` | 最终服务类型文案 |
+| `order_info` | 可安全展示的用户订单信息 |
+| `products` | 商品候选与选中态 |
+| `form` | 后端给出的业务字段描述，前端决定具体控件 |
+| `validation` | 是否可以提交及缺失字段 |
+| `capabilities` | 当前允许执行的确定性业务命令 |
+| `coverage` | 维保范围校验摘要 |
+| `submission` | 提交状态和面向客户端的失败信息 |
+| `submitted_order` | 提交成功后的安全订单快照 |
 
 ## 示例
 
 ```json
 {
+  "schema_version": 1,
+  "phase": "pre_order",
   "service_type": "托管维修",
   "service_type_display": "托管维修（客房）",
-  "phase": "pre_order",
+  "effective_service_type": "托管维修",
+  "effective_service_type_display": "托管维修（客房）",
   "order_info": {
     "room_number": "301",
     "product": "门锁",
     "fault": "打不开",
     "area": "客房",
-    "managed_repair_scope": "客房",
-    "urgency": "medium",
-    "user_confirmed": false,
-    "user_cancelled": false
+    "urgency": "medium"
   },
   "products": {
     "status": "success",
     "query": "门锁 打不开",
-    "feedback": "根据您描述的【打不开】，已为您匹配到【门锁损坏（困客人）】，服务类型为【托管维修（客房）】。",
+    "feedback": "已匹配到门锁维修商品。",
     "selected_code": "FWSP01537",
+    "selection_rejected": false,
     "items": [
       {
         "code": "FWSP01537",
         "name": "门锁损坏（困客人）",
         "service_type": "托管维修",
-        "price": "48.08",
-        "repair_category": "大修",
-        "score": 0.6756,
         "rank": 1,
         "is_recommended": true,
         "is_selected": true
-      },
-      {
-        "code": "FWSP01423",
-        "name": "门锁(小修)",
-        "service_type": "托管维修",
-        "price": "8.02",
-        "repair_category": "小修",
-        "score": 0.6397,
-        "rank": 2,
-        "is_recommended": false,
-        "is_selected": false
       }
     ]
   },
-  "missing_info": [],
+  "form": {
+    "fields": [
+      {
+        "key": "expected_time",
+        "label": "期望开工/完工时间",
+        "value": null,
+        "required": true,
+        "editable": true,
+        "input_type": "text",
+        "options": []
+      }
+    ]
+  },
+  "validation": {
+    "ready": false,
+    "missing_fields": ["expected_start_time"]
+  },
+  "capabilities": {
+    "select_product": false,
+    "reject_products": false,
+    "update_order": true,
+    "confirm_order": false,
+    "cancel_order": true,
+    "retry_submission": false
+  },
+  "coverage": {
+    "checked": true,
+    "covered": true,
+    "reason": "该商品在维保范围内"
+  },
   "submission": {
-    "attempted": false,
     "state": "not_attempted",
     "order_no": null,
     "failure_code": null,
     "failure_message": null,
-    "missing_fields": [],
-    "request_payload": {},
-    "response_payload": {}
+    "missing_fields": []
   },
   "submitted_order": null
 }
 ```
+
+内部的 `user_confirmed`、重试计数、事件日志、上游请求参数和原始响应不会通过该契约暴露。
+
+## 前端渲染
+
+推荐由前端维护组件映射：
+
+```ts
+const componentByPhase = {
+  idle: ChatPanel,
+  collecting: ChatPanel,
+  product_selection: ProductSelectionCard,
+  pre_order: OrderPreviewCard,
+  submitted: OrderSuccessCard,
+  cancelled: CancelledNotice,
+}
+```
+
+`input_type` 是字段编辑提示，不是组件名称。前端可以把 `select` 渲染成下拉框或单选组，后端不感知。
+
+## 确定性命令
+
+UI 中已经明确的行为不再交给 LLM 二次识别：
+
+| 操作 | 接口 | 对应 capability |
+| --- | --- | --- |
+| 选择商品 | `POST /api/chat/{session_id}/select-product` | `select_product` |
+| 拒绝全部候选 | `POST /api/chat/{session_id}/reject-products` | `reject_products` |
+| 修改字段 | `PATCH /api/chat/{session_id}/order-info` | `update_order` |
+| 确认下单 | `POST /api/chat/{session_id}/confirm` | `confirm_order` |
+| 取消订单 | `POST /api/chat/{session_id}/cancel` | `cancel_order` |
+
+每个命令完成后都返回最新 `order_preview`，前端直接替换本地快照。
+
+## 流式事件
+
+`POST /api/chat/stream` 返回 NDJSON：
+
+| `type` | 用途 |
+| --- | --- |
+| `status` | 当前处理进度 |
+| `preview` | 增量工作流快照 |
+| `tool_call` | 已脱敏的工具调用状态 |
+| `token` | AI 回复文本片段 |
+| `final` | 最终回复和最终工作流快照 |
+| `error` | 本轮错误 |
+
+`preview` 和 `final` 中的 `order_preview` 使用相同结构。

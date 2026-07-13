@@ -11,6 +11,7 @@ from graph.prompts import PROMPTS_DIR
 from graph.state import AgentState
 from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import UserContext, build_thread_id, require_user
+from services.session_access import ensure_session_access
 
 
 def checkpoint_path() -> Path:
@@ -63,7 +64,7 @@ async def get_checkpoint_state(
     session_id: str,
     user: UserContext,
 ) -> AgentState:
-    from graph.builder import build_graph, ensure_session_access
+    from graph.builder import build_graph
 
     active_user = require_user(user)
     async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:

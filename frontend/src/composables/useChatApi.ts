@@ -140,6 +140,33 @@ export function useChatApi(deps: ChatApiDeps) {
     }
   }
 
+  async function rejectProducts() {
+    if (deps.isSending.value || deps.isSelectingProduct.value) return
+    deps.errorMessage.value = ''
+    deps.appendMessage('user', '以上都不符合')
+    const assistantMessageId = deps.appendMessage('assistant', '')
+    deps.isSending.value = true
+    deps.streamStatus.value = '正在重新整理需求...'
+
+    try {
+      const res = await fetch(`/api/chat/${encodeURIComponent(deps.sessionId.value)}/reject-products`, {
+        method: 'POST',
+        headers: currentApiHeaders(),
+      })
+      if (!res.ok) throw await buildResponseError(res, `操作失败 ${res.status}`)
+
+      const data = await res.json()
+      applyOrderPreview(deps.orderPreview, deps.chatBodyRef, data.order_preview)
+      deps.setMessageContent(assistantMessageId, data.answer || '请重新描述需要处理的商品和问题。')
+    } catch (err) {
+      deps.errorMessage.value = err instanceof Error ? err.message : '操作失败'
+      deps.setMessageContent(assistantMessageId, '操作失败，请稍后重试。')
+    } finally {
+      deps.isSending.value = false
+      deps.streamStatus.value = ''
+    }
+  }
+
   async function confirmOrder() {
     if (!deps.canConfirmOrder.value || deps.isSending.value) return
     deps.errorMessage.value = ''
@@ -150,10 +177,48 @@ export function useChatApi(deps: ChatApiDeps) {
     deps.streamStatus.value = '正在提交订单...'
 
     try {
-      await sendStreamingMessage(confirmText, assistantMessageId)
+      const res = await fetch(`/api/chat/${encodeURIComponent(deps.sessionId.value)}/confirm`, {
+        method: 'POST',
+        headers: currentApiHeaders(),
+      })
+      if (!res.ok) throw await buildResponseError(res, `确认下单失败 ${res.status}`)
+
+      const data = await res.json()
+      applyOrderPreview(deps.orderPreview, deps.chatBodyRef, data.order_preview)
+      if (isSubmittedPreview(data.order_preview)) {
+        deps.setMessageOrderSuccess(assistantMessageId, deps.buildOrderSuccessSnapshot())
+      }
+      deps.setMessageContent(assistantMessageId, data.answer || '已处理确认下单请求。')
     } catch (err) {
       deps.errorMessage.value = err instanceof Error ? err.message : '确认下单失败'
       deps.setMessageContent(assistantMessageId, '确认下单失败，请检查信息后重试。')
+    } finally {
+      deps.isSending.value = false
+      deps.streamStatus.value = ''
+    }
+  }
+
+  async function cancelOrder() {
+    if (deps.isSending.value) return
+    deps.errorMessage.value = ''
+    deps.appendMessage('user', '取消订单')
+    const assistantMessageId = deps.appendMessage('assistant', '')
+    deps.isSending.value = true
+    deps.streamStatus.value = '正在取消订单...'
+
+    try {
+      const res = await fetch(`/api/chat/${encodeURIComponent(deps.sessionId.value)}/cancel`, {
+        method: 'POST',
+        headers: currentApiHeaders(),
+      })
+      if (!res.ok) throw await buildResponseError(res, `取消订单失败 ${res.status}`)
+
+      const data = await res.json()
+      applyOrderPreview(deps.orderPreview, deps.chatBodyRef, data.order_preview)
+      deps.setMessageContent(assistantMessageId, data.answer || '已取消当前订单。')
+    } catch (err) {
+      deps.errorMessage.value = err instanceof Error ? err.message : '取消订单失败'
+      deps.setMessageContent(assistantMessageId, '取消订单失败，请稍后重试。')
     } finally {
       deps.isSending.value = false
       deps.streamStatus.value = ''
@@ -279,7 +344,9 @@ export function useChatApi(deps: ChatApiDeps) {
     loadSessionHistory,
     updateOrderInfoField,
     selectProduct,
+    rejectProducts,
     confirmOrder,
+    cancelOrder,
     sendFallbackMessage,
     sendStreamingMessage,
   }

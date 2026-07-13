@@ -8,8 +8,9 @@ const props = defineProps<{
   selectingCode?: string | null
   isAwaitingSelection?: boolean
   isSelecting?: boolean
-  isSending?: boolean
   isSubmitted?: boolean
+  canSelect?: boolean
+  canReject?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -39,11 +40,11 @@ function isSelected(item: ProductOption): boolean {
         class="relative w-full rounded border p-3 text-left transition-all duration-200"
         :class="[
           isSelected(item) ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-200' : 'border-slate-200 bg-white',
-          !isSubmitted && !isSelecting && !isSending ? 'cursor-pointer hover:border-indigo-200 hover:shadow-sm' : '',
+          canSelect && !isSelecting ? 'cursor-pointer hover:border-indigo-200 hover:shadow-sm' : '',
           isSubmitted ? 'opacity-95' : '',
         ]"
-        :role="isSubmitted ? undefined : 'button'"
-        @click="!isSubmitted && emit('select', item)"
+        :role="canSelect ? 'button' : undefined"
+        @click="canSelect && !isSelecting && emit('select', item)"
       >
         <div class="flex items-start justify-between gap-2">
           <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-800">{{ item.name }}</p>
@@ -81,7 +82,7 @@ function isSelected(item: ProductOption): boolean {
         v-if="isAwaitingSelection"
         type="button"
         class="w-full rounded border border-indigo-300 bg-white px-3 py-2.5 text-center text-[12px] font-medium text-indigo-600 transition hover:border-indigo-400 hover:bg-indigo-50"
-        :disabled="isSending"
+        :disabled="!canReject"
         @click="emit('reject')"
       >
         以上都不符合

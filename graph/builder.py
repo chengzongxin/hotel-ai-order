@@ -20,7 +20,6 @@ from graph.expected_time import (
 )
 from graph.order_fields import (
     DEFAULT_URGENCY,
-    build_order_card_fields,
     collect_missing_order_info,
     get_required_order_fields,
     normalize_goods_arrival_status,
@@ -29,32 +28,28 @@ from graph.order_fields import (
 from graph.products import (
     build_product_search_feedback,
     build_product_search_query,
-    find_product_by_code,
     get_selected_product,
 )
 from graph.state import AgentState
 from graph.submission import empty_submission, get_effective_service_type, submit_order_from_state
-from domain.events import OrderCancelled, OrderConfirmed, UserMessageReceived, event_to_state_patch
+from domain.events import OrderCancelled, UserMessageReceived, event_to_state_patch
 from services.order_workflow import OrderWorkflowService
 from services.order_normalizer import normalize_order_defaults
 from services.order_context_service import load_order_context
 from services.order_routing import resolve_order_submit_route
+from services.session_access import ensure_session_access
+from services.workflow_projection import build_order_preview
 from memory.postgres_log import save_conversation_log
 from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import (
     SessionAccessError,
     UserContext,
-    build_thread_id,
     require_user,
     user_from_runtime_config,
 )
 from graph.checkpoint import (
     checkpoint_path,
-    clear_checkpoint_session,
-    get_checkpoint_messages,
-    get_checkpoint_state,
     get_graph_config,
-    message_to_item,
 )
 from graph.constants import (
     ACTIVE_ORDER_PHASES,
@@ -867,12 +862,6 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
     return output
 
 
-def ensure_session_access(state: AgentState, user: UserContext) -> None:
-    stored_user_id = state.get("user_id")
-    if stored_user_id and stored_user_id != user.user_id:
-        raise SessionAccessError("无权访问该会话")
-
-
 async def submit_node(state: AgentState) -> dict[str, object]:
     """LangGraph 提交节点，从运行时配置读取当前用户上下文。"""
 
@@ -998,228 +987,6 @@ def get_interrupt_answer(result: dict[str, object]) -> str | None:
         return str(question) if question else None
 
     return str(payload)
-
-
-def build_order_preview(state: dict[str, object]) -> dict[str, object] | None:
-    from schemas.order_preview import build_order_preview_model
-
-    order_info = state.get("order_info") or {}
-    products = state.get("products") or []
-    service_type = state.get("service_type")
-    if not service_type and products:
-        selected = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
-        service_type = selected.get("service_order_type") or None
-
-    enriched_state = dict(state)
-    enriched_state["service_type"] = service_type
-    coverage_result = state.get("coverage_result") or {}
-    effective_service_type = state.get("effective_service_type") or service_type
-    spu_detail = coverage_result.get("spu_detail") if isinstance(coverage_result, dict) and isinstance(coverage_result.get("spu_detail"), dict) else {}
-    if effective_service_type == "托管维修" and spu_detail:
-        aligned_order_info, area_match = align_order_second_area_with_spu(
-            dict(order_info),
-            spu_detail,
-            source_text=str(state.get("last_user_message") or ""),
-        )
-        order_info = aligned_order_info
-        enriched_state["order_info"] = order_info
-        enriched_state["coverage_result"] = {**coverage_result, "area_match": area_match}
-        second_area_field = next(
-            (
-                field
-                for field in (state.get("order_card_fields") or [])
-                if isinstance(field, dict) and field.get("key") == "second_area"
-            ),
-            {},
-        )
-        if second_area_field.get("input_type") != "select" or not second_area_field.get("options"):
-            enriched_state["order_card_fields"] = build_order_card_fields(
-                service_type=effective_service_type,
-                order_info=order_info,
-                order_context=state.get("order_context") if isinstance(state.get("order_context"), dict) else {},
-            )
-    enriched_state["service_type_display"] = format_service_type(service_type, order_info)
-    if effective_service_type:
-        enriched_state["effective_service_type_display"] = format_service_type(
-            str(effective_service_type),
-            order_info,
-        )
-    preview = build_order_preview_model(enriched_state)
-    if preview is None:
-        return None
-    return preview.model_dump(mode="json")
-
-
-async def select_product_in_session(
-    session_id: str,
-    product_code: str,
-    user: UserContext,
-) -> dict[str, object]:
-    """在前端点选商品后，更新会话中的 selected_product_code 与 service_type。"""
-    active_user = require_user(user)
-    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer)
-        config = get_graph_config(active_user, session_id)
-        snapshot = await graph.aget_state(config)
-        state = snapshot.values or {}
-        if not state:
-            raise SessionAccessError("会话不存在或尚未开始对话")
-        ensure_session_access(state, active_user)
-
-        update = await get_order_workflow_service().select_product(
-            state=state,
-            product_code=product_code,
-            user=active_user,
-        )
-        await graph.aupdate_state(config, update, as_node="search_product_node")
-
-        merged_state = dict(state)
-        merged_state.update(update)
-        order_preview = build_order_preview(merged_state)
-        if order_preview is None:
-            raise ValueError("更新商品后无法生成订单预览")
-
-        selected = find_product_by_code(state.get("products") or [], product_code) or {}
-        product_name = selected.get("service_product_name") or product_code
-        repair_level = selected.get("repair_category") or selected.get("product_type") or selected.get("service_order_type") or "待确认"
-        message = f"好的，已为您选择【{product_name}（{repair_level}）】，正在生成预下单卡片。"
-        missing_info = update.get("missing_info") or []
-        if isinstance(missing_info, list) and missing_info:
-            message = f"{message}\n{build_missing_info_fallback_question(missing_info)}"
-
-        return {
-            "session_id": session_id,
-            "order_preview": order_preview,
-            "message": message,
-        }
-
-
-async def update_order_info_in_session(
-    session_id: str,
-    updates: dict[str, object],
-    user: UserContext,
-) -> dict[str, object]:
-    """前端编辑预下单卡片后，同步更新当前会话状态。"""
-
-    active_user = require_user(user)
-    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer)
-        config = get_graph_config(active_user, session_id)
-        snapshot = await graph.aget_state(config)
-        state = snapshot.values or {}
-        if not state:
-            raise SessionAccessError("会话不存在或尚未开始对话")
-        ensure_session_access(state, active_user)
-
-        service_type = get_effective_service_type(state)
-        update = await get_order_workflow_service().update_order_card(
-            state=state,
-            updates=updates,
-            service_type=service_type,
-            user=active_user,
-        )
-        await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
-
-        merged_state = dict(state)
-        merged_state.update(update)
-        order_preview = build_order_preview(merged_state)
-        if order_preview is None:
-            raise ValueError("更新下单信息后无法生成订单预览")
-
-        return {
-            "session_id": session_id,
-            "order_preview": order_preview,
-            "message": "已更新预下单信息。",
-        }
-
-
-async def confirm_order_in_session(
-    session_id: str,
-    user: UserContext,
-) -> dict[str, object]:
-    """前端点击确认按钮时直接提交当前预下单，避免再次依赖 LLM 判断“确认”。"""
-
-    active_user = require_user(user)
-    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer)
-        config = get_graph_config(active_user, session_id)
-        snapshot = await graph.aget_state(config)
-        state = snapshot.values or {}
-        if not state:
-            raise SessionAccessError("会话不存在或尚未开始对话")
-        ensure_session_access(state, active_user)
-
-        selected_product = get_selected_product(
-            state.get("products") or [],
-            state.get("selected_product_code"),
-            default_to_first=False,
-        )
-        if not selected_product:
-            raise ValueError("请先选择商品，再确认下单")
-
-        service_type = get_effective_service_type(state)
-        order_info = normalize_order_defaults(
-            service_type=service_type,
-            order_info={
-                **(state.get("order_info") or {}),
-                "user_confirmed": True,
-                "user_cancelled": False,
-            },
-            last_user_message=state.get("last_user_message", ""),
-        )
-        confirmed_event_patch = event_to_state_patch(
-            OrderConfirmed(
-                payload={
-                    "order_info": order_info,
-                    "phase": PHASE_PRE_ORDER,
-                }
-            )
-        )
-        order_card_fields = state.get("order_card_fields") or []
-        missing_info = collect_missing_order_info(service_type, order_info, order_card_fields)
-        if missing_info:
-            update = {
-                "order_info": order_info,
-                "missing_info": missing_info,
-                "phase": PHASE_PRE_ORDER,
-                "submission": empty_submission(),
-                **confirmed_event_patch,
-            }
-            await graph.aupdate_state(config, update, as_node="validate_order_node")
-            merged_state = dict(state)
-            merged_state.update(update)
-            return {
-                "session_id": session_id,
-                "answer": build_missing_info_fallback_question(missing_info),
-                "order_preview": build_order_preview(merged_state),
-            }
-
-        confirmed_state = dict(state)
-        confirmed_state["order_info"] = order_info
-        confirmed_state["missing_info"] = []
-        confirmed_state.update(confirmed_event_patch)
-        submit_update = await submit_order_from_state(confirmed_state, active_user, emit=False)
-        submit_update["order_events"] = [
-            *(confirmed_event_patch.get("order_events") or []),
-            *(submit_update.get("order_events") or []),
-        ]
-        await graph.aupdate_state(config, submit_update, as_node="submit_node")
-
-        merged_state = dict(confirmed_state)
-        merged_state.update(submit_update)
-        answer_messages = submit_update.get("messages") or []
-        answer = str(answer_messages[-1].content) if answer_messages else "已处理确认下单请求。"
-        await save_conversation_log(session_id, "human", "确认")
-        await save_conversation_log(session_id, "ai", answer)
-        return {
-            "session_id": session_id,
-            "answer": answer,
-            "order_preview": build_order_preview(merged_state),
-        }
-
 
 NODE_STATUS_MESSAGES = {
     "intent_node": "正在理解您的需求并提取订单信息...",

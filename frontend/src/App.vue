@@ -94,6 +94,8 @@ const {
   hasSubmissionFailure,
   submissionFailureMessage,
   canSubmit,
+  canSelectProduct,
+  canRejectProducts,
   hasProductOptions,
   isOrderSubmitted,
   showChatOrderPanel,
@@ -153,7 +155,9 @@ const {
   loadSessionHistory,
   updateOrderInfoField,
   selectProduct,
+  rejectProducts,
   confirmOrder,
+  cancelOrder: requestCancelOrder,
   sendFallbackMessage,
   sendStreamingMessage,
 } = chatApi
@@ -288,9 +292,9 @@ function createNewSession() {
   nextTick(() => chatBodyRef.value?.scrollTo({ top: 0 }))
 }
 
-function cancelOrder() {
+async function cancelOrder() {
   if (!canCancelOrder.value) return
-  sendMessage('取消，不用了')
+  await requestCancelOrder()
 }
 
 function statusStyle(status: string) {
@@ -534,10 +538,11 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       :selecting-code="selectingProductCode"
                       :is-awaiting-selection="isAwaitingProductSelection"
                       :is-selecting="isSelectingProduct"
-                      :is-sending="isSending"
                       :is-submitted="isOrderSubmitted"
+                      :can-select="canSelectProduct"
+                      :can-reject="canRejectProducts"
                       @select="selectProduct"
-                      @reject="sendMessage('0')"
+                      @reject="rejectProducts"
                     />
 
                     <OrderPreviewCard

@@ -1,3 +1,9 @@
+"""面向客户端的工作流状态契约。
+
+LangGraph ``AgentState`` 是后端运行时细节；本模块只定义允许通过 API 暴露、
+并供前端渲染当前订单流程的业务数据。
+"""
+
 from enum import Enum
 from typing import Any
 
@@ -5,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class OrderPhase(str, Enum):
-    """订单主流程阶段，同时决定前端展示哪类主卡片。"""
+    """订单主流程阶段；前端可据此选择页面区域或卡片。"""
 
     IDLE = "idle"
     COLLECTING = "collecting"
@@ -16,7 +22,7 @@ class OrderPhase(str, Enum):
 
 
 class SubmissionState(str, Enum):
-    """真实提交动作的状态。"""
+    """真实下单动作状态，与订单主流程 phase 分开表达。"""
 
     NOT_ATTEMPTED = "not_attempted"
     SUBMITTING = "submitting"
@@ -26,7 +32,7 @@ class SubmissionState(str, Enum):
 
 
 class SubmissionFailureCode(str, Enum):
-    """提交失败原因，供前端选择文案和后续排查。"""
+    """可供前端分类展示和埋点的提交失败原因。"""
 
     SUBMIT_DISABLED = "submit_disabled"
     MISSING_REQUIRED_FIELDS = "missing_required_fields"
@@ -36,7 +42,7 @@ class SubmissionFailureCode(str, Enum):
 
 
 class UrgencyLevel(str, Enum):
-    """紧急程度。"""
+    """订单紧急程度。"""
 
     LOW = "low"
     MEDIUM = "medium"
@@ -45,7 +51,7 @@ class UrgencyLevel(str, Enum):
 
 
 class ProductSearchStatus(str, Enum):
-    """商品检索状态。"""
+    """本轮标准商品检索结果状态。"""
 
     SKIPPED = "skipped"
     SUCCESS = "success"
@@ -53,298 +59,286 @@ class ProductSearchStatus(str, Enum):
     ERROR = "error"
 
 
+class OrderFieldSource(str, Enum):
+    """预下单字段当前值的主要来源。"""
+
+    USER = "user"
+    SYSTEM = "system"
+    PRODUCT = "product"
+
+
+class OrderFieldInputType(str, Enum):
+    """字段编辑语义；前端自行决定具体使用哪种组件。"""
+
+    TEXT = "text"
+    TEXTAREA = "textarea"
+    SELECT = "select"
+    DATETIME = "datetime"
+    NUMBER = "number"
+
+
 class OrderInfo(BaseModel):
-    """用户已描述、可被确认/提交的订单信息。"""
+    """从多轮对话中收集、且允许展示给当前用户的订单事实。"""
 
-    model_config = ConfigDict(extra="allow")
-
-    room_number: str | None = Field(default=None, description="房号；公区维修时可能为 /")
-    product: str | None = Field(default=None, description="用户描述的商品/设备")
-    fault: str | None = Field(default=None, description="故障现象")
-    area: str | None = Field(default=None, description="区域，如 客房、公区")
-    second_area: str | None = Field(default=None, description="二级区域，如 客房设备、电梯、大堂")
-    managed_repair_scope: str | None = Field(default=None, description="托管维修范围：客房 / 公区")
-    urgency: UrgencyLevel | str | None = Field(default=None, description="紧急程度")
-    expected_start_time: str | None = Field(default=None, description="期待开工时间")
-    goods_arrival_status: str | None = Field(default=None, description="货物是否到场")
-    product_quantity: int | None = Field(default=None, ge=1, description="商品数量")
-    user_confirmed: bool = Field(default=False, description="用户是否已确认下单")
-    user_cancelled: bool = Field(default=False, description="用户是否已取消当前预下单")
+    room_number: str | None = Field(
+        default=None,
+        description="房号；公区维修通常使用 `/` 表示不适用具体房号。",
+        examples=["301"],
+    )
+    product: str | None = Field(
+        default=None,
+        description="用户自然语言中描述的商品、设备或设施名称。",
+        examples=["门锁"],
+    )
+    fault: str | None = Field(
+        default=None,
+        description="用户描述的故障现象或服务需求。",
+        examples=["打不开"],
+    )
+    area: str | None = Field(
+        default=None,
+        description="一级区域，例如客房或公区。",
+        examples=["客房"],
+    )
+    second_area: str | None = Field(
+        default=None,
+        description="二级区域，例如客房设备、大堂或卫生间区域。",
+        examples=["客房设备"],
+    )
+    managed_repair_scope: str | None = Field(
+        default=None,
+        description="托管维修范围；当前主要为 `客房` 或 `公区`。",
+        examples=["客房"],
+    )
+    urgency: UrgencyLevel | str | None = Field(
+        default=None,
+        description="紧急程度：low、medium、high 或 urgent。",
+        examples=["medium"],
+    )
+    expected_start_time: str | None = Field(
+        default=None,
+        description="用户期望的开工时间，可包含自然语言或规范化时间文本。",
+        examples=["明天上午"],
+    )
+    goods_arrival_status: str | None = Field(
+        default=None,
+        description="安装类订单的货物到场状态。",
+        examples=["已到场"],
+    )
+    product_quantity: int | None = Field(
+        default=None,
+        ge=1,
+        description="下单商品数量，最小为 1。",
+        examples=[1],
+    )
 
 
 class ProductOption(BaseModel):
-    """单个可下单商品，供前端卡片展示与选择。"""
+    """一个可由用户选择的标准服务商品。"""
 
-    code: str = Field(..., description="商品编码，如 FWSP01537", examples=["FWSP01537"])
-    name: str = Field(..., description="商品名称", examples=["门锁损坏（困客人）"])
-    service_type: str = Field(..., description="服务类型", examples=["托管维修"])
-    category: str | None = Field(default=None, description="商品分类")
-    unit: str | None = Field(default=None, description="计价单位")
-    price: str | None = Field(default=None, description="参考价格")
-    price_status: str | None = Field(default=None, description="价格状态")
-    repair_category: str | None = Field(default=None, description="维修等级，如 小修/中修/大修")
-    fault_phenomenon: str | None = Field(default=None, description="标准故障现象描述")
-    related_area: str | None = Field(default=None, description="适用区域")
-    remark: str | None = Field(default=None, description="服务说明")
-    score: float | None = Field(default=None, ge=0.0, le=1.0, description="与检索 query 的相似度")
-    rank: int = Field(..., ge=1, description="推荐排序，1 为最高")
-    is_recommended: bool = Field(default=False, description="是否为系统默认推荐（Top1）")
-    is_selected: bool = Field(default=False, description="当前是否已被选中")
+    code: str = Field(description="标准服务商品编码，用于选择和真实下单。", examples=["FWSP01537"])
+    name: str = Field(description="标准服务商品名称。", examples=["门锁损坏（困客人）"])
+    service_type: str = Field(description="该商品对应的服务订单类型。", examples=["托管维修"])
+    category: str | None = Field(default=None, description="商品所属分类。")
+    unit: str | None = Field(default=None, description="商品计价单位。", examples=["次"])
+    price: str | None = Field(default=None, description="商品参考价格；字符串可保留上游展示格式。", examples=["48.08"])
+    price_status: str | None = Field(default=None, description="价格状态或价格展示说明。")
+    repair_category: str | None = Field(default=None, description="维修等级，例如小修、中修或大修。", examples=["小修"])
+    fault_phenomenon: str | None = Field(default=None, description="商品绑定的标准故障现象。")
+    related_area: str | None = Field(default=None, description="商品适用的区域说明。")
+    remark: str | None = Field(default=None, description="商品服务说明或备注。")
+    score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="商品与本轮检索条件的融合匹配分数，范围 0～1。",
+        examples=[0.6756],
+    )
+    rank: int = Field(description="候选商品排序，从 1 开始。", ge=1, examples=[1])
+    is_recommended: bool = Field(default=False, description="是否为当前候选列表的第一推荐项。")
+    is_selected: bool = Field(default=False, description="用户当前是否已经选中该商品。")
 
 
 class ProductSection(BaseModel):
-    """商品匹配结果区块。"""
+    """本轮商品检索、候选与选中状态。"""
 
     status: ProductSearchStatus | str | None = Field(
         default=None,
-        description="检索状态：skipped / success / no_match / error",
+        description="检索状态：skipped、success、no_match 或 error。",
     )
-    query: str | None = Field(default=None, description="本轮检索使用的 query")
-    feedback: str | None = Field(default=None, description="面向用户的匹配说明文案")
-    selected_code: str | None = Field(default=None, description="当前选中的商品编码")
-    selection_rejected: bool = Field(default=False, description="用户是否选择了以上都不符合")
-    items: list[ProductOption] = Field(default_factory=list, description="全部候选商品，按 rank 排序")
+    query: str | None = Field(default=None, description="后端实际用于商品检索的查询文本。", examples=["门锁 打不开"])
+    feedback: str | None = Field(default=None, description="解释匹配结果或引导用户选择的提示文案。")
+    selected_code: str | None = Field(default=None, description="用户当前选中的标准商品编码；未选择时为 null。")
+    selection_rejected: bool = Field(default=False, description="用户是否明确选择了“以上都不符合”。")
+    items: list[ProductOption] = Field(default_factory=list, description="按 rank 升序排列的商品候选列表。")
 
 
-class OrderCardField(BaseModel):
-    """预下单卡片字段，前端直接按列表渲染。"""
+class OrderFormOption(BaseModel):
+    """枚举型预下单字段的一个可选项。"""
 
-    key: str = Field(..., description="字段 key")
-    label: str = Field(..., description="展示标签")
-    value: Any = Field(default=None, description="展示值")
-    required: bool = Field(default=False, description="是否必填")
-    source: str = Field(default="system", description="字段来源：user / system / product")
-    editable: bool = Field(default=True, description="前端是否可编辑")
-    input_type: str = Field(default="text", description="输入类型：text / textarea / select / datetime / number")
-    options: list[dict[str, str]] = Field(default_factory=list, description="可选项，仅 select 使用")
-    hint: str | None = Field(default=None, description="字段辅助说明，展示在输入控件下方")
+    label: str = Field(description="展示给用户的选项名称。", examples=["客房区域（客房）"])
+    value: str = Field(description="更新订单字段时提交给后端的选项值。", examples=["1545054022"])
 
 
-class OrderCardSection(BaseModel):
-    """预下单卡片配置。"""
+class OrderFormField(BaseModel):
+    """预下单字段的业务元数据；前端决定具体组件和布局。"""
 
-    card_type: str | None = Field(default=None, description="卡片类型")
-    title: str | None = Field(default=None, description="卡片标题")
-    fields: list[OrderCardField] = Field(default_factory=list, description="卡片字段")
+    key: str = Field(description="字段稳定标识；更新订单信息时作为 updates 的 key。", examples=["expected_time"])
+    label: str = Field(description="面向用户的字段名称。", examples=["期望开工/完工时间"])
+    value: Any = Field(default=None, description="当前字段值；类型由 input_type 和业务字段决定。")
+    required: bool = Field(default=False, description="该字段在当前服务类型下是否必填。")
+    source: OrderFieldSource = Field(default=OrderFieldSource.SYSTEM, description="当前值来源：user、system 或 product。")
+    editable: bool = Field(default=True, description="后端是否允许用户通过确定性接口修改该字段。")
+    input_type: OrderFieldInputType = Field(
+        default=OrderFieldInputType.TEXT,
+        description="字段编辑语义：text、textarea、select、datetime 或 number；不绑定具体前端组件。",
+    )
+    options: list[OrderFormOption] = Field(
+        default_factory=list,
+        description="input_type 为 select 时可用的选项；其他类型通常为空数组。",
+    )
+    hint: str | None = Field(default=None, description="字段补充说明或输入提示。")
+
+
+class OrderForm(BaseModel):
+    """当前服务类型对应的预下单业务字段集合。"""
+
+    fields: list[OrderFormField] = Field(default_factory=list, description="前端按顺序渲染的预下单字段。")
 
 
 class CoverageSection(BaseModel):
-    """托管维修维保范围校验结果。"""
+    """托管维修维保范围校验摘要。"""
 
-    model_config = ConfigDict(extra="allow")
+    checked: bool = Field(default=False, description="是否已经执行维保范围校验。")
+    covered: bool | None = Field(default=None, description="是否在维保范围内；未校验或不适用时为 null。")
+    reason: str | None = Field(default=None, description="校验结果、降级原因或待补充信息说明。")
+    effective_service_type: str | None = Field(default=None, description="范围校验后最终采用的服务类型。")
+    hosting_card_name: str | None = Field(default=None, description="命中的维保卡或维保套餐名称。")
 
-    checked: bool = Field(default=False, description="是否已校验维保范围")
-    covered: bool | None = Field(default=None, description="是否在当前维保卡范围内；非托管维修为 null")
-    reason: str | None = Field(default=None, description="范围校验或降级原因")
-    effective_service_type: str | None = Field(default=None, description="校验后的最终下单服务类型")
-    hosting_card_status: int | str | None = Field(default=None, description="维保卡状态")
-    hosting_card_id: int | str | None = Field(default=None, description="维保卡 ID")
-    hosting_card_name: str | None = Field(default=None, description="维保套餐名称")
-    spu_id: int | str | None = Field(default=None, description="托管维修 SPU ID")
-    spu_name: str | None = Field(default=None, description="托管维修 SPU 名称")
-    second_area_id: int | str | None = Field(default=None, description="托管维修二级区域 ID")
+
+class WorkflowValidation(BaseModel):
+    """当前订单数据完整性校验结果。"""
+
+    ready: bool = Field(
+        default=False,
+        description="订单业务数据是否完整；不等同于按钮当前是否可点击，操作权限以 capabilities 为准。",
+    )
+    missing_fields: list[str] = Field(
+        default_factory=list,
+        description="仍需补充的业务字段 key；为空表示数据完整。",
+        examples=[["expected_start_time"]],
+    )
+
+
+class WorkflowCapabilities(BaseModel):
+    """后端当前接受的确定性业务命令。
+
+    前端决定在哪里、以什么组件展示这些操作；后端收到命令后仍会再次校验。
+    """
+
+    select_product: bool = Field(default=False, description="当前是否允许选择一个商品候选。")
+    reject_products: bool = Field(default=False, description="当前是否允许拒绝全部商品候选。")
+    update_order: bool = Field(default=False, description="当前是否允许修改预下单字段。")
+    confirm_order: bool = Field(default=False, description="当前是否允许确认并提交订单。")
+    cancel_order: bool = Field(default=False, description="当前是否允许取消进行中的订单。")
+    retry_submission: bool = Field(default=False, description="上次提交失败后，当前是否满足再次提交条件。")
 
 
 class SubmissionSection(BaseModel):
-    """真实下单动作的结构化结果。"""
+    """真实下单动作的客户端安全摘要。"""
 
-    attempted: bool = Field(default=False, description="是否已经尝试过真实提交")
-    state: SubmissionState | str = Field(default=SubmissionState.NOT_ATTEMPTED, description="提交动作状态")
-    order_no: str | None = Field(default=None, description="真实订单号")
-    failure_code: SubmissionFailureCode | str | None = Field(default=None, description="失败类型")
-    failure_message: str | None = Field(default=None, description="面向前端展示的失败说明")
-    missing_fields: list[str] = Field(default_factory=list, description="仍缺失的下单字段")
-    request_payload: dict[str, Any] = Field(default_factory=dict, description="构造出的真实下单参数")
-    response_payload: dict[str, Any] = Field(default_factory=dict, description="真实下单接口返回")
+    state: SubmissionState | str = Field(
+        default=SubmissionState.NOT_ATTEMPTED,
+        description="提交状态：not_attempted、submitting、succeeded、failed 或 disabled。",
+    )
+    order_no: str | None = Field(default=None, description="提交成功后返回的真实订单号。", examples=["SO202607130001"])
+    failure_code: SubmissionFailureCode | str | None = Field(default=None, description="提交失败分类码，供前端选择提示和埋点。")
+    failure_message: str | None = Field(default=None, description="已经脱敏、可展示给用户的提交失败说明。")
+    missing_fields: list[str] = Field(default_factory=list, description="真实下单接口仍缺失的参数或业务字段名称。")
 
 
 class SubmittedOrder(BaseModel):
-    """提交成功后的订单快照，供成功卡片与历史追问使用。"""
+    """提交成功后用于成功卡片和历史恢复的订单快照。"""
 
-    model_config = ConfigDict(extra="allow")
-
-    order_no: str
-    service_type: str | None = None
-    effective_service_type: str | None = None
-    product_code: str | None = None
-    product_name: str | None = None
-    product_order_type: str | None = None
-    room_number: str | None = None
-    product: str | None = None
-    fault: str | None = None
-    area: str | None = None
-    second_area: str | None = None
-    managed_repair_scope: str | None = None
-    urgency: UrgencyLevel | str | None = None
-    expected_start_time: str | None = None
-    goods_arrival_status: str | None = None
-    product_quantity: int | None = None
-    contacts: str | None = None
-    phone: str | None = None
+    order_no: str = Field(description="真实订单号。", examples=["SO202607130001"])
+    service_type: str | None = Field(default=None, description="商品原始服务类型。")
+    effective_service_type: str | None = Field(default=None, description="最终提交采用的服务类型。")
+    product_code: str | None = Field(default=None, description="已下单的标准服务商品编码。")
+    product_name: str | None = Field(default=None, description="已下单的标准服务商品名称。")
+    product_order_type: str | None = Field(default=None, description="标准商品记录中的订单类型。")
+    room_number: str | None = Field(default=None, description="订单房号；公区订单可能为 `/`。")
+    product: str | None = Field(default=None, description="用户原始描述的商品或设备。")
+    fault: str | None = Field(default=None, description="用户原始描述的故障或需求。")
+    area: str | None = Field(default=None, description="订单一级区域。")
+    second_area: str | None = Field(default=None, description="订单二级区域。")
+    managed_repair_scope: str | None = Field(default=None, description="托管维修范围。")
+    urgency: UrgencyLevel | str | None = Field(default=None, description="订单紧急程度。")
+    expected_start_time: str | None = Field(default=None, description="期望开工时间。")
+    goods_arrival_status: str | None = Field(default=None, description="货物到场状态。")
+    product_quantity: int | None = Field(default=None, description="下单商品数量。")
+    contacts: str | None = Field(default=None, description="订单联系人。")
+    phone: str | None = Field(default=None, description="订单联系电话。")
 
 
 class OrderPreview(BaseModel):
-    """对话过程中的订单预览，供前端侧边栏/卡片渲染。"""
+    """从内部 AgentState 投影得到的客户端工作流快照。"""
 
-    phase: OrderPhase | str = Field(default=OrderPhase.IDLE, description="订单主流程阶段")
-    service_type: str | None = Field(default=None, description="服务类型")
-    service_type_display: str | None = Field(
-        default=None,
-        description="展示用服务类型，如 托管维修（客房）",
-    )
-    effective_service_type: str | None = Field(default=None, description="最终用于校验和提交的服务类型")
-    effective_service_type_display: str | None = Field(
-        default=None,
-        description="展示用最终服务类型，如 单次维修服务",
-    )
-    order_info: OrderInfo = Field(default_factory=OrderInfo, description="已收集的订单信息")
-    products: ProductSection = Field(default_factory=ProductSection, description="商品匹配与选择")
-    order_card: OrderCardSection = Field(default_factory=OrderCardSection, description="预下单卡片字段配置")
-    coverage: CoverageSection = Field(default_factory=CoverageSection, description="托管维修维保范围校验结果")
-    missing_info: list[str] = Field(default_factory=list, description="仍需用户补充的字段名")
-    submission: SubmissionSection = Field(default_factory=SubmissionSection, description="提交阶段数据")
-    submitted_order: SubmittedOrder | None = Field(default=None, description="提交成功后的订单快照")
-
-
-def product_raw_to_option(
-    raw: dict[str, Any],
-    *,
-    rank: int,
-    selected_code: str | None,
-) -> ProductOption:
-    """将商品库原始字段映射为 API 对外结构。"""
-    code = str(raw.get("service_product_code") or "")
-    return ProductOption(
-        code=code,
-        name=str(raw.get("service_product_name") or ""),
-        service_type=str(raw.get("service_order_type") or raw.get("product_type") or ""),
-        category=raw.get("category"),
-        unit=raw.get("unit"),
-        price=raw.get("price"),
-        price_status=raw.get("price_status"),
-        repair_category=raw.get("repair_category"),
-        fault_phenomenon=raw.get("fault_phenomenon"),
-        related_area=raw.get("related_area"),
-        remark=raw.get("remark"),
-        score=raw.get("score"),
-        rank=rank,
-        is_recommended=rank == 1,
-        is_selected=bool(code and code == selected_code),
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "schema_version": 1,
+                    "phase": "pre_order",
+                    "service_type": "托管维修",
+                    "service_type_display": "托管维修（客房）",
+                    "effective_service_type": "托管维修",
+                    "effective_service_type_display": "托管维修（客房）",
+                    "order_info": {
+                        "room_number": "301",
+                        "product": "门锁",
+                        "fault": "打不开",
+                        "area": "客房",
+                        "urgency": "medium",
+                    },
+                    "products": {
+                        "status": "success",
+                        "query": "门锁 打不开",
+                        "selected_code": "FWSP01537",
+                        "selection_rejected": False,
+                        "items": [],
+                    },
+                    "form": {"fields": []},
+                    "validation": {"ready": True, "missing_fields": []},
+                    "capabilities": {
+                        "select_product": False,
+                        "reject_products": False,
+                        "update_order": True,
+                        "confirm_order": True,
+                        "cancel_order": True,
+                        "retry_submission": False,
+                    },
+                    "coverage": {"checked": True, "covered": True},
+                    "submission": {"state": "not_attempted", "missing_fields": []},
+                    "submitted_order": None,
+                }
+            ]
+        }
     )
 
-
-def build_product_section(
-    *,
-    products: list[dict[str, Any]],
-    selected_code: str | None,
-    search_status: str | None,
-    search_query: str | None,
-    search_feedback: str | None,
-    selection_rejected: bool = False,
-) -> ProductSection:
-    """将状态机中的商品列表映射为 API 对外结构。"""
-    from graph.products import resolve_selected_code
-
-    resolved_code = resolve_selected_code(products, selected_code, default_to_first=False)
-
-    items = [
-        product_raw_to_option(raw, rank=index, selected_code=resolved_code)
-        for index, raw in enumerate(products, start=1)
-        if raw.get("service_product_code")
-    ]
-
-    return ProductSection(
-        status=search_status,
-        query=search_query,
-        feedback=search_feedback,
-        selected_code=resolved_code,
-        selection_rejected=selection_rejected,
-        items=items,
+    schema_version: int = Field(default=1, description="客户端状态契约版本；用于兼容未来字段演进。", examples=[1])
+    phase: OrderPhase | str = Field(default=OrderPhase.IDLE, description="订单主流程阶段；前端可据此选择展示区域。")
+    service_type: str | None = Field(default=None, description="由所选商品决定的原始服务类型。")
+    service_type_display: str | None = Field(default=None, description="原始服务类型的用户展示文案。")
+    effective_service_type: str | None = Field(default=None, description="维保校验后最终用于字段校验和提交的服务类型。")
+    effective_service_type_display: str | None = Field(default=None, description="最终服务类型的用户展示文案。")
+    order_info: OrderInfo = Field(default_factory=OrderInfo, description="当前已收集的订单事实。")
+    products: ProductSection = Field(default_factory=ProductSection, description="商品检索、候选及选中状态。")
+    form: OrderForm = Field(default_factory=OrderForm, description="当前预下单业务字段；前端决定具体组件。")
+    validation: WorkflowValidation = Field(default_factory=WorkflowValidation, description="订单数据完整性校验结果。")
+    capabilities: WorkflowCapabilities = Field(default_factory=WorkflowCapabilities, description="后端当前允许执行的确定性命令。")
+    coverage: CoverageSection = Field(
+        default_factory=CoverageSection,
+        description="当前所选商品的托管维修维保范围校验摘要。",
     )
-
-
-def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
-    """从 LangGraph state 构造结构化 OrderPreview。"""
-    from graph.products import derive_product_section_fields, get_selected_product
-
-    order_info_raw = state.get("order_info") or {}
-    products = state.get("products") or []
-    selected_code = state.get("selected_product_code")
-    submission_raw = state.get("submission") or {}
-    phase = state.get("phase")
-    submission_state = submission_raw.get("state")
-    request_payload = submission_raw.get("request_payload") or {}
-    response_payload = submission_raw.get("response_payload") or {}
-    submitted_order_candidate = state.get("submitted_order") or state.get("last_order") or None
-    has_submitted_snapshot = (
-        isinstance(submitted_order_candidate, dict)
-        and bool(submitted_order_candidate.get("order_no"))
-    )
-    if not phase:
-        if has_submitted_snapshot or submission_state == SubmissionState.SUCCEEDED:
-            phase = OrderPhase.SUBMITTED
-        elif state.get("product_selection_rejected"):
-            phase = OrderPhase.COLLECTING
-        elif selected_code and state.get("order_card_fields"):
-            phase = OrderPhase.PRE_ORDER
-        elif products:
-            phase = OrderPhase.PRODUCT_SELECTION
-        elif order_info_raw:
-            phase = OrderPhase.COLLECTING
-        else:
-            phase = OrderPhase.IDLE
-    is_submitted_preview = phase == OrderPhase.SUBMITTED or phase == OrderPhase.SUBMITTED.value
-    submitted_order_raw = submitted_order_candidate if is_submitted_preview else None
-    coverage_result = state.get("coverage_result") or {}
-
-    if (
-        not order_info_raw
-        and not products
-        and not request_payload
-        and not response_payload
-        and not submitted_order_raw
-        and not coverage_result
-        and not state.get("order_card_fields")
-    ):
-        return None
-
-    search_status, search_query, search_feedback = derive_product_section_fields(state)
-    service_type = state.get("service_type")
-    if not service_type and products:
-        selected = get_selected_product(products, selected_code, default_to_first=False)
-        service_type = selected.get("service_order_type") or None
-
-    submission = SubmissionSection.model_validate(submission_raw)
-    submitted_order = None
-    if isinstance(submitted_order_raw, dict) and submitted_order_raw.get("order_no"):
-        submitted_order = SubmittedOrder.model_validate(submitted_order_raw)
-
-    return OrderPreview(
-        phase=phase,
-        service_type=service_type,
-        service_type_display=state.get("service_type_display"),
-        effective_service_type=state.get("effective_service_type") or service_type,
-        effective_service_type_display=state.get("effective_service_type_display") or state.get("service_type_display"),
-        order_info=OrderInfo.model_validate(order_info_raw),
-        products=build_product_section(
-            products=products,
-            selected_code=selected_code,
-            search_status=search_status,
-            search_query=search_query,
-            search_feedback=search_feedback,
-            selection_rejected=bool(state.get("product_selection_rejected")),
-        ),
-        order_card=OrderCardSection(
-            card_type=state.get("order_submit_route"),
-            title=state.get("effective_service_type_display") or state.get("service_type_display"),
-            fields=[
-                OrderCardField.model_validate(field)
-                for field in (state.get("order_card_fields") or [])
-                if isinstance(field, dict)
-            ],
-        ),
-        coverage=CoverageSection.model_validate(coverage_result),
-        missing_info=state.get("missing_info") or [],
-        submission=submission,
-        submitted_order=submitted_order,
-    )
+    submission: SubmissionSection = Field(default_factory=SubmissionSection, description="真实下单动作状态和安全错误摘要。")
+    submitted_order: SubmittedOrder | None = Field(default=None, description="提交成功后的订单快照；未成功时为 null。")

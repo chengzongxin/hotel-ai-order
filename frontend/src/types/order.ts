@@ -86,10 +86,22 @@ export interface OrderCardField {
   hint?: string | null
 }
 
-export interface OrderCardSection {
-  card_type?: string | null
-  title?: string | null
+export interface OrderForm {
   fields?: OrderCardField[]
+}
+
+export interface WorkflowValidation {
+  ready?: boolean
+  missing_fields?: string[]
+}
+
+export interface WorkflowCapabilities {
+  select_product?: boolean
+  reject_products?: boolean
+  update_order?: boolean
+  confirm_order?: boolean
+  cancel_order?: boolean
+  retry_submission?: boolean
 }
 
 export interface CoverageSection {
@@ -98,22 +110,6 @@ export interface CoverageSection {
   reason?: string | null
   effective_service_type?: string | null
   hosting_card_name?: string | null
-  area_match?: {
-    checked?: boolean
-    matched?: boolean | null
-    inferred_second_area?: string | null
-    match_source?: string | null
-    matched_second_area?: string | null
-    matched_first_area?: string | null
-    available_second_areas?: string[]
-    available_second_area_options?: Array<{
-      label?: string | null
-      value?: string | null
-      second_area_id?: string | null
-      second_area?: string | null
-      first_area?: string | null
-    }>
-  }
 }
 
 export interface CoverageNotice {
@@ -154,6 +150,7 @@ export interface SubmittedOrder {
 }
 
 export interface OrderPreview {
+  schema_version?: number
   phase?: OrderPhase | string | null
   service_type?: string | null
   service_type_display?: string | null
@@ -171,18 +168,16 @@ export interface OrderPreview {
     product_quantity?: number | null
   }
   products?: ProductSection
-  order_card?: OrderCardSection
+  form?: OrderForm
+  validation?: WorkflowValidation
+  capabilities?: WorkflowCapabilities
   coverage?: CoverageSection
-  missing_info?: string[]
   submission?: {
-    attempted?: boolean
     state?: SubmissionState | string
     order_no?: string | null
     failure_code?: string | null
     failure_message?: string | null
     missing_fields?: string[]
-    request_payload?: Record<string, unknown>
-    response_payload?: Record<string, unknown>
   }
   submitted_order?: SubmittedOrder | null
 }

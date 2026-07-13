@@ -7,16 +7,22 @@ from fastapi.responses import StreamingResponse
 
 from api.deps import get_current_user, get_logged_in_user
 from graph.builder import (
-    build_order_preview,
+    run_agent,
+    stream_agent_events,
+)
+from graph.checkpoint import (
     clear_checkpoint_session,
-    confirm_order_in_session,
     get_checkpoint_messages,
     get_checkpoint_state,
-    run_agent,
+)
+from services.order_session_service import (
+    cancel_order_in_session,
+    confirm_order_in_session,
+    reject_products_in_session,
     select_product_in_session,
-    stream_agent_events,
     update_order_info_in_session,
 )
+from services.workflow_projection import build_order_preview
 from rag.spu_loader import SpuExcelLoader
 from schemas.chat import (
     ChatRequest,
@@ -130,6 +136,21 @@ async def select_product(
     return SelectProductResponse(**result)
 
 
+@router.post("/chat/{session_id}/reject-products", response_model=ChatResponse)
+async def reject_products(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> ChatResponse:
+    """前端“以上都不符合”的确定性接口。"""
+    try:
+        result = await reject_products_in_session(session_id=session_id, user=user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ChatResponse(**result)
+
+
 @router.patch("/chat/{session_id}/order-info", response_model=UpdateOrderInfoResponse)
 async def update_order_info(
     session_id: str,
@@ -158,6 +179,21 @@ async def confirm_order(
     """前端确认按钮的确定性提交接口，不再依赖 LLM 重新识别“确认”。"""
     try:
         result = await confirm_order_in_session(session_id=session_id, user=user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ChatResponse(**result)
+
+
+@router.post("/chat/{session_id}/cancel", response_model=ChatResponse)
+async def cancel_order(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> ChatResponse:
+    """前端取消按钮的确定性接口，不再依赖 LLM 识别取消意图。"""
+    try:
+        result = await cancel_order_in_session(session_id=session_id, user=user)
     except SessionAccessError as exc:
         raise _session_access_error() from exc
     except ValueError as exc:

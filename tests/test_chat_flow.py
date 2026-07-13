@@ -14,9 +14,11 @@ from typing import Any
 import pytest
 
 from graph.builder import (
-    clear_checkpoint_session,
-    confirm_order_in_session,
     run_agent,
+)
+from graph.checkpoint import clear_checkpoint_session
+from services.order_session_service import (
+    confirm_order_in_session,
     select_product_in_session,
     update_order_info_in_session,
 )
@@ -85,7 +87,8 @@ def phase(result: dict[str, Any]) -> str | None:
 
 
 def missing(result: dict[str, Any]) -> list[str]:
-    return (maybe_preview(result) or {}).get("missing_info") or []
+    validation = (maybe_preview(result) or {}).get("validation") or {}
+    return validation.get("missing_fields") or []
 
 
 def products(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -99,8 +102,8 @@ def selected_code(result: dict[str, Any]) -> str | None:
 
 
 def order_card_fields(result: dict[str, Any]) -> list[dict[str, Any]]:
-    card = (maybe_preview(result) or {}).get("order_card") or {}
-    return card.get("fields") or []
+    form = (maybe_preview(result) or {}).get("form") or {}
+    return form.get("fields") or []
 
 
 def product_codes(result: dict[str, Any]) -> list[str]:
@@ -123,7 +126,7 @@ def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
         "order_info": data.get("order_info"),
         "service_type": data.get("service_type"),
         "effective_service_type": data.get("effective_service_type"),
-        "missing_info": data.get("missing_info"),
+        "missing_info": (data.get("validation") or {}).get("missing_fields"),
         "selected_code": (data.get("products") or {}).get("selected_code"),
         "products": [
             {

@@ -6,7 +6,6 @@ from graph.order_fields import build_order_card_fields
 from graph.order_fields import collect_missing_order_info
 
 from graph.builder import (
-    build_order_preview,
     build_missing_info_fallback_question,
     normalize_order_card_update,
     route_after_search_product,
@@ -14,6 +13,7 @@ from graph.builder import (
     submit_node,
 )
 from schemas.user import UserContext
+from services.workflow_projection import build_order_preview
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ def test_order_preview_rebuilds_stale_second_area_text_field_from_spu_detail():
     )
 
     assert preview is not None
-    second_area_field = next(field for field in preview["order_card"]["fields"] if field["key"] == "second_area")
+    second_area_field = next(field for field in preview["form"]["fields"] if field["key"] == "second_area")
     assert second_area_field["input_type"] == "select"
     assert second_area_field["value"] == "1545054022"
     assert second_area_field["options"] == [

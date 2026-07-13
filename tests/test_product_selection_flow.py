@@ -11,12 +11,12 @@ from langchain_core.messages import HumanMessage
 
 from graph.builder import (
     ask_node,
-    build_order_preview,
     coverage_node,
     route_after_search_product,
     search_product_node,
 )
 from schemas.user import UserContext
+from services.workflow_projection import build_order_preview
 
 
 def product(
@@ -219,7 +219,7 @@ async def test_no_product_match_asks_for_more_precise_product(monkeypatch, trace
     assert no_match_preview["phase"] == "collecting"
     assert no_match_preview["products"]["status"] == "no_match"
     assert no_match_preview["products"]["items"] == []
-    assert no_match_preview["missing_info"] == ["product_match"]
+    assert no_match_preview["validation"]["missing_fields"] == ["product_match"]
     assert route_after_search_product(state) == "ask_node"
 
     async def fake_emit_token_text(*args, **kwargs):

@@ -15,25 +15,6 @@ const MISSING_INFO_LABELS: Record<string, string> = {
   address: '地址',
 }
 
-function makeReadonlyField(
-  key: string,
-  icon: string,
-  label: string,
-  value: string | null | undefined,
-): UiOrderField {
-  return {
-    key,
-    icon,
-    label,
-    value: value ?? null,
-    required: false,
-    editable: false,
-    inputType: 'text',
-    options: [],
-    hint: null,
-  }
-}
-
 export function iconForOrderField(key: string): string {
   const icons: Record<string, string> = {
     area_room: '📍',
@@ -85,14 +66,15 @@ export function useOrderPreview(
       ?? serviceTypeDisplay.value
       ?? null,
   )
-  const missingInfo = computed(() => orderPreview.value?.missing_info ?? [])
+  const validation = computed(() => orderPreview.value?.validation ?? {})
+  const capabilities = computed(() => orderPreview.value?.capabilities ?? {})
+  const missingInfo = computed(() => validation.value.missing_fields ?? [])
   const coverage = computed(() => orderPreview.value?.coverage ?? {})
   const productItems = computed(() => orderPreview.value?.products?.items ?? [])
   const productFeedback = computed(() => orderPreview.value?.products?.feedback ?? null)
   const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
   const productSelectionRejected = computed(() => Boolean(orderPreview.value?.products?.selection_rejected))
-  const backendOrderFields = computed(() => orderPreview.value?.order_card?.fields ?? [])
-  const hasBackendOrderFields = computed(() => backendOrderFields.value.length > 0)
+  const formFields = computed(() => orderPreview.value?.form?.fields ?? [])
   const isProductSelectionPhase = computed(() => phase.value === 'product_selection')
   const isPreOrderPhase = computed(() => phase.value === 'pre_order')
   const hasProductOptions = computed(() => productItems.value.length > 0)
@@ -110,7 +92,7 @@ export function useOrderPreview(
     () => isProductSelectionPhase.value && hasProductOptions.value && !selectedProductCode.value && !productSelectionRejected.value,
   )
   const showDraftOrderCard = computed(
-    () => isPreOrderPhase.value && Boolean(selectedProductCode.value) && hasBackendOrderFields.value,
+    () => isPreOrderPhase.value && formFields.value.length > 0,
   )
   const submittedOrderId = computed(() => submittedOrder.value?.order_no || submission.value.order_no || null)
   const submissionState = computed(() => submission.value.state ?? 'not_attempted')
@@ -119,8 +101,12 @@ export function useOrderPreview(
   const hasSubmissionFailure = computed(() => submissionState.value === 'failed' || submissionState.value === 'disabled')
   const submissionFailureMessage = computed(() => submission.value.failure_message || '')
 
-  const canSubmit = computed(() =>
-    isPreOrderPhase.value && missingInfo.value.length === 0 && submissionState.value !== 'succeeded',
+  const canSubmit = computed(() => Boolean(capabilities.value.confirm_order))
+  const canSelectProduct = computed(
+    () => Boolean(capabilities.value.select_product) && !isSending.value,
+  )
+  const canRejectProducts = computed(
+    () => Boolean(capabilities.value.reject_products) && !isSending.value,
   )
 
   const isOrderSubmitted = computed(() => phase.value === 'submitted' || submissionState.value === 'succeeded')
@@ -134,12 +120,12 @@ export function useOrderPreview(
   })
 
   const canConfirmOrder = computed(
-    () => canSubmit.value && Boolean(selectedProductCode.value) && !isSending.value && !isUpdatingOrderInfo.value,
+    () => canSubmit.value && !isSending.value && !isUpdatingOrderInfo.value,
   )
 
-  const canCancelOrder = computed(() => {
-    return ['collecting', 'product_selection', 'pre_order'].includes(String(phase.value)) && !isSending.value
-  })
+  const canCancelOrder = computed(
+    () => Boolean(capabilities.value.cancel_order) && !isSending.value,
+  )
 
   const missingInfoText = computed(() =>
     missingInfo.value.map((field) => MISSING_INFO_LABELS[field] || field).join('、'),
@@ -171,55 +157,17 @@ export function useOrderPreview(
   })
 
   const orderFields = computed<UiOrderField[]>(() => {
-    if (hasBackendOrderFields.value) {
-      return backendOrderFields.value.map((field) => ({
-        key: field.key,
-        icon: iconForOrderField(field.key),
-        label: field.label,
-        value: formatOrderFieldValue(field.value),
-        required: Boolean(field.required),
-        editable: field.editable !== false,
-        inputType: field.input_type || 'text',
-        options: field.options || [],
-        hint: field.hint ?? null,
-      }))
-    }
-
-    const base = [
-      makeReadonlyField('serviceType', '📋', '订单类型', serviceTypeDisplay.value),
-      makeReadonlyField('product', '🔧', '商品/设备', orderInfo.value.product ?? null),
-    ]
-
-    if (serviceTypeDisplay.value?.includes('单次安装')) {
-      return [
-        ...base,
-        makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
-        makeReadonlyField('goodsArrivalStatus', '🚚', '货物是否到场', orderInfo.value.goods_arrival_status),
-      ]
-    }
-
-    if (serviceTypeDisplay.value?.includes('单次测量')) {
-      return [
-        ...base,
-        makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
-      ]
-    }
-
-    if (serviceTypeDisplay.value?.includes('单次维修')) {
-      return [
-        ...base,
-        makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
-        makeReadonlyField('expectedStartTime', '🕒', '期待开工时间', orderInfo.value.expected_start_time),
-      ]
-    }
-
-    return [
-      ...base,
-      makeReadonlyField('fault', '⚡', '问题描述', orderInfo.value.fault),
-      makeReadonlyField('area', '📍', '所在区域', orderInfo.value.area),
-      makeReadonlyField('secondArea', '⌖', '二级区域', orderInfo.value.second_area),
-      makeReadonlyField('roomNumber', '🏠', '房间号', orderInfo.value.room_number),
-    ]
+    return formFields.value.map((field) => ({
+      key: field.key,
+      icon: iconForOrderField(field.key),
+      label: field.label,
+      value: formatOrderFieldValue(field.value),
+      required: Boolean(field.required),
+      editable: field.editable !== false && Boolean(capabilities.value.update_order),
+      inputType: field.input_type || 'text',
+      options: field.options || [],
+      hint: field.hint ?? null,
+    }))
   })
 
   const filledCount = computed(() => orderFields.value.filter((field) => Boolean(field.value)).length)
@@ -257,6 +205,8 @@ export function useOrderPreview(
     hasSubmissionFailure,
     submissionFailureMessage,
     canSubmit,
+    canSelectProduct,
+    canRejectProducts,
     hasProductOptions,
     isOrderSubmitted,
     showChatOrderPanel,

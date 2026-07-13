@@ -1,7 +1,7 @@
 """order_preview 结构单元测试。"""
 
 from graph.products import get_selected_product, resolve_selected_code
-from schemas.order_preview import build_order_preview_model, build_product_section
+from services.workflow_projection import build_order_preview_model, build_product_section
 
 
 def test_build_product_section_from_products_list():
@@ -80,7 +80,8 @@ def test_build_order_preview_model_marks_product_selection_phase():
     payload = preview.model_dump(mode="json")
     assert payload["phase"] == "product_selection"
     assert payload["products"]["selected_code"] is None
-    assert payload["order_card"]["fields"] == []
+    assert payload["form"]["fields"] == []
+    assert payload["capabilities"]["select_product"] is True
 
 
 def test_resolve_selected_code_defaults_to_top1():
@@ -147,7 +148,11 @@ def test_build_order_preview_model_includes_effective_service_type_and_coverage(
     assert payload["effective_service_type"] == "单次维修服务"
     assert payload["coverage"]["checked"] is True
     assert payload["coverage"]["covered"] is False
-    assert payload["missing_info"] == ["expected_start_time"]
+    assert payload["validation"] == {
+        "ready": False,
+        "missing_fields": ["expected_start_time"],
+    }
+    assert payload["capabilities"]["confirm_order"] is False
 
 
 def test_build_order_preview_model_includes_second_area_match_feedback():
@@ -194,7 +199,7 @@ def test_build_order_preview_model_includes_second_area_match_feedback():
     payload = preview.model_dump(mode="json")
     assert "区域匹配" in payload["products"]["feedback"]
     assert "客房区域" in payload["products"]["feedback"]
-    assert payload["coverage"]["area_match"]["matched"] is True
+    assert payload["coverage"]["checked"] is True
 
 
 def test_build_order_preview_model_warns_unmatched_second_area():
@@ -253,8 +258,8 @@ def test_build_order_preview_model_warns_unmatched_second_area():
     payload = preview.model_dump(mode="json")
     assert "区域待确认" in payload["products"]["feedback"]
     assert "客房设备" in payload["products"]["feedback"]
-    assert payload["order_card"]["fields"][0]["key"] == "second_area"
-    assert payload["order_card"]["fields"][0]["options"] == [{"label": "客房区域", "value": "客房区域"}]
+    assert payload["form"]["fields"][0]["key"] == "second_area"
+    assert payload["form"]["fields"][0]["options"] == [{"label": "客房区域", "value": "客房区域"}]
 
 
 def test_build_order_preview_model_warns_for_low_confidence_products():
@@ -336,3 +341,50 @@ def test_build_order_preview_model_keeps_last_order_for_submitted_phase():
     payload = preview.model_dump(mode="json")
     assert payload["phase"] == "submitted"
     assert payload["submitted_order"]["order_no"] == "SO123"
+
+
+def test_ready_preview_exposes_capabilities_without_internal_payloads():
+    preview = build_order_preview_model(
+        {
+            "phase": "pre_order",
+            "service_type": "单次维修服务",
+            "order_info": {
+                "room_number": "301",
+                "product": "门锁",
+                "fault": "打不开",
+                "user_confirmed": False,
+            },
+            "products": [
+                {
+                    "service_product_code": "LOCK_REPAIR",
+                    "service_product_name": "门锁维修",
+                    "service_order_type": "单次维修服务",
+                }
+            ],
+            "selected_product_code": "LOCK_REPAIR",
+            "order_card_fields": [
+                {
+                    "key": "room_number",
+                    "label": "房号",
+                    "value": "301",
+                    "required": True,
+                }
+            ],
+            "missing_info": [],
+            "submission": {
+                "state": "not_attempted",
+                "request_payload": {"accessToken": "secret"},
+                "response_payload": {"debug": True},
+            },
+        }
+    )
+
+    assert preview is not None
+    payload = preview.model_dump(mode="json")
+    assert payload["validation"] == {"ready": True, "missing_fields": []}
+    assert payload["capabilities"]["update_order"] is True
+    assert payload["capabilities"]["confirm_order"] is True
+    assert payload["capabilities"]["cancel_order"] is True
+    assert "request_payload" not in payload["submission"]
+    assert "response_payload" not in payload["submission"]
+    assert "user_confirmed" not in payload["order_info"]
