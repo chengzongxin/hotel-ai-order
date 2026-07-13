@@ -38,7 +38,7 @@ export const API_PARAM_FIELDS: ApiParamField[] = [
 
 export function getDefaultApiParams(): ApiRequestParams {
   return {
-    accessToken: import.meta.env.VITE_ACCESS_TOKEN ?? 'd5d15b2e6fc7480b9fe87ea8f43591c0',
+    accessToken: import.meta.env.VITE_ACCESS_TOKEN ?? '',
     userId: import.meta.env.VITE_USER_ID ?? 'dev-user',
     tenantId: import.meta.env.VITE_TENANT_ID ?? '2123',
     platform: import.meta.env.VITE_APP_PLATFORM ?? 'ios',
@@ -46,7 +46,7 @@ export function getDefaultApiParams(): ApiRequestParams {
     deviceId: import.meta.env.VITE_DEVICE_ID ?? '1234567890',
     version: import.meta.env.VITE_APP_VERSION ?? '1.1.2',
     channel: import.meta.env.VITE_APP_CHANNEL ?? 'appstore',
-    spirit: import.meta.env.VITE_APP_SPIRIT ?? 'IDontKnowPasswordtoo/1708hxcchang',
+    spirit: import.meta.env.VITE_APP_SPIRIT ?? '',
     contacts: '',
     phone: '',
   }
