@@ -24,13 +24,11 @@ def test_product_recall_eval(case: dict[str, Any]):
     store = ProductVectorStore()
     top_k = case.get("top_k", 5)
     threshold = case.get("threshold")
-    has_fault = case.get("has_fault", True)
 
     results = store.search(
         query=case["query"],
         top_k=top_k,
         threshold=threshold,
-        has_fault=has_fault,
     )
 
     expected = case.get("expected") or {}

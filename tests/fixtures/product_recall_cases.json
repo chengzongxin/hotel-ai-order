@@ -6,7 +6,6 @@
       "id": "recall_ac_not_cooling",
       "title": "空调不制冷",
       "query": "空调 不制冷",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -20,7 +19,6 @@
       "id": "recall_faucet_leak",
       "title": "水龙头漏水",
       "query": "水龙头 漏水",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -34,7 +32,6 @@
       "id": "recall_ac_leak_not_water_cabinet",
       "title": "空调漏水不应召回水柜",
       "query": "空调 漏水",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -47,7 +44,6 @@
       "id": "recall_door_lock",
       "title": "门锁坏了",
       "query": "门锁 坏了",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -60,7 +56,6 @@
       "id": "recall_washer_install",
       "title": "洗衣机安装",
       "query": "洗衣机 安装",
-      "has_fault": false,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -73,7 +68,6 @@
       "id": "recall_curtain_measure",
       "title": "窗帘测量",
       "query": "窗帘 测量",
-      "has_fault": false,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -86,7 +80,6 @@
       "id": "recall_toilet_block",
       "title": "马桶堵塞",
       "query": "马桶 堵塞",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -99,7 +92,6 @@
       "id": "recall_tv_no_signal",
       "title": "电视无信号",
       "query": "电视 没有信号",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -111,7 +103,6 @@
       "id": "recall_shower_low_pressure",
       "title": "花洒出水小",
       "query": "花洒 出水小",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -123,7 +114,6 @@
       "id": "recall_lobby_light",
       "title": "大堂灯闪烁",
       "query": "灯 闪烁",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -135,7 +125,6 @@
       "id": "recall_washing_machine_install_arrived",
       "title": "洗衣机安装货物已到",
       "query": "洗衣机 安装",
-      "has_fault": false,
       "top_k": 3,
       "expected": {
         "min_results": 1,
@@ -148,7 +137,6 @@
       "id": "recall_window_stuck",
       "title": "窗户关不上",
       "query": "窗户 关不上",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -160,7 +148,6 @@
       "id": "recall_warehouse_door",
       "title": "仓库门合页松动",
       "query": "门 合页 松动",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -172,7 +159,6 @@
       "id": "recall_freezer_temp",
       "title": "冰柜温度降不下来",
       "query": "冰柜 温度 降不下来",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -184,7 +170,6 @@
       "id": "recall_network_issue",
       "title": "网络连不上",
       "query": "网络 连不上",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -196,7 +181,6 @@
       "id": "recall_bathtub_drain_slow",
       "title": "浴缸下水慢",
       "query": "浴缸 下水慢",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -208,7 +192,6 @@
       "id": "recall_fuzzy_air_conditioner",
       "title": "模糊说法-空调坏了",
       "query": "空调 坏了",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -220,7 +203,6 @@
       "id": "recall_asr_faucet_typo",
       "title": "ASR容错-水龙头",
       "query": "水龙头 漏水",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -232,7 +214,6 @@
       "id": "recall_door_handle_hardware",
       "title": "门把手与门五金关键词重叠",
       "query": "门把手 坏了",
-      "has_fault": true,
       "top_k": 5,
       "expected": {
         "min_results": 1,
@@ -244,7 +225,6 @@
       "id": "recall_hosting_ac",
       "title": "客房空调托管维修",
       "query": "空调 不制冷",
-      "has_fault": true,
       "top_k": 3,
       "threshold": 0.3,
       "expected": {

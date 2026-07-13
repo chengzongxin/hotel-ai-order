@@ -32,7 +32,7 @@ from tools.order_submit_common import (
     query_spu_by_name,
     resolve_product_quantity,
 )
-from tools.protocol import ToolResult
+from tools.protocol import ToolErrorCode, ToolResult, error_response
 
 # 兼容旧 import 路径（facade re-export）
 _clean_text = clean_text
@@ -47,7 +47,7 @@ _nested_dict = nested_dict
 class SubmitOrderInput(BaseModel):
     order_info: JsonDict = Field(..., description="对话抽取出的订单信息")
     matched_product: JsonDict = Field(..., description="商品匹配工具返回的标准商品")
-    service_type: str | None = Field(default=None, description="商品库匹配出的原始服务类型")
+    service_type: str | None = Field(default=None, description="当前订单对话确定的原始服务类型")
     effective_service_type: str | None = Field(default=None, description="最终用于提交的服务类型")
     coverage_result: JsonDict = Field(default_factory=dict, description="托管维修维保范围校验结果")
     submit: bool = Field(default=False, description="是否真实调用创建订单接口")
@@ -63,8 +63,13 @@ async def submit_real_order(
     coverage_result: JsonDict | None = None,
 ) -> ToolResult:
     active_user = user
+    final_service_type = effective_service_type or service_type
+    if not final_service_type:
+        return error_response(
+            error_code=ToolErrorCode.INVALID_INPUT,
+            message="当前订单服务类型未确定，无法提交",
+        )
     order_context = await load_managed_repair_order_context(active_user)
-    final_service_type = effective_service_type or service_type or matched_product.get("service_order_type")
 
     spu: JsonDict = {}
     spu_query_error: str | None = None

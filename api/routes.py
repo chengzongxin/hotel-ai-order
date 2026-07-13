@@ -262,7 +262,12 @@ async def list_products(
 async def search_products(request: ProductSearchRequest) -> ProductSearchResponse:
     result = await asyncio.to_thread(
         search_product_tool.invoke,
-        {"query": request.query, "top_k": request.top_k, "threshold": request.threshold},
+        {
+            "query": request.query,
+            "top_k": request.top_k,
+            "threshold": request.threshold,
+            "service_type": request.service_type,
+        },
     )
     data = result.get("data", {})
     products = data.get("products") or []

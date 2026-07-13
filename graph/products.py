@@ -58,14 +58,17 @@ def format_service_type_display(
 
 def build_product_search_query(
     order_info: dict[str, Any],
-    last_user_message: str = "",
+    service_type: str | None = None,
 ) -> str:
     product = order_info.get("product")
     fault = order_info.get("fault")
-    install_hint = "安装" if not fault and "安装" in last_user_message else ""
+    service_hint = {
+        "单次安装": "安装",
+        "单次测量": "测量",
+    }.get(service_type or "")
     return " ".join(
         str(value)
-        for value in [product, fault, install_hint]
+        for value in [product, fault, service_hint]
         if value
     )
 
@@ -178,12 +181,11 @@ def derive_product_section_fields(state: dict[str, Any]) -> tuple[str | None, st
     """从 state 推导 API products 区块的 status / query / feedback。"""
     products = state.get("products") or []
     order_info = state.get("order_info") or {}
-    last_user_message = state.get("last_user_message") or ""
-    search_query = build_product_search_query(order_info, last_user_message)
+    search_query = build_product_search_query(order_info, state.get("service_type"))
     status = infer_product_search_status(products, search_query)
 
     selected = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
-    service_type = state.get("service_type") or selected.get("service_order_type")
+    service_type = state.get("service_type")
     feedback = (
         build_product_search_feedback(order_info, selected, service_type, state.get("coverage_result") or {})
         if selected

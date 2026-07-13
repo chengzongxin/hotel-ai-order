@@ -28,7 +28,12 @@ def test_search_product_tool_returns_unified_products(monkeypatch):
     monkeypatch.setattr("tools.product_search.get_product_store", lambda: fake_store)
 
     result = search_product_tool.invoke(
-        {"query": "门锁 打不开", "top_k": 3, "threshold": 0.4, "has_fault": True}
+        {
+            "query": "门锁 打不开",
+            "top_k": 3,
+            "threshold": 0.4,
+            "service_type": "托管维修",
+        }
     )
     data = result["data"]
 
@@ -36,10 +41,11 @@ def test_search_product_tool_returns_unified_products(monkeypatch):
         "query": "门锁 打不开",
         "top_k": 3,
         "threshold": 0.4,
-        "has_fault": True,
+        "service_type": "托管维修",
     }
     assert "best_match" not in data
     assert "candidates" not in data
     assert data["products"] == fake_products
     assert data["count"] == 2
     assert data["query"] == "门锁 打不开"
+    assert data["service_type"] == "托管维修"

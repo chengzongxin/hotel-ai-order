@@ -139,6 +139,25 @@ def test_order_workflow_service_uses_default_dependencies():
     assert update["last_order_event"] == "ProductMatched"
 
 
+def test_order_workflow_uses_conversation_service_type_when_selecting_product():
+    service = OrderWorkflowService()
+
+    update = service.select_product_patch(
+        state={
+            "service_type": "单次安装",
+            "order_info": {"product": "窗帘"},
+        },
+        selected_product={
+            "service_product_code": "MEASURE",
+            "service_product_name": "窗帘测量",
+            "service_order_type": "单次测量",
+        },
+        product_code="MEASURE",
+    )
+
+    assert update["service_type"] == "单次安装"
+
+
 @pytest.mark.asyncio
 async def test_select_product_builds_second_area_dropdown_from_spu_detail():
     async def fake_load_order_context(user):
@@ -179,6 +198,7 @@ async def test_select_product_builds_second_area_dropdown_from_spu_detail():
 
     update = await service.select_product(
         state={
+            "service_type": "托管维修",
             "last_user_message": "1506 窗户关不上，有点漏风",
             "order_info": {
                 "room_number": "1506",

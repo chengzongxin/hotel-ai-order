@@ -165,7 +165,8 @@ class TestCurrentProductSelectionFlow:
             assert info(result).get("room_number") == "1208"
             assert info(result).get("product") == "空调"
             assert "制冷" in str(info(result).get("fault") or "")
-            assert preview(result).get("service_type") in {"单次维修服务", "托管维修"}
+            assert preview(result).get("service_type") == "托管维修"
+            assert {item.get("service_type") for item in products(result)} == {"托管维修"}
         finally:
             await clear_session(sid)
 
@@ -314,8 +315,8 @@ class TestCurrentServiceTypeFlow:
             result = await chat(sid, "1208房间洗衣机需要安装。", trace_step)
             assert_product_selection(result)
 
-            names = " ".join(str(item.get("name") or "") for item in products(result))
             service_types = {item.get("service_type") for item in products(result)}
-            assert "安装" in service_types or "安装" in names
+            assert preview(result).get("service_type") == "单次安装"
+            assert service_types == {"单次安装"}
         finally:
             await clear_session(sid)

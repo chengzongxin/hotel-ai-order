@@ -43,6 +43,11 @@ class ProductSearchRequest(BaseModel):
         le=1.0,
         description="可选的最低融合匹配分数，范围 0～1；为空时使用服务端默认值。",
     )
+    service_type: str | None = Field(
+        default=None,
+        description="可选的服务订单类型过滤条件。",
+        examples=["托管维修"],
+    )
 
 
 class ProductSearchResult(BaseModel):

@@ -192,13 +192,6 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
         return None
 
     service_type = state.get("service_type")
-    if not service_type and products:
-        selected = get_selected_product(
-            products,
-            selected_code,
-            default_to_first=False,
-        )
-        service_type = selected.get("service_order_type") or None
     effective_service_type = state.get("effective_service_type") or service_type
     coverage_result = state.get("coverage_result") or {}
     form_fields = list(state.get("order_card_fields") or [])

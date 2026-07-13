@@ -100,7 +100,7 @@ async def reject_products_in_session(
 
         answer = "好的，请重新描述需要处理的商品和具体问题。"
         update = {
-            **OrderWorkflowService().reject_products(),
+            **OrderWorkflowService().reject_products(service_type=state.get("service_type")),
             "messages": [AIMessage(content=answer)],
         }
         await graph.aupdate_state(config, update, as_node="search_product_node")

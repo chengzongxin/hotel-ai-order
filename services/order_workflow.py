@@ -78,11 +78,11 @@ class OrderWorkflowService:
             )
         return event_to_state_patch(ProductMatched(payload=patch))
 
-    def reject_products(self) -> JsonDict:
+    def reject_products(self, service_type: str | None = None) -> JsonDict:
         patch = {
             "products": [],
             "selected_product_code": None,
-            "service_type": None,
+            "service_type": service_type,
             "effective_service_type": None,
             "coverage_result": {},
             "order_submit_route": None,
@@ -117,7 +117,9 @@ class OrderWorkflowService:
         selected_product: JsonDict,
         product_code: str,
     ) -> JsonDict:
-        service_type = selected_product.get("service_order_type") or state.get("service_type")
+        service_type = state.get("service_type")
+        if not service_type:
+            raise ValueError("当前订单服务类型未确定")
         order_info = self.normalize_order_defaults(
             service_type,
             state.get("order_info") or {},
@@ -145,7 +147,9 @@ class OrderWorkflowService:
         if not selected:
             raise ValueError(f"商品 {product_code} 不在当前检索结果中")
 
-        service_type = selected.get("service_order_type") or state.get("service_type")
+        service_type = state.get("service_type")
+        if not service_type:
+            raise ValueError("当前订单服务类型未确定")
         order_info = self.normalize_order_defaults(
             service_type,
             state.get("order_info") or {},

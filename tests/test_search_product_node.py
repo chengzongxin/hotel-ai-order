@@ -86,7 +86,10 @@ async def test_search_product_node_preserves_selected_code(monkeypatch):
         {"service_product_code": "B", "service_product_name": "Top2", "service_order_type": "托管维修"},
     ]
 
+    calls = []
+
     async def fake_to_thread(func, arg):
+        calls.append(arg)
         return {
             "status": "success",
             "data": {"products": tool_products, "query": arg["query"], "count": 2},
@@ -105,6 +108,8 @@ async def test_search_product_node_preserves_selected_code(monkeypatch):
 
     assert result["selected_product_code"] == "B"
     assert result["products"] == tool_products
+    assert result["service_type"] == "托管维修"
+    assert calls[0]["service_type"] == "托管维修"
 
 
 def test_route_after_search_product_stops_at_product_selection():

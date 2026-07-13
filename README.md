@@ -34,7 +34,7 @@ B栋 301 门锁打不开
 
 1. 识别用户意图：创建订单、确认订单、取消订单、闲聊或未知。
 2. 抽取订单信息：房号、商品/设备、问题描述、区域、紧急程度。
-3. 匹配标准商品：用 `商品名 + 故障现象` 向量检索 `assets/spu.xlsx` 中的商品，匹配结果同时确定服务类型。
+3. 匹配标准商品：先由对话关键词确定服务类型，再用 `商品名 + 故障现象` 在同类型商品中检索 `assets/spu.xlsx`。
 4. 按服务类型校验必填字段，追问缺失信息：一次只问一个最关键问题。
 5. 展示预下单信息：让用户确认、修改或取消。
 6. 提交订单：按用户端 App 的下单结构构造真实请求参数，并在配置、登录态和必填字段满足时调用真实下单接口。
@@ -226,7 +226,7 @@ not_attempted → submitting → succeeded
 | `order_info` | LLM 抽取和前端卡片编辑后合并的订单信息 |
 | `products` | 商品检索结果 Top3 |
 | `selected_product_code` | 当前选中的标准商品编码；未选中时为空 |
-| `service_type` | 商品原始服务类型，例如 `托管维修`、`单次维修服务` |
+| `service_type` | 当前订单对话确定的服务类型：安装词 → `单次安装`，测量词 → `单次测量`，其他下单需求 → `托管维修` |
 | `effective_service_type` | 最终用于字段校验和提交的服务类型，托管维修范围外可能降级 |
 | `coverage_result` | 维保范围校验结果 |
 | `order_context` | 从用户端接口得到的地址、联系人、维保卡、配置等默认值 |
@@ -437,12 +437,12 @@ SQLite Checkpoint
 
 **检索**（`search_product_node` → `search_product_tool` → `ProductVectorStore.search()`）：
 
-1. 检索 query = `用户说的商品名 + 故障现象`。安装场景无故障现象，query 追加"安装"关键词；测量场景 query 退化为只有商品名。
-2. **BM25 关键词召回**：对商品名（`service_product_name`）用 jieba 搜索模式分词，构建进程内 `rank-bm25` 内存索引（不依赖 ES），取 Top 候选。
-3. **向量语义召回**：Chroma 余弦相似度独立召回 Top 候选。
-4. **分数融合**：按 `service_product_code` 合并两路候选，BM25 分归一化后与向量分加权融合：`final = 0.65 * vector + 0.35 * bm25`。
-5. **故障惩罚**（`has_fault=True`）：用户描述了故障时，对无故障描述的商品（纯安装/测量类）扣 0.15 分，确保维修商品优于同名的安装商品（如"水龙头漏水"找维修而非安装）。
-6. 过滤低于 `PRODUCT_SEARCH_THRESHOLD` 的结果，返回 Top3 供前端选择；Top1 的 `service_order_type` 用于推断 `service_type`，但不会自动选中商品。
+1. 检索 query = `用户说的商品名 + 故障现象`；安装、测量场景分别追加“安装”“测量”提示词。
+2. **服务类型过滤**：只在对话已经确定的 `service_type` 商品中召回。
+3. **BM25 关键词召回**：对商品名（`service_product_name`）用 jieba 搜索模式分词，构建进程内 `rank-bm25` 内存索引（不依赖 ES），取 Top 候选。
+4. **向量语义召回**：Chroma 余弦相似度独立召回 Top 候选。
+5. **分数融合**：按 `service_product_code` 合并两路候选，BM25 分归一化后与向量分加权融合：`final = 0.65 * vector + 0.35 * bm25`。
+6. 过滤低于 `PRODUCT_SEARCH_THRESHOLD` 的结果，返回同类型 Top3 供前端选择；商品不会反向覆盖 `service_type`。
 
 更详细的 BM25 与 Chroma 技术对比、实现差异及协作方式见 [`docs/product_hybrid_search.md`](docs/product_hybrid_search.md)。
 
@@ -469,14 +469,14 @@ SQLite Checkpoint
 ```text
 轮1: "帮我修空调"
   order_info = {product: "空调"}
-  service_type = 单次维修服务（匹配商品决定）
-  missing = [fault, expected_start_time]
+  service_type = 托管维修（对话规则决定）
+  missing = [area, room_number, product, fault]
   → 追问：请问是什么问题？
 
 轮2: "不制冷"
   order_info = {product: "空调", fault: "不制冷"}
-  missing = [expected_start_time]
-  → 追问：请问什么时间方便上门？
+  missing = [area, room_number]
+  → 继续收集托管维修所需区域信息
 
 轮3: "明天上午"
   order_info = {product: "空调", fault: "不制冷", expected_start_time: "明天上午"}
@@ -915,7 +915,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 
 ## 后端注意事项
 
-- `service_type` 来自商品匹配结果，不应该由 LLM 直接决定。
+- `service_type` 由确定性对话关键词规则生成，不由 LLM 或商品候选反向决定。
 - `effective_service_type` 才是字段校验和真实提交时使用的最终类型。
 - 修改订单字段时，要同步 `graph/order_fields.py`、`schemas/order_preview.py`、`frontend/src/types/order.ts`。
 - 修改内部状态字段时，只需同步 `graph/state.py` 和 `services/workflow_projection.py`；前端不依赖 `AgentState`。

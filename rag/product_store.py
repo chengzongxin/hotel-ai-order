@@ -18,8 +18,6 @@ PERSIST_DIR = str(PROJECT_ROOT / "data/chroma_db")
 METADATA_FILE = str(PROJECT_ROOT / "data/chroma_db/build_metadata.json")
 INDEX_TEXT_VERSION = "product-name-fault-v2"
 
-# 有故障词时对"无故障描述"商品（安装/测量类）的分数惩罚值
-NO_FAULT_PENALTY = 0.15
 VECTOR_SCORE_WEIGHT = 0.65
 BM25_SCORE_WEIGHT = 0.35
 
@@ -88,16 +86,25 @@ class ProductVectorStore:
         ]
         self._bm25 = BM25Okapi(corpus) if corpus else None
 
-    def _bm25_recall(self, query_tokens: list[str], fetch_k: int) -> list[tuple[int, float]]:
+    def _bm25_recall(
+        self,
+        query_tokens: list[str],
+        fetch_k: int,
+        service_type: str | None = None,
+    ) -> list[tuple[int, float]]:
         if not self._bm25 or not query_tokens:
             return []
         scores = self._bm25.get_scores(query_tokens)
         ranked = sorted(range(len(scores)), key=lambda index: scores[index], reverse=True)
         results: list[tuple[int, float]] = []
-        for index in ranked[:fetch_k]:
+        for index in ranked:
+            if service_type and self._documents[index].metadata.get("service_order_type") != service_type:
+                continue
             score = float(scores[index])
             if score > 0:
                 results.append((index, score))
+            if len(results) >= fetch_k:
+                break
         return results
 
     def _merge_hybrid_candidates(
@@ -139,14 +146,9 @@ class ProductVectorStore:
         query: str,
         top_k: int = 5,
         threshold: float | None = None,
-        has_fault: bool = False,
+        service_type: str | None = None,
     ) -> list[dict]:
-        """
-        混合检索：BM25 关键词召回 + 向量语义召回 + 分数融合 + 故障惩罚。
-
-        has_fault: 当为 True 时，对没有故障描述的商品（安装/测量类）扣减分数，
-                   确保用户描述了故障时优先匹配维修商品。
-        """
+        """混合检索：服务类型过滤 + BM25 召回 + 向量召回 + 分数融合。"""
         query = query.strip()
         if not query:
             return []
@@ -154,8 +156,13 @@ class ProductVectorStore:
         fetch_k = top_k * 4
         query_tokens = _tokenize_for_bm25(query)
 
-        vector_results = self.vector_store.similarity_search_with_relevance_scores(query, k=fetch_k)
-        bm25_results = self._bm25_recall(query_tokens, fetch_k)
+        vector_filter = {"service_order_type": service_type} if service_type else None
+        vector_results = self.vector_store.similarity_search_with_relevance_scores(
+            query,
+            k=fetch_k,
+            filter=vector_filter,
+        )
+        bm25_results = self._bm25_recall(query_tokens, fetch_k, service_type)
         candidates = self._merge_hybrid_candidates(
             vector_results=vector_results,
             bm25_results=bm25_results,
@@ -174,8 +181,6 @@ class ProductVectorStore:
             vector_score = float(entry["vector_score"])
             bm25_score = bm25_norm.get(code, 0.0)
             final_score = _compute_hybrid_score(vector_score, bm25_score)
-            if has_fault and not doc.metadata.get("fault_phenomenon"):
-                final_score -= NO_FAULT_PENALTY
             scored.append((final_score, doc))
 
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -243,17 +248,17 @@ def get_product_store() -> ProductVectorStore:
 if __name__ == "__main__":
     store = ProductVectorStore()
     test_cases = [
-        ("空调 漏水", True),
-        ("水龙头 漏水", True),
-        ("浴室门 推不动", True),
-        ("热水器 不出热水", True),
-        ("洗衣机", False),
+        "空调 漏水",
+        "水龙头 漏水",
+        "浴室门 推不动",
+        "热水器 不出热水",
+        "洗衣机",
     ]
-    for query, has_fault in test_cases:
+    for query in test_cases:
         print(f"\n{'='*55}")
-        print(f"查询：{query}  (has_fault={has_fault})")
+        print(f"查询：{query}")
         print("=" * 55)
-        results = store.search(query, top_k=5, has_fault=has_fault)
+        results = store.search(query, top_k=5)
         for i, r in enumerate(results, 1):
             fault_text = r["fault_phenomenon"][:28] if r["fault_phenomenon"] else "—"
             print(f"{i}. [{r['score']:.3f}] [{r['service_order_type']:8s}] {r['service_product_name']:25s}  故障={fault_text}")

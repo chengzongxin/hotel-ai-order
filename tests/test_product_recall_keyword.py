@@ -5,7 +5,6 @@ from rank_bm25 import BM25Okapi
 
 from rag.product_store import (
     BM25_SCORE_WEIGHT,
-    NO_FAULT_PENALTY,
     VECTOR_SCORE_WEIGHT,
     ProductVectorStore,
     _compute_hybrid_score,
@@ -70,5 +69,49 @@ def test_merge_hybrid_candidates_deduplicates_by_product_code():
     assert merged["B"]["bm25_score"] == 1.2
 
 
-def test_no_fault_penalty_constant():
-    assert NO_FAULT_PENALTY == 0.15
+def test_product_search_filters_candidates_by_service_type():
+    install_doc = Document(
+        page_content="洗衣机安装",
+        metadata={
+            "service_product_code": "INSTALL",
+            "service_product_name": "洗衣机安装",
+            "service_order_type": "单次安装",
+        },
+    )
+    repair_doc = Document(
+        page_content="洗衣机维修",
+        metadata={
+            "service_product_code": "REPAIR",
+            "service_product_name": "洗衣机维修",
+            "service_order_type": "托管维修",
+        },
+    )
+
+    class FakeVectorStore:
+        def similarity_search_with_relevance_scores(self, query, k, filter=None):
+            self.last_filter = filter
+            candidates = [(install_doc, 0.9), (repair_doc, 0.95)]
+            if not filter:
+                return candidates
+            return [
+                (doc, score)
+                for doc, score in candidates
+                if doc.metadata.get("service_order_type") == filter.get("service_order_type")
+            ]
+
+    store = ProductVectorStore.__new__(ProductVectorStore)
+    store.vector_store = FakeVectorStore()
+    store._documents = [install_doc, repair_doc]
+    store._bm25 = BM25Okapi(
+        [_tokenize_for_bm25(doc.metadata["service_product_name"]) for doc in store._documents]
+    )
+
+    results = store.search(
+        "洗衣机",
+        top_k=3,
+        threshold=0,
+        service_type="单次安装",
+    )
+
+    assert store.vector_store.last_filter == {"service_order_type": "单次安装"}
+    assert [item["service_product_code"] for item in results] == ["INSTALL"]

@@ -72,8 +72,10 @@ from graph.streaming import (
 from graph.text_parsing import (
     build_product_recommendation_text,
     build_selected_product_text,
+    detect_service_type,
     format_service_type,
     format_urgency,
+    infer_service_type,
     is_cancel_request,
     parse_product_selection,
 )
@@ -145,6 +147,23 @@ def is_collecting_non_product_fields(state: AgentState) -> bool:
     return bool(missing_info) and not any(field in PRODUCT_RESEARCH_FIELDS for field in missing_info)
 
 
+def clear_product_workflow_state() -> dict[str, object]:
+    """服务类型改变后清空依赖旧类型的商品和预下单状态。"""
+
+    return {
+        "products": [],
+        "selected_product_code": None,
+        "effective_service_type": None,
+        "coverage_result": {},
+        "order_submit_route": None,
+        "order_context": {},
+        "order_card_fields": [],
+        "missing_info": [],
+        "submission": empty_submission(),
+        "product_selection_rejected": False,
+    }
+
+
 def get_product_search_feedback(state: AgentState) -> str | None:
     selected_product = get_selected_product(
         state.get("products") or [],
@@ -156,7 +175,7 @@ def get_product_search_feedback(state: AgentState) -> str | None:
     return build_product_search_feedback(
         order_info=state.get("order_info") or {},
         selected_product=selected_product,
-        service_type=get_effective_service_type(state) or selected_product.get("service_order_type"),
+        service_type=get_effective_service_type(state),
         coverage_result=state.get("coverage_result") or {},
     )
 
@@ -199,6 +218,9 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     last_user_message = get_last_human_message(state["messages"])
     user_cancelled = result.user_cancelled or (has_active_order(state) and is_cancel_request(last_user_message))
     intent = "cancel_order" if user_cancelled else result.intent
+    detected_service_type = detect_service_type(last_user_message)
+    if detected_service_type and intent in {"smalltalk", "unknown"}:
+        intent = "create_order"
     emit_status("intent_node", f"已识别意图：{intent}")
 
     phase = state.get("phase")
@@ -264,6 +286,17 @@ async def intent_node(state: AgentState) -> dict[str, object]:
             order_info["expected_start_time"] = merged_expected_time
         order_info["user_confirmed"] = result.user_confirmed
         order_info["user_cancelled"] = user_cancelled
+    current_service_type = state.get("service_type") if has_active_order(state) else None
+    service_type = (
+        infer_service_type(last_user_message, current_service_type)
+        if intent in {"create_order", "confirm_order"}
+        else state.get("service_type")
+    )
+    service_type_changed = bool(
+        current_service_type
+        and service_type
+        and service_type != current_service_type
+    )
     output: dict[str, object] = {
         "intent": intent,
         "phase": phase,
@@ -271,21 +304,17 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "step": "intent_node",
         "last_user_message": last_user_message,
     }
+    if intent in {"create_order", "confirm_order"}:
+        output["service_type"] = service_type
     if intent in {"create_order", "confirm_order"} and state.get("phase") == PHASE_SUBMITTED:
         output.update(
             {
-                "products": [],
-                "selected_product_code": None,
-                "submission": empty_submission(),
-                "effective_service_type": None,
-                "coverage_result": {},
-                "order_submit_route": None,
-                "order_context": {},
-                "order_card_fields": [],
+                **clear_product_workflow_state(),
                 "submitted_order": {},
-                "product_selection_rejected": False,
             }
         )
+    elif service_type_changed:
+        output.update(clear_product_workflow_state())
     elif intent in {"smalltalk", "unknown"} and state.get("phase") == PHASE_SUBMITTED:
         output.update(
             {
@@ -307,7 +336,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
     last_msg = state.get("last_user_message", "")
     selection = parse_product_selection(last_msg)
     if existing_products and selection == 0:
-        output = workflow.reject_products()
+        output = workflow.reject_products(service_type=state.get("service_type"))
         trace_logger("node.search_product.rejected", **output)
         return output
 
@@ -341,14 +370,14 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         return {"step": "search_product_node"}
 
     order_info = state.get("order_info", {})
-    fault = order_info.get("fault")
+    service_type = infer_service_type(last_msg, state.get("service_type"))
 
-    # 无故障时从用户原始消息中补充服务意图关键词（如"安装"），辅助找到正确商品类型
-    search_query = build_product_search_query(order_info, last_msg)
+    search_query = build_product_search_query(order_info, service_type)
     if not search_query:
         output = {
             "products": [],
             "selected_product_code": None,
+            "service_type": service_type,
             "step": "search_product_node",
         }
         trace_logger("node.search_product.skipped", **output)
@@ -358,7 +387,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         "query": search_query,
         "top_k": 3,
         "threshold": None,
-        "has_fault": bool(fault),
+        "service_type": service_type,
     }
     result = await run_traced_tool_call(
         step="search_product_node",
@@ -369,15 +398,11 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
     )
     data = result.get("data", {})
     products = data.get("products") or []
-    top_product = get_selected_product(products, None, default_to_first=True)
     search_status = "success" if products else "no_match"
     if result.get("status") != "success":
         search_status = "error"
 
-    # service_type 完全由 Top1 商品决定，匹配失败则置 null
-    service_type = top_product.get("service_order_type") or None
-    if service_type:
-        emit_status("search_product_node", f"已确定服务类型：{service_type}")
+    emit_status("search_product_node", f"已根据对话确定服务类型：{service_type}")
     normalized_order_info = normalize_order_defaults(
         service_type=service_type,
         order_info=order_info,
@@ -415,7 +440,7 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
             "order_submit_route": None,
             "step": "coverage_node",
         }
-    service_type = state.get("service_type") or selected_product.get("service_order_type")
+    service_type = state.get("service_type")
     if not service_type:
         return {
             "effective_service_type": None,

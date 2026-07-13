@@ -31,7 +31,7 @@
 
 1. 理解意图（下单 / 确认 / 取消 / 闲聊）
 2. 抽取结构化订单信息（房号、商品、故障、区域、时间等）
-3. 匹配标准商品（SPU），确定服务类型
+3. 根据对话关键词确定服务类型，再匹配同类型标准商品（SPU）
 4. 多轮追问缺失字段
 5. 展示预下单信息并等待确认
 6. 调用用户端 App 真实下单接口提交工单
@@ -167,7 +167,7 @@ flowchart TD
 
 **设计要点：**
 
-- `service_type` **不由 LLM 直接猜**，由商品匹配结果的 `service_order_type` 决定
+- `service_type` **不由 LLM 或商品直接决定**：安装词 → 单次安装，测量词 → 单次测量，其他下单需求 → 托管维修
 - `order_info` 多轮 **增量合并**，`missing_info` 一次只追问一个字段
 - 会话隔离：`configurable.thread_id = {user_id}:{session_id}`
 
@@ -194,10 +194,9 @@ LLM 结构化输出，字段包括：
 
 ```
 用户描述 (product + fault)
-    → BM25 关键词过滤
-    → Chroma 向量排序
-    → 故障惩罚（有故障时降低安装/测量类得分）
-    → products[0].service_order_type → service_type
+    → 对话规则确定 service_type
+    → 同 service_type 的 BM25 + Chroma 混合检索
+    → 返回同类型商品候选
 ```
 
 数据源：`assets/spu.xlsx`，索引持久化在 `data/chroma_db/`。

@@ -39,7 +39,7 @@ Pydantic/OpenAPI 是字段级接口契约的唯一事实来源；本文档只解
 | --- | --- |
 | `schema_version` | 对外契约版本，当前为 `1` |
 | `phase` | `idle` / `collecting` / `product_selection` / `pre_order` / `submitted` / `cancelled` |
-| `service_type` | 商品决定的原始服务类型 |
+| `service_type` | 当前订单对话关键词确定的原始服务类型 |
 | `service_type_display` | 面向用户的原始服务类型文案 |
 | `effective_service_type` | 维保校验后最终用于提交的服务类型 |
 | `effective_service_type_display` | 最终服务类型文案 |

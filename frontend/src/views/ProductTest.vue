@@ -29,14 +29,15 @@ interface SearchResult {
   unit: string
 }
 
-const SERVICE_TYPES = ['全部', '单次维修服务', '单次安装', '单次测量', '托管维修']
+const SEARCH_SERVICE_TYPES = ['托管维修', '单次安装', '单次测量']
+const SERVICE_TYPES = ['全部', '单次维修服务', ...SEARCH_SERVICE_TYPES]
 
 const PRESETS = [
-  { label: '客房维修', product: '空调',   fault: '不制冷', note: '托管维修 / 单次维修' },
-  { label: '公区维修', product: '门锁',   fault: '坏了',   note: '托管维修' },
-  { label: '安装',     product: '洗衣机', fault: '',       note: '单次安装' },
-  { label: '测量',     product: '窗帘',   fault: '',       note: '单次测量' },
-  { label: '水路',     product: '水龙头', fault: '漏水',   note: '单次维修' },
+  { label: '客房维修', product: '空调',   fault: '不制冷', serviceType: '托管维修' },
+  { label: '公区维修', product: '门锁',   fault: '坏了',   serviceType: '托管维修' },
+  { label: '安装',     product: '洗衣机', fault: '',       serviceType: '单次安装' },
+  { label: '测量',     product: '窗帘',   fault: '',       serviceType: '单次测量' },
+  { label: '水路',     product: '水龙头', fault: '漏水',   serviceType: '托管维修' },
 ]
 
 // 商品库
@@ -48,6 +49,7 @@ const productError = ref('')
 const showLibrary = ref(true)
 
 // 检索
+const searchServiceType = ref('托管维修')
 const searchProduct = ref('')
 const searchFault = ref('')
 const topK = ref(5)
@@ -58,9 +60,13 @@ const searchError = ref('')
 const searchResults = ref<SearchResult[]>([])
 const lastQuery = ref('')
 
-const actualQuery = computed(() =>
-  [searchProduct.value, searchFault.value].filter(Boolean).join(' ').trim()
-)
+const actualQuery = computed(() => {
+  const serviceHint = ({
+    '单次安装': '安装',
+    '单次测量': '测量',
+  } as Record<string, string>)[searchServiceType.value]
+  return [searchProduct.value, searchFault.value, serviceHint].filter(Boolean).join(' ').trim()
+})
 
 const filteredProducts = computed(() => {
   let items = allProducts.value
@@ -105,6 +111,7 @@ function serviceTypeBadge(type: string) {
 }
 
 function applyPreset(preset: typeof PRESETS[0]) {
+  searchServiceType.value = preset.serviceType
   searchProduct.value = preset.product
   searchFault.value   = preset.fault
   searchResults.value = []
@@ -113,6 +120,9 @@ function applyPreset(preset: typeof PRESETS[0]) {
 }
 
 function fillFromProduct(product: ProductItem) {
+  searchServiceType.value = SEARCH_SERVICE_TYPES.includes(product.service_order_type)
+    ? product.service_order_type
+    : '托管维修'
   searchProduct.value = product.service_product_name
   searchFault.value   = ''
   searchResults.value = []
@@ -149,6 +159,7 @@ async function doSearch() {
         query,
         top_k:     topK.value,
         threshold: threshold.value,
+        service_type: searchServiceType.value,
       }),
     })
     if (!res.ok) throw new Error(`请求失败 ${res.status}`)
@@ -163,6 +174,7 @@ async function doSearch() {
 }
 
 function clearSearch() {
+  searchServiceType.value = '托管维修'
   searchProduct.value = ''
   searchFault.value   = ''
   searchResults.value = []
@@ -223,15 +235,23 @@ onMounted(() => loadProducts())
                 <p class="text-[12px] font-semibold text-slate-700">{{ preset.label }}</p>
                 <p class="truncate text-[11px] text-slate-400">{{ preset.product }}<span v-if="preset.fault"> · {{ preset.fault }}</span></p>
               </div>
-              <span class="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{{ preset.note }}</span>
+              <span class="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{{ preset.serviceType }}</span>
             </button>
           </div>
         </div>
 
         <!-- 检索输入 -->
         <div class="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm">
-          <p class="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">向量检索</p>
+          <p class="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">混合检索</p>
           <div class="space-y-2">
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-slate-500">服务类型</label>
+              <select v-model="searchServiceType"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-700 outline-none focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+              >
+                <option v-for="type in SEARCH_SERVICE_TYPES" :key="type" :value="type">{{ type }}</option>
+              </select>
+            </div>
             <div>
               <label class="mb-1 block text-[11px] font-medium text-slate-500">商品 / 设备</label>
               <input v-model="searchProduct" type="text" placeholder="空调"
@@ -301,7 +321,7 @@ onMounted(() => loadProducts())
 
         <!-- query 回显 -->
         <div v-if="lastQuery" class="shrink-0 border-b border-slate-50 bg-slate-50/60 px-4 py-2">
-          <p class="text-[10px] text-slate-400">向量检索 query</p>
+          <p class="text-[10px] text-slate-400">混合检索 query</p>
           <p class="mt-0.5 font-mono text-[12px] font-medium text-indigo-600">"{{ lastQuery }}"</p>
         </div>
 

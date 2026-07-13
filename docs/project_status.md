@@ -102,24 +102,24 @@ flowchart LR
 | Qwen embedding 向量化 | `rag/qwen_embedding.py` |
 | Chroma 向量库 | `rag/product_store.py`，持久化到 `data/chroma_db/` |
 | 关键词 + 向量混合检索 | jieba 分词过滤 + 余弦相似度排序 |
-| 故障惩罚 | 用户有故障描述时，安装/测量类商品扣 0.15 分 |
+| 服务类型过滤 | 对话先确定 `service_type`，检索只召回同类型商品 |
 | 自动重建索引 | Excel / 模型 / 版本变化时自动重建 |
-| service_type 由商品决定 | 匹配结果的 `service_order_type` 写入状态 |
+| service_type 由对话决定 | 安装词 → 单次安装；测量词 → 单次测量；其他下单需求 → 托管维修 |
 | 统一检索入口 | `tools/product_search.py` → 图节点 + HTTP 接口共用 |
 | 离线召回评测集 | `tests/fixtures/product_recall_cases.json` + 可选 pytest |
 
 检索流程：
 
 ```
-query（商品 + 故障）
+对话关键词 → service_type
     ↓
-关键词过滤（剔除无关键词重叠的商品）
+query（商品 + 故障 + 安装/测量提示）
     ↓
-Chroma 向量排名
+service_type 精确过滤
     ↓
-has_fault 惩罚（安装/测量类扣分）
+BM25 + Chroma 混合排名
     ↓
-用户选品 → selected_product_code → service_type
+用户选品 → selected_product_code（不得覆盖 service_type）
 ```
 
 ---
@@ -365,7 +365,7 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 
 1. **能对话收集四类订单**（安装、测量、维修、托管维修），字段规则完整。
 2. **四类真实下单代码链路已具备**（需开启 `USER_APP_SUBMIT_ENABLED` 并配置 token/地址）；**生产联调仍需逐项验证**。
-3. 商品匹配决定服务类型，不是 LLM 猜测，降低错单风险。
+3. 确定性对话关键词规则决定服务类型，商品检索和选品只能服从该类型，降低错单风险。
 4. 语音输入依赖浏览器 Web Speech API，暂无服务端 ASR。
 5. **已有商品候选卡片点选**；低置信时仍依赖用户主动选择，暂无自动转人工。
 

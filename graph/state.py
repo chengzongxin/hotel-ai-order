@@ -29,7 +29,7 @@ class AgentState(TypedDict, total=False):
     # 当前识别到的用户意图，例如 create_order、confirm_order、cancel_order。
     intent: str | None
 
-    # 服务类型，例如 单次安装、单次测量、单次维修服务、托管维修。
+    # 由当前订单对话关键词确定的服务类型，例如 单次安装、单次测量、托管维修。
     service_type: str | None
 
     # 最终用于字段校验和真实提交的服务类型；托管维修范围外会降级为单次维修服务。

@@ -14,6 +14,91 @@ from graph.constants import (
 )
 
 
+DEFAULT_SERVICE_TYPE = "托管维修"
+VALID_SERVICE_TYPES = {"托管维修", "单次维修服务", "单次安装", "单次测量"}
+
+# 单字“安”“量”也属于业务口语，但先屏蔽常见非动作词，避免把“安排明天”或
+# “数量两个”误判成安装、测量订单。
+_INSTALL_NON_ACTION_WORDS = (
+    "安排",
+    "安全",
+    "安静",
+    "安心",
+    "安保",
+    "安防",
+    "安稳",
+    "安置",
+    "安慰",
+    "安顿",
+    "西安",
+    "公安",
+    "保安",
+    "治安",
+    "安检",
+)
+_MEASURE_NON_ACTION_WORDS = (
+    "数量",
+    "重量",
+    "质量",
+    "流量",
+    "用量",
+    "容量",
+    "电量",
+    "含量",
+    "销量",
+    "产量",
+    "总量",
+    "计量",
+    "变量",
+    "能量",
+    "热量",
+    "音量",
+    "剂量",
+    "量子",
+)
+_INSTALL_ACTION_PATTERN = re.compile(r"安装|加装|拆装|装上|装一下|安")
+_MEASURE_ACTION_PATTERN = re.compile(r"测量|测尺寸|测一下|量尺|量房|量一下|量一量|量")
+
+
+def _mask_non_action_words(text: str, words: tuple[str, ...]) -> str:
+    """用等长空格屏蔽非动作词，保留关键词在原句中的位置。"""
+
+    masked = text
+    for word in words:
+        masked = masked.replace(word, " " * len(word))
+    return masked
+
+
+def detect_service_type(text: str | None) -> str | None:
+    """从当前用户输入识别明确服务类型；同句多类型时以最后出现的动作词为准。"""
+
+    if not text:
+        return None
+
+    matches: list[tuple[int, str]] = []
+    install_text = _mask_non_action_words(text, _INSTALL_NON_ACTION_WORDS)
+    measure_text = _mask_non_action_words(text, _MEASURE_NON_ACTION_WORDS)
+    matches.extend((match.start(), "单次安装") for match in _INSTALL_ACTION_PATTERN.finditer(install_text))
+    matches.extend((match.start(), "单次测量") for match in _MEASURE_ACTION_PATTERN.finditer(measure_text))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item[0])[1]
+
+
+def infer_service_type(
+    text: str | None,
+    current_service_type: str | None = None,
+) -> str:
+    """明确关键词优先；补充信息沿用当前类型；新订单默认托管维修。"""
+
+    detected = detect_service_type(text)
+    if detected:
+        return detected
+    if current_service_type in VALID_SERVICE_TYPES:
+        return current_service_type
+    return DEFAULT_SERVICE_TYPE
+
+
 def is_cancel_request(text: str) -> bool:
     normalized_text = text.strip().lower()
     return any(keyword in normalized_text for keyword in CANCEL_ORDER_KEYWORDS)

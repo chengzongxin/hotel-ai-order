@@ -261,7 +261,7 @@ class SubmittedOrder(BaseModel):
     """提交成功后用于成功卡片和历史恢复的订单快照。"""
 
     order_no: str = Field(description="真实订单号。", examples=["SO202607130001"])
-    service_type: str | None = Field(default=None, description="商品原始服务类型。")
+    service_type: str | None = Field(default=None, description="对话关键词确定的原始服务类型。")
     effective_service_type: str | None = Field(default=None, description="最终提交采用的服务类型。")
     product_code: str | None = Field(default=None, description="已下单的标准服务商品编码。")
     product_name: str | None = Field(default=None, description="已下单的标准服务商品名称。")
@@ -327,7 +327,7 @@ class OrderPreview(BaseModel):
 
     schema_version: int = Field(default=1, description="客户端状态契约版本；用于兼容未来字段演进。", examples=[1])
     phase: OrderPhase | str = Field(default=OrderPhase.IDLE, description="订单主流程阶段；前端可据此选择展示区域。")
-    service_type: str | None = Field(default=None, description="由所选商品决定的原始服务类型。")
+    service_type: str | None = Field(default=None, description="由当前订单对话关键词确定的原始服务类型。")
     service_type_display: str | None = Field(default=None, description="原始服务类型的用户展示文案。")
     effective_service_type: str | None = Field(default=None, description="维保校验后最终用于字段校验和提交的服务类型。")
     effective_service_type_display: str | None = Field(default=None, description="最终服务类型的用户展示文案。")

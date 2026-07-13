@@ -3,9 +3,30 @@
 import pytest
 
 from schemas.user import UserContext
+from tools.order_submit import submit_real_order
 from tools.order_submit_common import ADMIN_API_SPU_GET, query_spu_detail
 from tools.order_submit_managed import submit_managed_repair_order
 from tools.order_submit_single import submit_single_order
+
+
+@pytest.mark.asyncio
+async def test_submit_real_order_requires_conversation_service_type():
+    result = await submit_real_order(
+        order_info={"product": "门锁", "fault": "打不开"},
+        matched_product={
+            "service_product_code": "A",
+            "service_product_name": "门锁维修",
+            "service_order_type": "托管维修",
+        },
+        service_type=None,
+        effective_service_type=None,
+        submit=False,
+        user=UserContext(user_id="u1"),
+    )
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "服务类型未确定" in result["message"]
 
 
 @pytest.mark.asyncio

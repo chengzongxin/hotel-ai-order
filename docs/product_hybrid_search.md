@@ -167,7 +167,7 @@ scores = self._bm25.get_scores(query_tokens)
 | Chroma relevance score | 大致 0–1 | 语义相似度 |
 | BM25 原始分 | 无固定上界 | 关键词匹配强度 |
 | BM25 归一化分 | 0–1 | 本轮候选内按最大值归一化 |
-| 最终融合分 | 可正可负（惩罚后） | 排序依据 |
+| 最终融合分 | 两路分数加权结果 | 排序依据 |
 
 融合公式（`rag/product_store.py`）：
 
@@ -180,7 +180,6 @@ final_score = 0.65 * vector_score + 0.35 * bm25_norm
 ```python
 VECTOR_SCORE_WEIGHT = 0.65
 BM25_SCORE_WEIGHT = 0.35
-NO_FAULT_PENALTY = 0.15
 ```
 
 设计意图：**向量仍是主排序信号（65%）**，BM25 负责把字面强匹配商品往前推（35%）。
@@ -194,18 +193,18 @@ NO_FAULT_PENALTY = 0.15
 ```mermaid
 flowchart TD
   user["用户: 301 空调不制冷"] --> intent["intent_node 抽取 order_info"]
-  intent --> query["build_product_search_query<br/>query = 空调 不制冷"]
+  intent --> type["对话规则确定 service_type"]
+  type --> query["build_product_search_query<br/>query = 空调 不制冷"]
   query --> searchNode["search_product_node"]
   searchNode --> tool["search_product_tool"]
   tool --> store["ProductVectorStore.search()"]
 
-  store --> bm25["BM25 召回 Top fetch_k"]
-  store --> chroma["Chroma 召回 Top fetch_k"]
+  store --> bm25["同 service_type 的 BM25 召回"]
+  store --> chroma["同 service_type 的 Chroma 召回"]
   bm25 --> merge["按 service_product_code 合并"]
   chroma --> merge
   merge --> fusion["0.65*vector + 0.35*bm25_norm"]
-  fusion --> penalty["故障惩罚 has_fault"]
-  penalty --> threshold["threshold 过滤"]
+  fusion --> threshold["threshold 过滤"]
   threshold --> top3["返回 Top3 商品"]
   top3 --> ui["前端 ProductSelectionCard"]
   ui --> select["用户点选 / 选1/2/3"]
@@ -217,11 +216,11 @@ flowchart TD
 入口：`graph/products.py` → `build_product_search_query()`
 
 ```python
-def build_product_search_query(order_info, last_user_message=""):
+def build_product_search_query(order_info, service_type=None):
     product = order_info.get("product")
     fault = order_info.get("fault")
-    install_hint = "安装" if not fault and "安装" in last_user_message else ""
-    return " ".join(str(v) for v in [product, fault, install_hint] if v)
+    service_hint = {"单次安装": "安装", "单次测量": "测量"}.get(service_type)
+    return " ".join(str(v) for v in [product, fault, service_hint] if v)
 ```
 
 示例：
@@ -232,7 +231,7 @@ def build_product_search_query(order_info, last_user_message=""):
 | 「帮我安装洗衣机」 | product=洗衣机, fault=空 | `洗衣机 安装` |
 | 「水龙头漏水」 | product=水龙头, fault=漏水 | `水龙头 漏水` |
 
-`search_product_node` 还会传 `has_fault=bool(order_info.get("fault"))` 给检索工具。
+`search_product_node` 会传入对话确定的 `service_type` 做精确过滤。
 
 ### 5.3 中游：`ProductVectorStore.search()` 详细步骤
 
@@ -243,9 +242,9 @@ Step 1  预处理
         query.strip()，空则返回 []
         fetch_k = top_k * 4（默认 top_k=3 → fetch_k=12）
 
-Step 2  双路召回（并行逻辑，无先后依赖）
-        BM25:  jieba 分词 → get_scores → Top fetch_k（score>0）
-        Chroma: similarity_search_with_relevance_scores → Top fetch_k
+Step 2  服务类型过滤 + 双路召回（并行逻辑，无先后依赖）
+        BM25:  同 service_type 文档 → jieba 分词 → get_scores → Top fetch_k（score>0）
+        Chroma: service_type metadata filter → Top fetch_k
 
 Step 3  候选合并
         按 service_product_code 去重
@@ -257,11 +256,7 @@ Step 4  BM25 归一化
 Step 5  融合打分
         final = 0.65 * vector_score + 0.35 * bm25_norm
 
-Step 6  故障惩罚（业务规则）
-        if has_fault and not fault_phenomenon:
-            final -= 0.15
-
-Step 7  排序 + 截断 + 阈值
+Step 6  排序 + 截断 + 阈值
         按 final 降序，取 top_k
         丢弃 final < PRODUCT_SEARCH_THRESHOLD（默认 0.3）
 ```
@@ -281,18 +276,15 @@ Step 7  排序 + 截断 + 阈值
 
 - **BM25**：负责「用户说的词，和标准商品名是否对得上」。
 - **Chroma**：负责「用户口语描述，和标准商品语义是否接近」。
-- **融合排序**：把两路优势合并，再叠加故障惩罚和业务阈值。
+- **融合排序**：把两路优势合并，再应用业务阈值。
 
-### 5.5 业务规则：has_fault 故障惩罚
+### 5.5 业务规则：service_type 精确过滤
 
-当用户描述了故障（`has_fault=True`）时，对**没有** `fault_phenomenon` 的商品（纯安装/测量类）扣 0.15 分。
+检索前先根据对话规则确定 `service_type`，BM25 和 Chroma 都只召回该类型商品。
 
-**典型场景**：用户说「水龙头漏水」
+**典型场景**：用户说「水龙头漏水」时，类型为托管维修，安装和测量商品不会进入候选池。
 
-- 「台盆龙头(小修)」有故障文本 → 不扣分
-- 「淋浴龙头/花洒(安装)」无故障文本 → 扣 0.15
-
-这是业务层规则，BM25 和 Chroma 本身不会区分「报修」还是「安装」。
+因此无需再通过额外扣分区分维修、安装和测量。
 
 ### 5.6 下游：结果怎么用
 
@@ -300,7 +292,7 @@ Step 7  排序 + 截断 + 阈值
 2. `phase` 变为 `product_selection`，前端展示商品卡片。
 3. **不会自动选中 Top1**；`selected_product_code` 为空时进入 `ask_node` 引导选择。
 4. 用户点选卡片（`/select-product`）或输入「选1/2/3」后，才进入 `coverage_node` → 预下单。
-5. Top1 的 `service_order_type` 用于推断 `service_type`，决定后续必填字段。
+5. `service_type` 已在检索前由对话规则确定，商品候选不能覆盖它。
 
 ---
 
@@ -312,7 +304,6 @@ Step 7  排序 + 截断 + 阈值
 Chroma 向量召回
   → jieba 关键词重叠硬过滤（商品名与 query 无共同 token 则丢弃）
   → 过滤不足时回退纯向量
-  → 故障惩罚
   → 返回 TopK
 ```
 
@@ -321,10 +312,10 @@ Chroma 向量召回
 ### 新实现（当前）
 
 ```text
-BM25 召回 + Chroma 召回
+service_type 精确过滤
+  → BM25 召回 + Chroma 召回
   → 按商品 code 合并
   → 分数融合（0.65 vector + 0.35 bm25）
-  → 故障惩罚
   → threshold 过滤
   → 返回 TopK
 ```
@@ -360,7 +351,7 @@ BM25 召回 + Chroma 召回
 | `query` | string | 检索 query，通常 `product + fault` |
 | `top_k` | int | 返回候选数，节点侧默认 3 |
 | `threshold` | float \| null | 融合分阈值，null 时用 `PRODUCT_SEARCH_THRESHOLD` |
-| `has_fault` | bool | 是否对无故障商品施加惩罚 |
+| `service_type` | string \| null | 只召回指定服务订单类型的商品 |
 
 ### 环境变量（`.env`）
 
@@ -387,7 +378,7 @@ PRODUCT_SEARCH_THRESHOLD=0.3
   "query": "马桶 堵塞",
   "top_k": 3,
   "threshold": null,
-  "has_fault": true
+  "service_type": "托管维修"
 }
 ```
 
@@ -424,11 +415,11 @@ PRODUCT_SEARCH_THRESHOLD=0.3
 
 **方案**：BM25 对商品名建内存索引，与 Chroma 各自召回，再融合排序。BM25 把含「空调」的商品往前推，向量保留语义兜底。
 
-### 10.2 为什么引入 has_fault 惩罚
+### 10.2 为什么移除额外故障降权参数
 
 **问题**：「水龙头漏水」时，安装类商品（无故障文本）与维修类商品 BM25/向量分接近。
 
-**方案**：`has_fault=True` 时对无 `fault_phenomenon` 商品扣 0.15，优先维修类 SPU。
+**当前方案**：先按对话确定的 `service_type` 精确过滤，再做混合排序。跨类型商品不会进入候选池，因此额外的故障降权参数已经冗余并被移除。
 
 ### 10.3 为什么不引入 Reranker
 
@@ -484,6 +475,6 @@ uv run pytest -m embedding tests/test_product_recall_eval.py
 |------|----------|----------|
 | 返回空列表 | 融合分均低于 threshold | 降低 `PRODUCT_SEARCH_THRESHOLD` 或检查 query 是否过短 |
 | 设备名对但排名靠后 | 向量侧被故障词带偏 | 看 BM25 分是否正常；考虑调权重 |
-| 安装/维修混淆 | has_fault 未传 true | 检查 `search_product_node` 是否传 `has_fault=bool(fault)` |
+| 安装/测量/维修混淆 | service_type 未传或商品元数据错误 | 检查关键词分类结果和 `search_product_node` 的 `service_type` 参数 |
 | 同义词未命中 | BM25 字面不匹配 | 依赖向量分；后续可加同义词词典 |
 | 启动慢 | Chroma 重建 | 检查 `build_metadata.json` 与 Excel 是否频繁变化 |

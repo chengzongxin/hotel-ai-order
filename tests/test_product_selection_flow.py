@@ -66,9 +66,9 @@ def preview(state: dict[str, Any]) -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_first_turn_recommends_products_then_selects_first(monkeypatch, trace_step):
     products = [
-        product("FAUCET_SMALL", "淋浴龙头/花洒(小修)", "单次维修服务", repair_category="小修"),
-        product("FAUCET_MEDIUM", "淋浴龙头/花洒(中修)", "单次维修服务", repair_category="中修"),
-        product("FAUCET_LARGE", "淋浴龙头/花洒(大修)", "单次维修服务", repair_category="大修"),
+        product("FAUCET_SMALL", "淋浴龙头/花洒(小修)", "托管维修", repair_category="小修"),
+        product("FAUCET_MEDIUM", "淋浴龙头/花洒(中修)", "托管维修", repair_category="中修"),
+        product("FAUCET_LARGE", "淋浴龙头/花洒(大修)", "托管维修", repair_category="大修"),
     ]
     await mock_product_search(monkeypatch, products)
 
@@ -119,9 +119,9 @@ async def test_first_turn_recommends_products_then_selects_first(monkeypatch, tr
 @pytest.mark.asyncio
 async def test_reject_products_then_describe_more_and_recommend_again(monkeypatch, trace_step):
     initial_products = [
-        product("AC_CLEAN", "空调(小修)", "单次维修服务", repair_category="小修"),
-        product("AC_FLUORIDE", "空调(中修)", "单次维修服务", repair_category="中修"),
-        product("AC_COMPRESSOR", "空调(大修)", "单次维修服务", repair_category="大修"),
+        product("AC_CLEAN", "空调(小修)", "托管维修", repair_category="小修"),
+        product("AC_FLUORIDE", "空调(中修)", "托管维修", repair_category="中修"),
+        product("AC_COMPRESSOR", "空调(大修)", "托管维修", repair_category="大修"),
     ]
     await mock_product_search(monkeypatch, initial_products)
 
@@ -165,9 +165,9 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
     assert "再详细描述商品和故障现象" in answer["messages"][0].content
 
     refined_products = [
-        product("AC_FAN_CLEAN", "空调(小修)", "单次维修服务", repair_category="小修", fault_phenomenon="风机清洁、轴承润滑"),
-        product("AC_FOREIGN_BODY", "空调(小修)", "单次维修服务", repair_category="小修", fault_phenomenon="异物清除"),
-        product("AC_MOTOR", "空调(中修)", "单次维修服务", repair_category="中修", fault_phenomenon="电机更换"),
+        product("AC_FAN_CLEAN", "空调(小修)", "托管维修", repair_category="小修", fault_phenomenon="风机清洁、轴承润滑"),
+        product("AC_FOREIGN_BODY", "空调(小修)", "托管维修", repair_category="小修", fault_phenomenon="异物清除"),
+        product("AC_MOTOR", "空调(中修)", "托管维修", repair_category="中修", fault_phenomenon="电机更换"),
     ]
     await mock_product_search(monkeypatch, refined_products)
 
