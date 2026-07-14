@@ -37,8 +37,8 @@ from services.order_workflow import OrderWorkflowService
 from services.order_normalizer import normalize_order_defaults
 from services.order_context_service import load_order_context
 from services.order_routing import resolve_order_submit_route
+from services.conversation_service import build_conversation_turn
 from services.session_access import ensure_session_access
-from services.workflow_projection import build_order_preview
 from memory.postgres_log import save_conversation_log
 from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import (
@@ -1095,14 +1095,6 @@ async def stream_agent_events(
                             "message": NODE_STATUS_MESSAGES.get(node_name, "正在处理您的请求..."),
                         }
 
-                        order_preview = build_order_preview(latest_state)
-                        if order_preview:
-                            yield {
-                                "type": "preview",
-                                "step": node_name,
-                                "order_preview": order_preview,
-                            }
-
                 if part_type == "messages" and isinstance(data, tuple):
                     message_chunk, metadata = data
                     if not isinstance(metadata, dict):
@@ -1131,7 +1123,7 @@ async def stream_agent_events(
                     }
 
                 if part_type == "custom":
-                    if isinstance(data, dict) and data.get("type") in {"status", "token", "preview", "tool_call"}:
+                    if isinstance(data, dict) and data.get("type") in {"status", "token", "tool_call"}:
                         yield data
                     else:
                         yield {
@@ -1150,6 +1142,16 @@ async def stream_agent_events(
                     {"messages": [AIMessage(content=answer)]},
                     as_node="ask_node",
                 )
+            conversation_messages = build_conversation_turn(
+                human_content=user_message,
+                ai_content=str(answer),
+                state=final_state,
+            )
+            await graph.aupdate_state(
+                config,
+                {"conversation_messages": conversation_messages},
+                as_node="ask_node",
+            )
 
         trace_logger(
             "agent.stream.end",
@@ -1168,8 +1170,7 @@ async def stream_agent_events(
         yield {
             "type": "final",
             "session_id": active_session_id,
-            "answer": str(answer),
-            "order_preview": build_order_preview(final_state),
+            "conversation_messages": conversation_messages,
         }
     except SessionAccessError:
         raise
@@ -1234,6 +1235,16 @@ async def run_agent(
                 {"messages": [AIMessage(content=answer)]},
                 as_node="ask_node",
             )
+        conversation_messages = build_conversation_turn(
+            human_content=user_message,
+            ai_content=str(answer),
+            state=result,
+        )
+        await graph.aupdate_state(
+            config,
+            {"conversation_messages": conversation_messages},
+            as_node="ask_node",
+        )
 
     trace_logger(
         "agent.run.end",
@@ -1251,6 +1262,5 @@ async def run_agent(
 
     return {
         "session_id": active_session_id,
-        "answer": answer,
-        "order_preview": build_order_preview(result),
+        "conversation_messages": conversation_messages,
     }

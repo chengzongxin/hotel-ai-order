@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from langchain_core.messages import BaseMessage
-
 from config.settings import settings
 from graph.prompts import PROMPTS_DIR
 from graph.state import AgentState
@@ -20,18 +18,6 @@ def checkpoint_path() -> Path:
         db_path = PROMPTS_DIR.parent / db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
-
-
-def message_to_item(message: BaseMessage) -> dict[str, str]:
-    role_map = {
-        "human": "human",
-        "ai": "ai",
-        "system": "system",
-    }
-    return {
-        "role": role_map.get(message.type, message.type),
-        "content": str(message.content),
-    }
 
 
 def get_graph_config(user: UserContext, session_id: str) -> dict[str, object]:
@@ -75,14 +61,6 @@ async def get_checkpoint_state(
         if state:
             ensure_session_access(state, active_user)
         return state
-
-
-async def get_checkpoint_messages(
-    session_id: str,
-    user: UserContext,
-) -> list[dict[str, str]]:
-    state = await get_checkpoint_state(session_id, user=user)
-    return [message_to_item(message) for message in state.get("messages", [])]
 
 
 async def clear_checkpoint_session(

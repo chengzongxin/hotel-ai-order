@@ -30,7 +30,6 @@ const emit = defineEmits<{
   updateField: [key: string, value: string]
   confirm: []
   cancel: []
-  reset: []
 }>()
 
 const progressR = 35
@@ -204,12 +203,6 @@ function displayValue(field: UiOrderField): string {
         :disabled="!canCancelOrder"
         @click="emit('cancel')"
       >取消订单</button>
-      <button
-        v-if="variant === 'sidebar'"
-        type="button"
-        class="w-full rounded-xl border border-slate-200 py-2.5 text-[13px] font-medium text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700"
-        @click="emit('reset')"
-      >清空卡片</button>
     </div>
   </div>
 </template>

@@ -12,7 +12,6 @@ from graph.builder import (
 )
 from graph.checkpoint import (
     clear_checkpoint_session,
-    get_checkpoint_messages,
     get_checkpoint_state,
 )
 from services.order_session_service import (
@@ -22,18 +21,14 @@ from services.order_session_service import (
     select_product_in_session,
     update_order_info_in_session,
 )
-from services.workflow_projection import build_order_preview
 from rag.spu_loader import SpuExcelLoader
 from schemas.chat import (
     ChatRequest,
-    ChatResponse,
-    HistoryResponse,
-    MessageItem,
+    ConversationResponse,
     SelectProductRequest,
-    SelectProductResponse,
     UpdateOrderInfoRequest,
-    UpdateOrderInfoResponse,
 )
+from services.conversation_service import validate_conversation_messages
 from schemas.product import (
     ProductItem,
     ProductListResponse,
@@ -63,11 +58,11 @@ def _request_session_id(session_id: str | None) -> str:
     return session_id.strip()
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ConversationResponse)
 async def chat(
     request: ChatRequest,
     user: UserContext = Depends(get_logged_in_user),
-) -> ChatResponse:
+) -> ConversationResponse:
     active_session_id = _request_session_id(request.session_id)
     try:
         result = await run_agent(
@@ -77,7 +72,7 @@ async def chat(
         )
     except SessionAccessError as exc:
         raise _session_access_error() from exc
-    return ChatResponse(**result)
+    return ConversationResponse(**result)
 
 
 @router.post("/chat/stream")
@@ -87,7 +82,8 @@ async def stream_chat(
 ) -> StreamingResponse:
     """流式对话，响应为 NDJSON（每行一个 JSON 事件）。
 
-    事件类型：session / status / preview / tool_call / token / final / error。
+    事件类型：status / tool_call / token / final / error。
+    `final` 携带本轮已持久化的 `conversation_messages`。
     字段定义见 `docs/api_order_preview.md`。
     """
     active_session_id = _request_session_id(request.session_id)
@@ -116,12 +112,12 @@ async def stream_chat(
     )
 
 
-@router.post("/chat/{session_id}/select-product", response_model=SelectProductResponse)
+@router.post("/chat/{session_id}/select-product", response_model=ConversationResponse)
 async def select_product(
     session_id: str,
     request: SelectProductRequest,
     user: UserContext = Depends(get_current_user),
-) -> SelectProductResponse:
+) -> ConversationResponse:
     """前端点选商品卡片后调用，更新当前会话的选中商品。"""
     try:
         result = await select_product_in_session(
@@ -133,14 +129,14 @@ async def select_product(
         raise _session_access_error() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return SelectProductResponse(**result)
+    return ConversationResponse(**result)
 
 
-@router.post("/chat/{session_id}/reject-products", response_model=ChatResponse)
+@router.post("/chat/{session_id}/reject-products", response_model=ConversationResponse)
 async def reject_products(
     session_id: str,
     user: UserContext = Depends(get_current_user),
-) -> ChatResponse:
+) -> ConversationResponse:
     """前端“以上都不符合”的确定性接口。"""
     try:
         result = await reject_products_in_session(session_id=session_id, user=user)
@@ -148,15 +144,15 @@ async def reject_products(
         raise _session_access_error() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return ChatResponse(**result)
+    return ConversationResponse(**result)
 
 
-@router.patch("/chat/{session_id}/order-info", response_model=UpdateOrderInfoResponse)
+@router.patch("/chat/{session_id}/order-info", response_model=ConversationResponse)
 async def update_order_info(
     session_id: str,
     request: UpdateOrderInfoRequest,
     user: UserContext = Depends(get_current_user),
-) -> UpdateOrderInfoResponse:
+) -> ConversationResponse:
     """前端编辑预下单卡片字段后调用，更新当前会话的订单信息。"""
     try:
         result = await update_order_info_in_session(
@@ -168,14 +164,14 @@ async def update_order_info(
         raise _session_access_error() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return UpdateOrderInfoResponse(**result)
+    return ConversationResponse(**result)
 
 
-@router.post("/chat/{session_id}/confirm", response_model=ChatResponse)
+@router.post("/chat/{session_id}/confirm", response_model=ConversationResponse)
 async def confirm_order(
     session_id: str,
     user: UserContext = Depends(get_current_user),
-) -> ChatResponse:
+) -> ConversationResponse:
     """前端确认按钮的确定性提交接口，不再依赖 LLM 重新识别“确认”。"""
     try:
         result = await confirm_order_in_session(session_id=session_id, user=user)
@@ -183,14 +179,14 @@ async def confirm_order(
         raise _session_access_error() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return ChatResponse(**result)
+    return ConversationResponse(**result)
 
 
-@router.post("/chat/{session_id}/cancel", response_model=ChatResponse)
+@router.post("/chat/{session_id}/cancel", response_model=ConversationResponse)
 async def cancel_order(
     session_id: str,
     user: UserContext = Depends(get_current_user),
-) -> ChatResponse:
+) -> ConversationResponse:
     """前端取消按钮的确定性接口，不再依赖 LLM 识别取消意图。"""
     try:
         result = await cancel_order_in_session(session_id=session_id, user=user)
@@ -198,24 +194,23 @@ async def cancel_order(
         raise _session_access_error() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return ChatResponse(**result)
+    return ConversationResponse(**result)
 
 
-@router.get("/chat/{session_id}/history", response_model=HistoryResponse)
+@router.get("/chat/{session_id}/history", response_model=ConversationResponse)
 async def get_history(
     session_id: str,
     user: UserContext = Depends(get_current_user),
-) -> HistoryResponse:
+) -> ConversationResponse:
     try:
-        messages = await get_checkpoint_messages(session_id, user=user)
         state = await get_checkpoint_state(session_id, user=user)
     except SessionAccessError as exc:
         raise _session_access_error() from exc
-    return HistoryResponse(
+    return ConversationResponse(
         session_id=session_id,
-        messages=[MessageItem(role=item["role"], content=item["content"]) for item in messages],
-        conversation_summary=state.get("conversation_summary", ""),
-        order_preview=build_order_preview(state),
+        conversation_messages=validate_conversation_messages(
+            state.get("conversation_messages") or []
+        ),
     )
 
 

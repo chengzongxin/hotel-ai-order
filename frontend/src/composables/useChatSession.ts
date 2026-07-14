@@ -1,5 +1,5 @@
 import { computed, nextTick, ref, type Ref } from 'vue'
-import type { ChatMessage, OrderPreview, Role, SessionSummary, ToolCallRecord } from '../types/order'
+import type { ChatMessage, ConversationMessagePayload, Role, SessionSummary, ToolCallRecord } from '../types/order'
 import { createSessionId } from '../utils/sessionId'
 
 export const SESSION_KEY = 'order_voice_session_id'
@@ -40,37 +40,27 @@ export function useChatSession(chatBodyRef: Ref<HTMLElement | null>) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(historySessions.value.slice(0, 10)))
   }
 
-  function appendMessage(role: Role, content: string, variant?: ChatMessage['variant']) {
-    const id = Date.now() + Math.floor(Math.random() * 999)
-    messages.value.push({ id, role, content, time: currentTime(), variant })
+  function appendMessage(role: Role, content: string) {
+    // 局域网 HTTP 页面不是安全上下文，不能直接调用 crypto.randomUUID()。
+    const id = createSessionId()
+    messages.value.push({ id, role, content, time: currentTime(), orderPreview: null })
     nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
     return id
   }
 
-  function setMessageContent(id: number, content: string) {
+  function setMessageContent(id: string, content: string) {
     const message = messages.value.find((item) => item.id === id)
     if (message) message.content = content
     nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
   }
 
-  function appendMessageContent(id: number, content: string) {
+  function appendMessageContent(id: string, content: string) {
     const message = messages.value.find((item) => item.id === id)
     if (message) message.content += content
     nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
   }
 
-  function setMessageOrderSuccess(
-    id: number,
-    snapshot: NonNullable<ChatMessage['orderSuccess']>,
-  ) {
-    const message = messages.value.find((item) => item.id === id)
-    if (message) {
-      message.variant = 'order_success'
-      message.orderSuccess = snapshot
-    }
-  }
-
-  function upsertMessageToolCall(id: number, call: ToolCallRecord) {
+  function upsertMessageToolCall(id: string, call: ToolCallRecord) {
     const message = messages.value.find((item) => item.id === id)
     if (!message || !call.call_id || !call.name) return
 
@@ -85,6 +75,56 @@ export function useChatSession(chatBodyRef: Ref<HTMLElement | null>) {
       message.toolCalls.push(nextCall)
     }
 
+    nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
+  }
+
+  function toChatMessage(payload: ConversationMessagePayload): ChatMessage | null {
+    const role = mapHistoryRole(payload.role)
+    if (!role) return null
+    return {
+      id: payload.id,
+      role,
+      content: payload.content,
+      time: currentTime(),
+      orderPreview: payload.order_preview ?? null,
+    }
+  }
+
+  function upsertConversationMessages(payloads: ConversationMessagePayload[]) {
+    for (const payload of payloads) {
+      const incoming = toChatMessage(payload)
+      if (!incoming) continue
+      const index = messages.value.findIndex((item) => item.id === incoming.id)
+      if (index >= 0) {
+        const current = messages.value[index]
+        messages.value[index] = {
+          ...incoming,
+          time: current?.time || incoming.time,
+          toolCalls: current?.toolCalls,
+        }
+      } else {
+        messages.value.push(incoming)
+      }
+    }
+    nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
+  }
+
+  function replacePendingTurn(
+    humanMessageId: string,
+    aiMessageId: string,
+    payloads: ConversationMessagePayload[],
+  ) {
+    const pendingAi = messages.value.find((item) => item.id === aiMessageId)
+    const insertAt = messages.value.findIndex((item) => item.id === humanMessageId)
+    messages.value = messages.value.filter(
+      (item) => item.id !== humanMessageId && item.id !== aiMessageId,
+    )
+    const converted = payloads
+      .map(toChatMessage)
+      .filter((item): item is ChatMessage => Boolean(item))
+    const ai = converted.find((item) => item.role === 'assistant')
+    if (ai && pendingAi?.toolCalls) ai.toolCalls = pendingAi.toolCalls
+    messages.value.splice(insertAt >= 0 ? insertAt : messages.value.length, 0, ...converted)
     nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' }))
   }
 
@@ -121,26 +161,12 @@ export function useChatSession(chatBodyRef: Ref<HTMLElement | null>) {
     appendMessage,
     setMessageContent,
     appendMessageContent,
-    setMessageOrderSuccess,
     upsertMessageToolCall,
+    upsertConversationMessages,
+    replacePendingTurn,
     summarizeCurrentSession,
     resetMessages,
     setSessionId,
     persistHistory,
   }
-}
-
-export function applyOrderPreview(
-  orderPreview: Ref<OrderPreview | null>,
-  chatBodyRef: Ref<HTMLElement | null>,
-  preview?: OrderPreview | null,
-) {
-  if (!preview) {
-    orderPreview.value = null
-    return
-  }
-  orderPreview.value = preview
-  nextTick(() => {
-    chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight, behavior: 'smooth' })
-  })
 }

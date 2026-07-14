@@ -3,18 +3,12 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import ConversationOrderCard from './components/ConversationOrderCard.vue'
 import OrderPreviewCard from './components/OrderPreviewCard.vue'
-import OrderStatusNotices from './components/OrderStatusNotices.vue'
-import OrderSuccessCard from './components/OrderSuccessCard.vue'
-import ProductSelectionCard from './components/ProductSelectionCard.vue'
 import ToolCallList from './components/ToolCallList.vue'
 import { useChatApi } from './composables/useChatApi'
-import { useChatSession, currentTime } from './composables/useChatSession'
-import {
-  displayOrderFieldValue,
-  formatMatchScore,
-  useOrderPreview,
-} from './composables/useOrderPreview'
+import { useChatSession } from './composables/useChatSession'
+import { useOrderPreview } from './composables/useOrderPreview'
 import type { OrderPreview } from './types/order'
 import {
   API_PARAM_FIELDS,
@@ -45,7 +39,6 @@ const streamStatus = ref('')
 const chatBodyRef = ref<HTMLElement | null>(null)
 const historyRef = ref<HTMLElement | null>(null)
 
-const orderPreview = ref<OrderPreview | null>(null)
 const isSelectingProduct = ref(false)
 const selectingProductCode = ref<string | null>(null)
 const isUpdatingOrderInfo = ref(false)
@@ -62,76 +55,53 @@ const {
   appendMessage,
   setMessageContent,
   appendMessageContent,
-  setMessageOrderSuccess,
   upsertMessageToolCall,
+  upsertConversationMessages,
+  replacePendingTurn,
   summarizeCurrentSession,
   resetMessages,
   setSessionId,
 } = useChatSession(chatBodyRef)
 
+const activeConversationMessage = computed(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const message = messages.value[index]
+    if (message?.role === 'assistant' && message.orderPreview) return message
+  }
+  return null
+})
+const activeConversationMessageId = computed(() => activeConversationMessage.value?.id ?? null)
+const orderPreview = computed<OrderPreview | null>(
+  () => activeConversationMessage.value?.orderPreview ?? null,
+)
+
 const preview = useOrderPreview(orderPreview, isSending, isUpdatingOrderInfo)
 const {
   orderInfo,
-  phase,
-  submission,
-  submittedOrder,
-  serviceTypeDisplay,
   effectiveServiceTypeDisplay,
-  missingInfo,
-  productItems,
   productFeedback,
   selectedProductCode,
-  productSelectionRejected,
   selectedProduct,
-  isProductSelectionPhase,
-  isPreOrderPhase,
-  isAwaitingProductSelection,
   showDraftOrderCard,
-  submittedOrderId,
-  submissionState,
   isSubmittingOrder,
-  submissionMissingFields,
   hasSubmissionFailure,
   submissionFailureMessage,
   canSubmit,
-  canSelectProduct,
-  canRejectProducts,
-  hasProductOptions,
-  isOrderSubmitted,
-  showChatOrderPanel,
   canConfirmOrder,
   canCancelOrder,
   missingInfoText,
   submissionMissingText,
   coverageNotice,
-  urgencyConfig,
   orderFields,
   filledCount,
   totalFieldCount,
   orderCompleteness,
-  progressCircumference,
-  progressOffset,
   isProductSelected,
 } = preview
-
-function buildOrderSuccessSnapshot() {
-  return {
-    orderId: submittedOrderId.value,
-    serviceType: effectiveServiceTypeDisplay.value,
-    selectedProduct: selectedProduct.value ? { ...selectedProduct.value } : null,
-    fields: orderFields.value.map((field) => ({
-      ...field,
-      options: field.options.map((option) => ({ ...option })),
-    })),
-    submittedOrder: submittedOrder.value ? { ...submittedOrder.value } : null,
-  }
-}
 
 const chatApi = useChatApi({
   sessionId,
   messages,
-  orderPreview,
-  chatBodyRef,
   errorMessage,
   streamStatus,
   isSending,
@@ -144,9 +114,9 @@ const chatApi = useChatApi({
   appendMessage,
   setMessageContent,
   appendMessageContent,
-  setMessageOrderSuccess,
   upsertMessageToolCall,
-  buildOrderSuccessSnapshot,
+  upsertConversationMessages,
+  replacePendingTurn,
   isProductSelected,
   canConfirmOrder,
 })
@@ -191,7 +161,6 @@ async function switchSession(targetSessionId: string) {
   isListening.value = false
   isSending.value = false
   resetMessages()
-  resetOrder()
   showHistory.value = false
   await loadSessionHistory(targetSessionId)
   nextTick(() => chatBodyRef.value?.scrollTo({ top: chatBodyRef.value.scrollHeight }))
@@ -233,13 +202,13 @@ async function sendMessage(text = inputText.value) {
   const ta = document.querySelector<HTMLTextAreaElement>('textarea')
   if (ta) ta.style.height = 'auto'
 
-  appendMessage('user', content)
+  const humanMessageId = appendMessage('user', content)
   const assistantMessageId = appendMessage('assistant', '')
   streamStatus.value = '正在连接智能体...'
   isSending.value = true
 
   try {
-    await sendStreamingMessage(content, assistantMessageId)
+    await sendStreamingMessage(content, humanMessageId, assistantMessageId)
   } catch (err) {
     if (err instanceof Error && err.name === 'AuthRequiredError') {
       errorMessage.value = err.message
@@ -256,7 +225,7 @@ async function sendMessage(text = inputText.value) {
       return
     }
     try {
-      await sendFallbackMessage(content, assistantMessageId)
+      await sendFallbackMessage(content, humanMessageId, assistantMessageId)
     } catch {
       errorMessage.value = err instanceof Error ? err.message : '网络请求失败'
       setMessageContent(assistantMessageId, '后端暂时不可用，已帮您保留预下单信息。')
@@ -280,15 +249,11 @@ function toggleListening() {
   r.start()
 }
 
-function resetOrder() {
-  orderPreview.value = null
-}
-
 function createNewSession() {
   summarizeCurrentSession(orderInfo.value, canSubmit.value)
   setSessionId(createSessionId())
   inputText.value = ''; errorMessage.value = ''; isListening.value = false; isSending.value = false
-  resetMessages(); resetOrder(); refreshSuggestions(); showHistory.value = false
+  resetMessages(); refreshSuggestions(); showHistory.value = false
   nextTick(() => chatBodyRef.value?.scrollTo({ top: 0 }))
 }
 
@@ -470,15 +435,7 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                   <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
                   <div class="min-w-0 flex-1">
                     <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">下单助手</p>
-                    <OrderSuccessCard
-                      v-if="message.variant === 'order_success'"
-                      :order-id="message.orderSuccess?.orderId"
-                      :service-type="message.orderSuccess?.serviceType"
-                      :selected-product="message.orderSuccess?.selectedProduct"
-                      :fields="message.orderSuccess?.fields"
-                      :submitted-order="message.orderSuccess?.submittedOrder"
-                    />
-                    <div v-else-if="message.content" class="prose prose-sm" v-html="renderMarkdown(message.content)"></div>
+                    <div v-if="message.content" class="prose prose-sm" v-html="renderMarkdown(message.content)"></div>
                     <p v-else class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-[12px] text-indigo-600">
                       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500"></span>
                       {{ streamStatus || '正在处理您的请求...' }}
@@ -487,6 +444,21 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       v-if="message.toolCalls?.length"
                       class="mt-3"
                       :items="message.toolCalls"
+                    />
+                    <ConversationOrderCard
+                      v-if="message.orderPreview"
+                      :preview="message.orderPreview"
+                      :active="message.id === activeConversationMessageId"
+                      :is-sending="isSending"
+                      :is-selecting-product="isSelectingProduct"
+                      :selecting-product-code="selectingProductCode"
+                      :is-updating-order-info="isUpdatingOrderInfo"
+                      :updating-field-key="updatingFieldKey"
+                      @select="selectProduct"
+                      @reject="rejectProducts"
+                      @update-field="updateOrderInfoField"
+                      @confirm="confirmOrder"
+                      @cancel="cancelOrder"
                     />
                     <p class="mt-2 text-[11px] text-slate-400">{{ message.time }}</p>
                   </div>
@@ -516,59 +488,6 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                 </div>
               </div>
 
-              <!-- In-chat order panel: product cards + confirm/cancel -->
-              <div v-if="showChatOrderPanel" class="flex items-start gap-3.5">
-                <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-[12px] font-bold text-white shadow-sm shadow-indigo-600/20">H</div>
-                <div class="min-w-0 flex-1">
-                  <div class="overflow-hidden rounded-2xl border border-indigo-100 bg-white px-4 py-4 shadow-sm shadow-indigo-100/60">
-                    <OrderStatusNotices
-                      v-if="isSubmittingOrder || hasSubmissionFailure"
-                      class="mb-3"
-                      :is-submitting-order="isSubmittingOrder"
-                      :has-submission-failure="hasSubmissionFailure"
-                      :submission-missing-text="submissionMissingText"
-                      :submission-failure-message="submissionFailureMessage"
-                    />
-
-                    <ProductSelectionCard
-                      v-if="isProductSelectionPhase && hasProductOptions && !productSelectionRejected"
-                      :items="productItems"
-                      :feedback="productFeedback"
-                      :selected-code="selectedProductCode"
-                      :selecting-code="selectingProductCode"
-                      :is-awaiting-selection="isAwaitingProductSelection"
-                      :is-selecting="isSelectingProduct"
-                      :is-submitted="isOrderSubmitted"
-                      :can-select="canSelectProduct"
-                      :can-reject="canRejectProducts"
-                      @select="selectProduct"
-                      @reject="rejectProducts"
-                    />
-
-                    <OrderPreviewCard
-                      v-if="showDraftOrderCard && !isOrderSubmitted"
-                      :fields="orderFields"
-                      :filled-count="filledCount"
-                      :total-field-count="totalFieldCount"
-                      :order-completeness="orderCompleteness"
-                      :effective-service-type-display="effectiveServiceTypeDisplay"
-                      :selected-product="selectedProduct"
-                      :product-feedback="productFeedback"
-                      :coverage-notice="coverageNotice"
-                      :missing-info-text="missingInfoText"
-                      :is-updating-order-info="isUpdatingOrderInfo"
-                      :updating-field-key="updatingFieldKey"
-                      :can-confirm-order="canConfirmOrder"
-                      :can-cancel-order="canCancelOrder"
-                      :submission-failure-message="submissionFailureMessage"
-                      @update-field="updateOrderInfoField"
-                      @confirm="confirmOrder"
-                      @cancel="cancelOrder"
-                    />
-                  </div>
-                  <p class="mt-2 text-[11px] text-slate-400">{{ currentTime() }}</p>
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -659,7 +578,6 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
           @update-field="updateOrderInfoField"
           @confirm="confirmOrder"
           @cancel="cancelOrder"
-          @reset="resetOrder"
         />
 
         <!-- API params card -->

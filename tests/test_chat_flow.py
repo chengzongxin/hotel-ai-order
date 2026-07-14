@@ -68,14 +68,26 @@ async def clear_session(session_id: str) -> None:
 
 
 def preview(result: dict[str, Any]) -> dict[str, Any]:
-    data = result.get("order_preview")
+    data = maybe_preview(result)
     assert isinstance(data, dict), f"expected order_preview, got: {result}"
     return data
 
 
 def maybe_preview(result: dict[str, Any]) -> dict[str, Any] | None:
-    data = result.get("order_preview")
-    return data if isinstance(data, dict) else None
+    messages = result.get("conversation_messages") or []
+    for message in reversed(messages):
+        data = message.get("order_preview") if isinstance(message, dict) else None
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def answer_text(result: dict[str, Any]) -> str:
+    messages = result.get("conversation_messages") or []
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "ai":
+            return str(message.get("content") or "")
+    return ""
 
 
 def info(result: dict[str, Any]) -> dict[str, Any]:
@@ -119,9 +131,9 @@ def first_product_code(result: dict[str, Any]) -> str:
 def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
     data = maybe_preview(result)
     if not data:
-        return {"answer": result.get("answer"), "order_preview": None}
+        return {"answer": answer_text(result), "order_preview": None}
     return {
-        "answer": result.get("answer"),
+        "answer": answer_text(result),
         "phase": data.get("phase"),
         "order_info": data.get("order_info"),
         "service_type": data.get("service_type"),
@@ -152,7 +164,7 @@ def assert_product_selection(result: dict[str, Any]) -> None:
     assert phase(result) == "product_selection"
     assert products(result)
     assert selected_code(result) is None
-    assert "选择" in str(result.get("answer", "")) or products(result)
+    assert "选择" in answer_text(result) or products(result)
 
 
 class TestCurrentProductSelectionFlow:
@@ -303,7 +315,7 @@ class TestCurrentConversationControl:
             data = maybe_preview(result)
             assert data is None or data.get("phase") in {None, "idle"}
             assert info(result) == {}
-            assert result.get("answer")
+            assert answer_text(result)
         finally:
             await clear_session(sid)
 

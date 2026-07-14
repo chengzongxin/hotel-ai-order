@@ -13,6 +13,30 @@ def add_order_events(
     return [*(left or []), *(right or [])]
 
 
+def upsert_conversation_messages(
+    left: list[dict[str, Any]] | None,
+    right: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Append new client messages and replace existing messages with the same ID."""
+
+    merged = [dict(item) for item in (left or [])]
+    positions = {
+        str(item.get("id")): index
+        for index, item in enumerate(merged)
+        if item.get("id")
+    }
+    for incoming in right or []:
+        item = dict(incoming)
+        message_id = str(item.get("id") or "")
+        if message_id and message_id in positions:
+            merged[positions[message_id]] = item
+            continue
+        if message_id:
+            positions[message_id] = len(merged)
+        merged.append(item)
+    return merged
+
+
 class AgentState(TypedDict, total=False):
     """LangGraph 运行时状态。
 
@@ -22,6 +46,12 @@ class AgentState(TypedDict, total=False):
 
     # LangGraph 会通过 add_messages 自动追加消息，而不是每次覆盖整个列表。
     messages: Annotated[list[BaseMessage], add_messages]
+
+    # 只面向客户端的消息时间线。它与 LLM messages 分离，并携带每轮工作流快照。
+    conversation_messages: Annotated[
+        list[dict[str, Any]],
+        upsert_conversation_messages,
+    ]
 
     # 当前登录用户 ID，用于会话隔离与越权校验。
     user_id: str

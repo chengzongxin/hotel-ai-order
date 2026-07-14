@@ -20,19 +20,19 @@ export interface ToolCallRecord {
 }
 
 export interface ChatMessage {
-  id: number
+  id: string
   role: Role
   content: string
   time: string
-  variant?: 'order_success'
+  orderPreview?: OrderPreview | null
   toolCalls?: ToolCallRecord[]
-  orderSuccess?: {
-    orderId?: string | null
-    serviceType?: string | null
-    selectedProduct?: ProductOption | null
-    fields?: UiOrderField[]
-    submittedOrder?: SubmittedOrder | null
-  }
+}
+
+export interface ConversationMessagePayload {
+  id: string
+  role: 'human' | 'ai'
+  content: string
+  order_preview: OrderPreview | null
 }
 
 export type UrgencyLevel = 'low' | 'medium' | 'high' | 'urgent'
@@ -183,13 +183,12 @@ export interface OrderPreview {
 }
 
 export interface StreamEvent {
-  type: 'status' | 'preview' | 'token' | 'final' | 'error' | 'tool_call'
+  type: 'status' | 'token' | 'final' | 'error' | 'tool_call'
   session_id?: string
   step?: string
   message?: string
   content?: string
-  answer?: string
-  order_preview?: OrderPreview | null
+  conversation_messages?: ConversationMessagePayload[]
   phase?: ToolCallPhase | string
   call_id?: string
   kind?: 'tool' | 'interface' | string

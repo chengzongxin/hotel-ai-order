@@ -1,164 +1,114 @@
-# 前端工作流状态契约
+# 客户端会话与工作流状态契约
 
-`/api/chat`、`/api/chat/stream`、会话历史和确定性订单命令统一返回
-`order_preview`。这个名字为兼容现有接口保留；它表示的是**面向客户端的业务状态快照**，
-不是 LangGraph `AgentState`，也不指定 Vue 组件或页面布局。
+所有聊天、历史和确定性订单命令统一返回 `conversation_messages`。前端只消费这条
+客户端消息时间线，不读取 LangChain `messages`，也不维护独立的全局订单快照。
 
-## 接口字段说明
+```json
+{
+  "session_id": "b28b7450-5a7a-4568-a137-9e84f64039e3",
+  "conversation_messages": [
+    {
+      "id": "24d4e55f-d4aa-4ec7-b786-b0bf4dd401a8",
+      "role": "human",
+      "content": "1208空调不制冷",
+      "order_preview": null
+    },
+    {
+      "id": "ee0490a5-e6ce-44cf-b2c5-f105d1818872",
+      "role": "ai",
+      "content": "为您推荐以下服务商品，请选择。",
+      "order_preview": {
+        "schema_version": 1,
+        "phase": "product_selection",
+        "order_info": {
+          "room_number": "1208",
+          "product": "空调",
+          "fault": "不制冷"
+        },
+        "products": {
+          "status": "success",
+          "selected_code": null,
+          "selection_rejected": false,
+          "items": []
+        },
+        "form": {"fields": []},
+        "validation": {"ready": false, "missing_fields": []},
+        "capabilities": {
+          "select_product": true,
+          "reject_products": true,
+          "update_order": false,
+          "confirm_order": false,
+          "cancel_order": true,
+          "retry_submission": false
+        },
+        "coverage": {"checked": false, "covered": null},
+        "submission": {"state": "not_attempted", "missing_fields": []},
+        "submitted_order": null
+      }
+    }
+  ]
+}
+```
 
-公开字段的名称、类型、必填性、枚举值、说明和示例统一定义在 Pydantic 响应模型中，
-并自动生成到 OpenAPI。启动服务后可直接查看：
+## 两类消息的边界
 
-- Swagger UI：`/docs`
-- ReDoc：`/redoc`
-- OpenAPI JSON：`/openapi.json`
+后端同时维护两套用途不同的消息：
 
-Pydantic/OpenAPI 是字段级接口契约的唯一事实来源；本文档只解释职责边界、流程和使用方式，
-避免在 Python、OpenAPI 和 Markdown 中重复维护同一份字段表。
+- `AgentState.messages`：LangChain 的 Human/AI/System/Tool 消息，只供 LLM 上下文使用；
+- `AgentState.conversation_messages`：只包含前端可见的 human/ai 消息和安全状态快照。
 
-## 职责边界
+`conversation_messages[].order_preview` 来自 `AgentState` 的客户端安全投影，不会包含
+登录信息、真实接口原始请求/响应、重试计数、内部事件或工具结果。
 
-后端负责：
+## ConversationMessage
 
-- 当前业务 `phase`；
-- 订单、商品、表单和提交结果数据；
-- `validation` 业务校验；
-- `capabilities` 当前允许执行的命令。
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 稳定消息 ID；前端使用它追加或更新消息 |
+| `role` | `human` 或 `ai` |
+| `content` | 面向用户的消息正文 |
+| `order_preview` | 该轮完成后的订单状态；human 消息固定为 `null` |
 
-前端负责：
+普通对话、选择商品、拒绝商品、确认和取消返回本次新增的消息。表单字段编辑不新增
+聊天气泡，而是返回相同 `id` 的活动 AI 消息，前端按 ID upsert。
 
-- `phase` 与页面组件的映射；
-- 表单控件、布局、颜色、图标和动画；
-- 根据 `capabilities` 展示或禁用操作按钮。
+History 接口返回完整 `conversation_messages`，不再返回顶层 `order_preview` 或
+`conversation_summary`。
 
-前端不应重新推导必填规则或能否提交。后端收到命令后仍会再次校验，不能把按钮禁用当作安全边界。
+## OrderPreview
 
-## 顶层结构
+`order_preview` 表示某条 AI 回复完成时的业务状态快照，不指定 Vue 组件或页面布局。
 
 | 字段 | 说明 |
 | --- | --- |
 | `schema_version` | 对外契约版本，当前为 `1` |
 | `phase` | `idle` / `collecting` / `product_selection` / `pre_order` / `submitted` / `cancelled` |
-| `service_type` | 当前订单对话关键词确定的原始服务类型 |
-| `service_type_display` | 面向用户的原始服务类型文案 |
+| `service_type` | 商品确定的原始服务类型 |
+| `service_type_display` | 原始服务类型展示文案 |
 | `effective_service_type` | 维保校验后最终用于提交的服务类型 |
-| `effective_service_type_display` | 最终服务类型文案 |
-| `order_info` | 可安全展示的用户订单信息 |
-| `products` | 商品候选与选中态 |
-| `form` | 后端给出的业务字段描述，前端决定具体控件 |
-| `validation` | 是否可以提交及缺失字段 |
-| `capabilities` | 当前允许执行的确定性业务命令 |
+| `effective_service_type_display` | 最终服务类型展示文案 |
+| `order_info` | 可安全展示的订单事实 |
+| `products` | 商品候选与选择状态 |
+| `form` | 后端给出的业务字段，前端决定具体控件 |
+| `validation` | 完整性校验和缺失字段 |
+| `capabilities` | 当前允许执行的确定性命令 |
 | `coverage` | 维保范围校验摘要 |
-| `submission` | 提交状态和面向客户端的失败信息 |
-| `submitted_order` | 提交成功后的安全订单快照 |
+| `submission` | 下单状态和客户端安全失败信息 |
+| `submitted_order` | 成功提交后的订单快照 |
 
-## 示例
-
-```json
-{
-  "schema_version": 1,
-  "phase": "pre_order",
-  "service_type": "托管维修",
-  "service_type_display": "托管维修（客房）",
-  "effective_service_type": "托管维修",
-  "effective_service_type_display": "托管维修（客房）",
-  "order_info": {
-    "room_number": "301",
-    "product": "门锁",
-    "fault": "打不开",
-    "area": "客房",
-    "urgency": "medium"
-  },
-  "products": {
-    "status": "success",
-    "query": "门锁 打不开",
-    "feedback": "已匹配到门锁维修商品。",
-    "selected_code": "FWSP01537",
-    "selection_rejected": false,
-    "items": [
-      {
-        "code": "FWSP01537",
-        "name": "门锁损坏（困客人）",
-        "service_type": "托管维修",
-        "rank": 1,
-        "is_recommended": true,
-        "is_selected": true
-      }
-    ]
-  },
-  "form": {
-    "fields": [
-      {
-        "key": "expected_time",
-        "label": "期望开工/完工时间",
-        "value": null,
-        "required": true,
-        "editable": true,
-        "input_type": "text",
-        "options": []
-      }
-    ]
-  },
-  "validation": {
-    "ready": false,
-    "missing_fields": ["expected_start_time"]
-  },
-  "capabilities": {
-    "select_product": false,
-    "reject_products": false,
-    "update_order": true,
-    "confirm_order": false,
-    "cancel_order": true,
-    "retry_submission": false
-  },
-  "coverage": {
-    "checked": true,
-    "covered": true,
-    "reason": "该商品在维保范围内"
-  },
-  "submission": {
-    "state": "not_attempted",
-    "order_no": null,
-    "failure_code": null,
-    "failure_message": null,
-    "missing_fields": []
-  },
-  "submitted_order": null
-}
-```
-
-内部的 `user_confirmed`、重试计数、事件日志、上游请求参数和原始响应不会通过该契约暴露。
-
-## 前端渲染
-
-推荐由前端维护组件映射：
-
-```ts
-const componentByPhase = {
-  idle: ChatPanel,
-  collecting: ChatPanel,
-  product_selection: ProductSelectionCard,
-  pre_order: OrderPreviewCard,
-  submitted: OrderSuccessCard,
-  cancelled: CancelledNotice,
-}
-```
-
-`input_type` 是字段编辑提示，不是组件名称。前端可以把 `select` 渲染成下拉框或单选组，后端不感知。
+后端负责业务阶段、数据、校验和权限；前端负责把 `phase` 映射为商品选择、预下单、
+成功或取消组件。历史消息中的快照只读，只有最后一条带 `order_preview` 的 AI 消息
+可以根据 `capabilities` 发起操作，后端收到命令后仍会再次校验。
 
 ## 确定性命令
 
-UI 中已经明确的行为不再交给 LLM 二次识别：
-
-| 操作 | 接口 | 对应 capability |
+| 操作 | 接口 | capability |
 | --- | --- | --- |
 | 选择商品 | `POST /api/chat/{session_id}/select-product` | `select_product` |
 | 拒绝全部候选 | `POST /api/chat/{session_id}/reject-products` | `reject_products` |
 | 修改字段 | `PATCH /api/chat/{session_id}/order-info` | `update_order` |
 | 确认下单 | `POST /api/chat/{session_id}/confirm` | `confirm_order` |
 | 取消订单 | `POST /api/chat/{session_id}/cancel` | `cancel_order` |
-
-每个命令完成后都返回最新 `order_preview`，前端直接替换本地快照。
 
 ## 流式事件
 
@@ -167,10 +117,20 @@ UI 中已经明确的行为不再交给 LLM 二次识别：
 | `type` | 用途 |
 | --- | --- |
 | `status` | 当前处理进度 |
-| `preview` | 增量工作流快照 |
 | `tool_call` | 已脱敏的工具调用状态 |
-| `token` | AI 回复文本片段 |
-| `final` | 最终回复和最终工作流快照 |
+| `token` | AI 回复文本片段，仅用于实时展示 |
+| `final` | 本轮最终 `conversation_messages` |
 | `error` | 本轮错误 |
 
-`preview` 和 `final` 中的 `order_preview` 使用相同结构。
+前端可以先创建临时 human/ai 消息接收 token，收到 `final` 后用服务端返回的稳定消息
+替换临时消息。
+
+## 字段说明来源
+
+公开字段名称、类型、枚举、说明和示例统一定义在 Pydantic 模型并生成到 OpenAPI：
+
+- Swagger UI：`/docs`
+- ReDoc：`/redoc`
+- OpenAPI JSON：`/openapi.json`
+
+Pydantic/OpenAPI 是字段级契约的唯一事实来源，本文档只解释职责和使用方式。

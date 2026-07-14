@@ -27,8 +27,11 @@ from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import SessionAccessError, UserContext, require_user
 from services.order_normalizer import normalize_order_defaults
 from services.order_workflow import OrderWorkflowService
+from services.conversation_service import (
+    build_conversation_turn,
+    update_active_conversation_preview,
+)
 from services.session_access import ensure_session_access
-from services.workflow_projection import build_order_preview
 
 
 @asynccontextmanager
@@ -67,9 +70,6 @@ async def select_product_in_session(
         )
         await graph.aupdate_state(config, update, as_node="search_product_node")
         merged_state = {**state, **update}
-        order_preview = build_order_preview(merged_state)
-        if order_preview is None:
-            raise ValueError("更新商品后无法生成订单预览")
 
         selected = find_product_by_code(state.get("products") or [], product_code) or {}
         product_name = selected.get("service_product_name") or product_code
@@ -83,10 +83,23 @@ async def select_product_in_session(
         missing_info = update.get("missing_info") or []
         if isinstance(missing_info, list) and missing_info:
             message = f"{message}\n{build_missing_info_fallback_question(missing_info)}"
+        conversation_messages = build_conversation_turn(
+            human_content=f"选择商品：{product_name}",
+            ai_content=message,
+            state=merged_state,
+        )
+        if conversation_messages[-1]["order_preview"] is None:
+            raise ValueError("更新商品后无法生成订单预览")
+        await graph.aupdate_state(
+            config,
+            {"conversation_messages": conversation_messages},
+            as_node="ask_node",
+        )
+        await save_conversation_log(session_id, "human", f"选择商品：{product_name}")
+        await save_conversation_log(session_id, "ai", message)
         return {
             "session_id": session_id,
-            "order_preview": order_preview,
-            "message": message,
+            "conversation_messages": conversation_messages,
         }
 
 
@@ -105,12 +118,21 @@ async def reject_products_in_session(
         }
         await graph.aupdate_state(config, update, as_node="search_product_node")
         merged_state = {**state, **update}
+        conversation_messages = build_conversation_turn(
+            human_content="以上都不符合",
+            ai_content=answer,
+            state=merged_state,
+        )
+        await graph.aupdate_state(
+            config,
+            {"conversation_messages": conversation_messages},
+            as_node="ask_node",
+        )
         await save_conversation_log(session_id, "human", "以上都不符合")
         await save_conversation_log(session_id, "ai", answer)
         return {
             "session_id": session_id,
-            "answer": answer,
-            "order_preview": build_order_preview(merged_state),
+            "conversation_messages": conversation_messages,
         }
 
 
@@ -132,13 +154,21 @@ async def update_order_info_in_session(
         )
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
         merged_state = {**state, **update}
-        order_preview = build_order_preview(merged_state)
-        if order_preview is None:
+        conversation_message = update_active_conversation_preview(
+            messages=state.get("conversation_messages") or [],
+            state=merged_state,
+            fallback_content="已更新预下单信息。",
+        )
+        if conversation_message["order_preview"] is None:
             raise ValueError("更新下单信息后无法生成订单预览")
+        await graph.aupdate_state(
+            config,
+            {"conversation_messages": [conversation_message]},
+            as_node="ask_node",
+        )
         return {
             "session_id": session_id,
-            "order_preview": order_preview,
-            "message": "已更新预下单信息。",
+            "conversation_messages": [conversation_message],
         }
 
 
@@ -182,6 +212,7 @@ async def confirm_order_in_session(
             state.get("order_card_fields") or [],
         )
         if missing_info:
+            answer = build_missing_info_fallback_question(missing_info)
             update = {
                 "order_info": order_info,
                 "missing_info": missing_info,
@@ -190,10 +221,21 @@ async def confirm_order_in_session(
                 **confirmed_event_patch,
             }
             await graph.aupdate_state(config, update, as_node="validate_order_node")
+            conversation_messages = build_conversation_turn(
+                human_content="确认下单",
+                ai_content=answer,
+                state={**state, **update},
+            )
+            await graph.aupdate_state(
+                config,
+                {"conversation_messages": conversation_messages},
+                as_node="ask_node",
+            )
+            await save_conversation_log(session_id, "human", "确认下单")
+            await save_conversation_log(session_id, "ai", answer)
             return {
                 "session_id": session_id,
-                "answer": build_missing_info_fallback_question(missing_info),
-                "order_preview": build_order_preview({**state, **update}),
+                "conversation_messages": conversation_messages,
             }
 
         confirmed_state = {
@@ -214,12 +256,22 @@ async def confirm_order_in_session(
         await graph.aupdate_state(config, submit_update, as_node="submit_node")
         answer_messages = submit_update.get("messages") or []
         answer = str(answer_messages[-1].content) if answer_messages else "已处理确认下单请求。"
+        final_state = {**confirmed_state, **submit_update}
+        conversation_messages = build_conversation_turn(
+            human_content="确认下单",
+            ai_content=answer,
+            state=final_state,
+        )
+        await graph.aupdate_state(
+            config,
+            {"conversation_messages": conversation_messages},
+            as_node="ask_node",
+        )
         await save_conversation_log(session_id, "human", "确认")
         await save_conversation_log(session_id, "ai", answer)
         return {
             "session_id": session_id,
-            "answer": answer,
-            "order_preview": build_order_preview({**confirmed_state, **submit_update}),
+            "conversation_messages": conversation_messages,
         }
 
 
@@ -235,10 +287,19 @@ async def cancel_order_in_session(
         await graph.aupdate_state(config, update, as_node="cancel_node")
         answer_messages = update.get("messages") or []
         answer = str(answer_messages[-1].content) if answer_messages else "已取消当前订单。"
+        conversation_messages = build_conversation_turn(
+            human_content="取消订单",
+            ai_content=answer,
+            state={**state, **update},
+        )
+        await graph.aupdate_state(
+            config,
+            {"conversation_messages": conversation_messages},
+            as_node="ask_node",
+        )
         await save_conversation_log(session_id, "human", "取消订单")
         await save_conversation_log(session_id, "ai", answer)
         return {
             "session_id": session_id,
-            "answer": answer,
-            "order_preview": build_order_preview({**state, **update}),
+            "conversation_messages": conversation_messages,
         }

@@ -97,21 +97,21 @@ sequenceDiagram
     G->>G: intent_node 识别意图并抽取 order_info
     G->>R: search_product_tool 检索 SPU Top3
     R-->>G: products
-    G-->>API: preview/product_selection
-    API-->>FE: NDJSON status/preview/token/final
+    G-->>API: conversation_messages/product_selection
+    API-->>FE: NDJSON status/token/final
     FE-->>U: 展示商品候选
 
     U->>FE: 点选商品
     FE->>API: POST /api/chat/{session_id}/select-product
     API->>G: 读取 checkpoint 并更新 selected_product_code
     G->>R: 托管维修范围校验 + 下单上下文加载
-    G-->>API: order_preview(pre_order)
-    API-->>FE: 商品选中态 + 预下单卡片
+    G-->>API: 新增 human/ai conversation_messages
+    API-->>FE: 消息内商品选中态 + 预下单卡片
 
     U->>FE: 编辑联系人/电话/时间等
     FE->>API: PATCH /api/chat/{session_id}/order-info
     API->>G: normalize_order_card_update + 重新校验 missing_info
-    API-->>FE: 最新 order_preview
+    API-->>FE: 更新活动 AI conversation_message
 
     U->>FE: 点击确认下单
     FE->>API: POST /api/chat/{session_id}/confirm
@@ -220,6 +220,7 @@ not_attempted → submitting → succeeded
 | 字段 | 含义 |
 | --- | --- |
 | `messages` | LangGraph 消息历史，使用 `add_messages` 追加 |
+| `conversation_messages` | 前端唯一可见的消息时间线；AI 消息携带该轮 `order_preview` |
 | `user_id` | 当前会话所属用户，用于越权校验 |
 | `intent` | 本轮意图：`create_order`、`confirm_order`、`cancel_order`、`smalltalk`、`unknown` |
 | `phase` | 订单主流程阶段：`idle`、`collecting`、`product_selection`、`pre_order`、`submitted`、`cancelled` |
@@ -254,7 +255,7 @@ not_attempted → submitting → succeeded
 | 点选商品卡片 | `POST /api/chat/{session_id}/select-product` | `select_product_in_session()` | 否 |
 | 编辑预下单字段 | `PATCH /api/chat/{session_id}/order-info` | `update_order_info_in_session()` | 否 |
 | 点击确认下单 | `POST /api/chat/{session_id}/confirm` | `confirm_order_in_session()` | 否 |
-| 查看历史和当前卡片 | `GET /api/chat/{session_id}/history` | `get_checkpoint_messages()` / `get_checkpoint_state()` | 否 |
+| 查看历史和消息内卡片 | `GET /api/chat/{session_id}/history` | `get_checkpoint_state()` | 否 |
 | 清空会话 | `DELETE /api/chat/{session_id}` | `clear_checkpoint_session()` | 否 |
 
 ### 对话 Prompt 分工
@@ -281,9 +282,8 @@ Prompt 都放在 `prompts/`，业务策略优先改 Prompt 文件，不要把长
 | 类型 | 用途 |
 | --- | --- |
 | `status` | 更新"正在理解需求/正在匹配商品/正在提交订单"等进度文案 |
-| `preview` | 返回最新 `order_preview`，前端据此刷新商品卡或预下单卡 |
 | `token` | 打字机式追加 AI 回复内容 |
-| `final` | 本轮完成，包含最终 `answer` 和最终 `order_preview` |
+| `final` | 本轮完成，包含服务端持久化的最终 `conversation_messages` |
 | `error` | 后端处理失败 |
 
 前端解析流时要注意：
@@ -379,8 +379,8 @@ SQLite Checkpoint
 4. 图从 `intent_node` 开始运行。
 5. 节点通过返回字典更新 `AgentState`。
 6. `messages` 使用 `add_messages` 追加，而不是覆盖。
-7. 最后一条 AI 消息作为 `answer` 返回给前端。
-8. `order_preview` 从最新状态中生成，用于前端预下单卡片。
+7. 后端把 human/ai 文本投影为客户端 `conversation_messages`。
+8. AI 客户端消息携带该轮 `order_preview`，前端在消息内渲染卡片。
 
 当前没有使用 `interrupt()` 做普通用户确认。原因是这是聊天式应用，用户每轮输入本身就是一次新的图调用；确认、取消、修改都应该作为状态机事件处理。
 
@@ -403,7 +403,7 @@ SQLite Checkpoint
 
 流式事件分工：
 
-- `updates`：节点完成后的状态更新，用于刷新预下单卡片。
+- `updates`：节点完成后的内部状态更新和处理进度。
 - `messages`：LLM token 级输出，作为补充通道。
 - `custom`：节点主动发出的用户可见事件，是当前主要流式通道。
 
@@ -542,9 +542,8 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 
 ```json
 {"type":"status","step":"intent_node","message":"正在理解您的需求并提取订单信息..."}
-{"type":"preview","step":"search_product_node","order_preview":{"phase":"product_selection"}}
 {"type":"token","step":"confirm_node","content":"好的，收到。"}
-{"type":"final","session_id":"demo-session","answer":"好的，收到。信息已齐全...","order_preview":{"phase":"pre_order"}}
+{"type":"final","session_id":"demo-session","conversation_messages":[{"id":"...","role":"human","content":"1208 房空调不制冷，明天上午来修","order_preview":null},{"id":"...","role":"ai","content":"好的，收到。信息已齐全...","order_preview":{"phase":"pre_order"}}]}
 ```
 
 ### 非流式发起对话
@@ -560,60 +559,27 @@ curl -X POST http://localhost:8000/api/chat \
 ```json
 {
   "session_id": "demo-session",
-  "answer": "请确认订单信息...",
-  "order_preview": {
-    "phase": "pre_order",
-    "service_type": "托管维修",
-    "effective_service_type": "托管维修",
-    "order_info": {
-      "room_number": "B栋 301",
-      "product": "门锁",
-      "fault": "打不开"
+  "conversation_messages": [
+    {
+      "id": "...",
+      "role": "human",
+      "content": "B栋 301 门锁打不开",
+      "order_preview": null
     },
-    "products": {
-      "status": "success",
-      "query": "门锁 打不开",
-      "selected_code": "FWSP01468",
-      "items": [
-        {
-          "code": "FWSP01468",
-          "name": "钥匙柜（小修）",
-          "service_type": "单次维修服务",
-          "rank": 1,
-          "is_recommended": true,
-          "is_selected": true
+    {
+      "id": "...",
+      "role": "ai",
+      "content": "请确认订单信息...",
+      "order_preview": {
+        "phase": "pre_order",
+        "order_info": {
+          "room_number": "B栋 301",
+          "product": "门锁",
+          "fault": "打不开"
         }
-      ]
-    },
-    "form": {
-      "fields": []
-    },
-    "coverage": {
-      "checked": true,
-      "covered": true,
-      "reason": "该商品在维保范围内"
-    },
-    "validation": {
-      "ready": true,
-      "missing_fields": []
-    },
-    "capabilities": {
-      "select_product": false,
-      "reject_products": false,
-      "update_order": true,
-      "confirm_order": true,
-      "cancel_order": true,
-      "retry_submission": false
-    },
-    "submission": {
-      "state": "not_attempted",
-      "order_no": null,
-      "failure_code": null,
-      "failure_message": null,
-      "missing_fields": []
-    },
-    "submitted_order": null
-  }
+      }
+    }
+  ]
 }
 ```
 
@@ -860,27 +826,29 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 | --- | --- |
 | `frontend/src/App.vue` | 会话状态、流式请求、商品选择、字段更新、确认/取消等事件处理 |
 | `frontend/src/composables/useChatApi.ts` | 对话、历史、商品选择、字段更新、确认提交等 HTTP 调用 |
-| `frontend/src/composables/useChatSession.ts` | `session_id`、本地历史、消息追加、成功卡片消息状态 |
+| `frontend/src/composables/useChatSession.ts` | `session_id`、客户端消息追加、按 ID 更新和临时消息替换 |
 | `frontend/src/composables/useOrderPreview.ts` | 从 `order_preview` 派生前端展示状态 |
 | `frontend/src/types/order.ts` | 前端使用的 `OrderPreview`、商品、卡片字段等类型 |
+| `frontend/src/components/ConversationOrderCard.vue` | 根据某条 AI 消息的状态快照渲染对应卡片；历史快照只读 |
 | `frontend/src/components/ProductSelectionCard.vue` | 商品候选卡片和"以上都不符合"操作 |
 | `frontend/src/components/OrderPreviewCard.vue` | 预下单字段展示、编辑、确认/取消按钮 |
 | `frontend/src/components/OrderStatusNotices.vue` | 缺字段、维保范围、提交失败/提交中提示 |
 | `frontend/src/utils/apiParams.ts` | 本地调试 header 参数加载、保存、重置 |
 
-前端核心状态都从 `order_preview` 派生：
+前端唯一服务端状态源是 `conversation_messages`。每条 AI 消息可以携带本轮结束时的
+`order_preview`，当前可操作状态取最后一条带快照的 AI 消息：
 
 | 前端 computed | 来源 | 用途 |
 | --- | --- | --- |
-| `phase` | `order_preview.phase` | 判断展示商品选择、预下单、成功还是取消状态 |
-| `submissionState` | `order_preview.submission.state` | 判断提交中、提交成功、提交失败或真实提交关闭 |
-| `productItems` | `order_preview.products.items` | 渲染候选商品 |
-| `selectedProductCode` | `order_preview.products.selected_code` | 判断当前选中商品 |
-| `orderFields` | `order_preview.form.fields` | 渲染后端定义的数据字段，具体控件由前端决定 |
-| `missingInfoText` | `order_preview.validation.missing_fields` | 展示缺失字段 |
-| `canConfirmOrder` | `order_preview.capabilities.confirm_order` | 控制确认按钮，不在前端重复实现业务校验 |
-| `coverageNotice` | `order_preview.coverage` | 展示维保范围提示 |
-| `submittedOrderId` | `order_preview.submission.order_no` / `order_preview.submitted_order.order_no` | 展示真实单号 |
+| `phase` | `activeMessage.orderPreview.phase` | 判断展示商品选择、预下单、成功还是取消状态 |
+| `submissionState` | `activeMessage.orderPreview.submission.state` | 判断提交中、提交成功、提交失败或真实提交关闭 |
+| `productItems` | `message.orderPreview.products.items` | 在对应消息下渲染候选商品 |
+| `selectedProductCode` | `activeMessage.orderPreview.products.selected_code` | 判断当前选中商品 |
+| `orderFields` | `message.orderPreview.form.fields` | 渲染后端定义的数据字段，具体控件由前端决定 |
+| `missingInfoText` | `message.orderPreview.validation.missing_fields` | 展示缺失字段 |
+| `canConfirmOrder` | `activeMessage.orderPreview.capabilities.confirm_order` | 控制确认按钮，不在前端重复实现业务校验 |
+| `coverageNotice` | `message.orderPreview.coverage` | 展示维保范围提示 |
+| `submittedOrderId` | `message.orderPreview.submission.order_no` / `submitted_order.order_no` | 展示真实单号 |
 
 前端调用链：
 
@@ -903,7 +871,8 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 
 ### 前后端字段协同契约
 
-前端只依赖 `order_preview` 这个稳定契约，后端内部状态可以更丰富，但对外字段要尽量稳定。
+前端只依赖 `conversation_messages` 及其嵌套的 `order_preview`。后端内部的 LangChain
+`messages`、摘要、工具结果和提交原始报文都不属于客户端契约。
 
 | 改动类型 | 后端必须同步 | 前端必须同步 |
 | --- | --- | --- |
