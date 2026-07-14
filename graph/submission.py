@@ -5,7 +5,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from graph.products import format_service_type_display, get_selected_product
+from graph.products import format_service_type_display
+from services.order_items import get_order_items
 from graph.prompts import render_prompt
 from graph.state import AgentState
 from graph.streaming import run_traced_tool_call
@@ -53,6 +54,7 @@ def clear_active_order_state() -> dict[str, object]:
         "order_info": {},
         "products": [],
         "selected_product_code": None,
+        "order_items": [],
         "missing_info": [],
     }
 
@@ -143,15 +145,13 @@ async def submit_order_from_state(
 ) -> dict[str, object]:
     """根据当前状态提交订单。"""
 
-    selected_product = get_selected_product(
-        state.get("products") or [],
-        state.get("selected_product_code"),
-        default_to_first=False,
-    )
+    order_items = get_order_items(state)
+    selected_product = (order_items[0].get("product_snapshot") or {}) if order_items else {}
     order_info = state.get("order_info", {})
     submit_params = {
         "order_info": order_info,
         "matched_product": selected_product,
+        "order_items": order_items,
         "service_type": state.get("service_type"),
         "effective_service_type": get_effective_service_type(state),
         "coverage_result": state.get("coverage_result") or {},
@@ -168,6 +168,7 @@ async def submit_order_from_state(
             service_type=state.get("service_type"),
             effective_service_type=get_effective_service_type(state),
             coverage_result=state.get("coverage_result") or {},
+            order_items=order_items,
             submit=True,
             user=user,
         ),
@@ -201,6 +202,24 @@ async def submit_order_from_state(
             "request_payload": request_payload,
             "response_payload": submit_data,
             "coverage_result": state.get("coverage_result") or {},
+            "items": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "code": str(item.get("product_code") or ""),
+                    "name": str(item.get("product_name") or ""),
+                    "service_type": str(item.get("service_type") or ""),
+                    "quantity": max(int(item.get("quantity") or 1), 1),
+                    "unit": item.get("unit"),
+                    "price": item.get("price"),
+                    "fault": item.get("fault"),
+                    "area": item.get("area"),
+                    "second_area": item.get("second_area"),
+                    "second_area_id": item.get("second_area_id"),
+                    "can_edit": False,
+                    "can_remove": False,
+                }
+                for item in order_items
+            ],
         }
         answer = render_prompt(
             "submit/submit.md",
@@ -244,6 +263,7 @@ async def submit_order_from_state(
         "submission": submission,
         "products": state.get("products") or [],
         "selected_product_code": state.get("selected_product_code"),
+        "order_items": order_items,
         "missing_info": missing_fields,
         "retry_count": 0 if is_submitted else state.get("retry_count", 0),
         "off_topic_count": 0,

@@ -20,6 +20,7 @@ async def submit_single_order(
     service_type: str | None,
     coverage_result: JsonDict | None = None,
     spu_query_error: str | None = None,
+    resolved_items: list[JsonDict] | None = None,
 ) -> ToolResult:
     """单次维修/安装/测量真实下单流程。"""
 
@@ -34,64 +35,57 @@ async def submit_single_order(
         query_single_order_app_spu,
         query_single_order_category_context,
     )
+    from tools.order_payload_single import build_single_order_multi_payload
 
-    category_context: JsonDict = {}
-    category_name = _clean_text(
-        _first_present(
-            spu.get("categoryName"),
-            spu.get("erpName"),
-            matched_product.get("category"),
-            matched_product.get("related_category"),
-        )
-    )
-    try:
-        category_context = await query_single_order_category_context(
-            category_name=category_name,
-            service_type=service_type,
-            user=user,
-        )
-    except Exception as exc:
-        spu_query_error = "; ".join(
-            item
-            for item in [
-                spu_query_error,
-                f"category_context_query={type(exc).__name__}: {exc}",
-            ]
-            if item
-        )
-
-    app_spu: JsonDict = {}
-    try:
-        app_spu = await query_single_order_app_spu(
-            product_name=_clean_text(matched_product.get("service_product_name")),
-            product_code=_clean_text(matched_product.get("service_product_code")),
-            category_context=category_context,
-            selected_address=order_context["selected_address"],
-            user=user,
-        )
-    except Exception as exc:
-        spu_query_error = "; ".join(
-            item
-            for item in [
-                spu_query_error,
-                f"app_spu_query={type(exc).__name__}: {exc}",
-            ]
-            if item
-        )
-    single_order_spu = {**spu, **app_spu} if app_spu else spu
+    source_items = resolved_items or [{"item": {}, "product": matched_product, "spu": spu}]
+    prepared_items: list[JsonDict] = []
+    for resolved in source_items:
+        product = resolved.get("product") or {}
+        base_spu = resolved.get("spu") or {}
+        category_context: JsonDict = {}
+        category_name = _clean_text(_first_present(
+            base_spu.get("categoryName"), base_spu.get("erpName"),
+            product.get("category"), product.get("related_category"),
+        ))
+        try:
+            category_context = await query_single_order_category_context(
+                category_name=category_name, service_type=service_type, user=user,
+            )
+        except Exception as exc:
+            spu_query_error = "; ".join(item for item in [spu_query_error, f"category_context_query={type(exc).__name__}: {exc}"] if item)
+        app_spu: JsonDict = {}
+        try:
+            app_spu = await query_single_order_app_spu(
+                product_name=_clean_text(product.get("service_product_name")),
+                product_code=_clean_text(product.get("service_product_code")),
+                category_context=category_context, selected_address=order_context["selected_address"], user=user,
+            )
+        except Exception as exc:
+            spu_query_error = "; ".join(item for item in [spu_query_error, f"app_spu_query={type(exc).__name__}: {exc}"] if item)
+        prepared_items.append({
+            **resolved,
+            "product": product,
+            "spu": {**base_spu, **app_spu} if app_spu else base_spu,
+            "category_context": category_context,
+            "app_spu": app_spu,
+        })
+    category_context = prepared_items[0].get("category_context") or {}
+    app_spu = prepared_items[0].get("app_spu") or {}
+    single_order_spu = prepared_items[0].get("spu") or {}
     contacts = _clean_text(order_info.get("contacts")) or order_context["contacts"]
     phone = _clean_text(order_info.get("phone")) or order_context["phone"]
-    payload, missing_fields = build_single_order_payload(
-        order_info=order_info,
-        spu=single_order_spu,
-        matched_product=matched_product,
-        category_context=category_context,
-        selected_address=order_context["selected_address"],
-        contacts=contacts,
-        phone=phone,
-        service_type=service_type,
-        ide_name=user.ide_name,
-    )
+    if resolved_items:
+        payload, missing_fields = build_single_order_multi_payload(
+            order_info=order_info, resolved_items=prepared_items,
+            selected_address=order_context["selected_address"], contacts=contacts, phone=phone,
+            service_type=service_type, ide_name=user.ide_name,
+        )
+    else:
+        payload, missing_fields = build_single_order_payload(
+            order_info=order_info, spu=single_order_spu, matched_product=matched_product,
+            category_context=category_context, selected_address=order_context["selected_address"],
+            contacts=contacts, phone=phone, service_type=service_type, ide_name=user.ide_name,
+        )
     data: JsonDict = {
         "request_payload": payload,
         "missing_fields": missing_fields,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import OrderStatusNotices from './OrderStatusNotices.vue'
-import type { CoverageNotice, ProductOption, UiOrderField } from '../types/order'
+import type { CoverageNotice, OrderItem, ProductOption, UiOrderField } from '../types/order'
 
 const props = withDefaults(defineProps<{
   variant?: 'chat' | 'sidebar'
@@ -22,14 +22,22 @@ const props = withDefaults(defineProps<{
   updatingFieldKey?: string | null
   canConfirmOrder?: boolean
   canCancelOrder?: boolean
+  orderItems?: OrderItem[]
+  canAddOrderItem?: boolean
+  canUpdateOrderItem?: boolean
+  canRemoveOrderItem?: boolean
 }>(), {
   variant: 'chat',
+  orderItems: () => [],
 })
 
 const emit = defineEmits<{
   updateField: [key: string, value: string]
   confirm: []
   cancel: []
+  addItem: []
+  updateItem: [itemId: string, updates: { quantity?: number; fault?: string }]
+  removeItem: [itemId: string]
 }>()
 
 const progressR = 35
@@ -39,6 +47,11 @@ const progressOffset = computed(() => progressCircumference * (1 - props.orderCo
 function displayValue(field: UiOrderField): string {
   if (field.value === null || field.value === undefined || field.value === '') return '待补充'
   return field.value
+}
+
+function updateQuantity(item: OrderItem, event: Event) {
+  const value = Math.max(1, Number.parseInt((event.target as HTMLInputElement).value, 10) || 1)
+  emit('updateItem', item.id, { quantity: value })
 }
 </script>
 
@@ -98,6 +111,31 @@ function displayValue(field: UiOrderField): string {
         :submission-missing-text="submissionMissingText"
         :submission-failure-message="submissionFailureMessage"
       />
+
+      <section v-if="orderItems.length" class="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3.5">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p class="text-[10px] font-semibold uppercase tracking-wide text-indigo-400">商品明细</p>
+            <p class="mt-0.5 text-xs text-slate-500">共 {{ orderItems.length }} 种商品</p>
+          </div>
+          <button v-if="canAddOrderItem" type="button" class="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700" @click="emit('addItem')">+ 新增商品</button>
+        </div>
+        <div class="space-y-2">
+          <div v-for="item in orderItems" :key="item.id" class="rounded-xl border border-white bg-white px-3 py-2.5 shadow-sm">
+            <div class="flex items-start gap-3">
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-[13px] font-semibold text-slate-800">{{ item.name }}</p>
+                <p class="mt-0.5 truncate text-[11px] text-slate-400">{{ item.code }}<span v-if="item.price"> · ¥{{ item.price }}/{{ item.unit || '件' }}</span></p>
+              </div>
+              <label class="flex shrink-0 items-center gap-1 text-xs text-slate-500">
+                数量
+                <input type="number" min="1" step="1" class="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-center text-xs outline-none focus:border-indigo-300" :value="item.quantity" :disabled="!canUpdateOrderItem" @change="updateQuantity(item, $event)" />
+              </label>
+              <button v-if="canRemoveOrderItem && item.can_remove !== false" type="button" class="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-50" @click="emit('removeItem', item.id)">删除</button>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <div
         v-for="field in fields"
@@ -163,7 +201,7 @@ function displayValue(field: UiOrderField): string {
       </div>
 
       <div
-        v-if="variant === 'sidebar'"
+        v-if="variant === 'sidebar' && !orderItems.length"
         class="flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-300"
         :class="selectedProduct?.code ? 'border-indigo-100 bg-indigo-50/60' : 'border-slate-100 bg-slate-50/60'"
       >

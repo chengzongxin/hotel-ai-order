@@ -173,6 +173,31 @@ class ProductSection(BaseModel):
     items: list[ProductOption] = Field(default_factory=list, description="按 rank 升序排列的商品候选列表。")
 
 
+class OrderItem(BaseModel):
+    """预下单中的一个已选商品明细。"""
+
+    id: str = Field(description="订单商品明细稳定 ID，用于修改数量或删除。")
+    code: str = Field(description="标准服务商品编码。")
+    name: str = Field(description="标准服务商品名称。")
+    service_type: str = Field(description="商品对应的服务订单类型。")
+    quantity: int = Field(default=1, ge=1, description="该商品下单数量。")
+    unit: str | None = Field(default=None, description="商品计量单位。")
+    price: str | None = Field(default=None, description="商品参考单价。")
+    fault: str | None = Field(default=None, description="该商品对应的故障或服务说明。")
+    area: str | None = Field(default=None, description="该商品所在一级区域。")
+    second_area: str | None = Field(default=None, description="该商品所在二级区域。")
+    second_area_id: str | None = Field(default=None, description="该商品二级区域 ID。")
+    can_edit: bool = Field(default=True, description="当前是否允许修改该商品明细。")
+    can_remove: bool = Field(default=True, description="当前是否允许删除该商品明细。")
+
+
+class OrderItemsSection(BaseModel):
+    """当前订单最终要提交的商品明细集合。"""
+
+    items: list[OrderItem] = Field(default_factory=list, description="按加入顺序排列的商品明细。")
+    total_quantity: int = Field(default=0, ge=0, description="全部商品数量合计。")
+
+
 class OrderFormOption(BaseModel):
     """枚举型预下单字段的一个可选项。"""
 
@@ -242,6 +267,9 @@ class WorkflowCapabilities(BaseModel):
     confirm_order: bool = Field(default=False, description="当前是否允许确认并提交订单。")
     cancel_order: bool = Field(default=False, description="当前是否允许取消进行中的订单。")
     retry_submission: bool = Field(default=False, description="上次提交失败后，当前是否满足再次提交条件。")
+    add_order_item: bool = Field(default=False, description="当前是否允许向预下单增加商品。")
+    update_order_item: bool = Field(default=False, description="当前是否允许修改商品数量或故障说明。")
+    remove_order_item: bool = Field(default=False, description="当前是否允许删除商品明细。")
 
 
 class SubmissionSection(BaseModel):
@@ -278,6 +306,7 @@ class SubmittedOrder(BaseModel):
     product_quantity: int | None = Field(default=None, description="下单商品数量。")
     contacts: str | None = Field(default=None, description="订单联系人。")
     phone: str | None = Field(default=None, description="订单联系电话。")
+    items: list[OrderItem] = Field(default_factory=list, description="本次成功提交的商品明细。")
 
 
 class OrderPreview(BaseModel):
@@ -333,6 +362,7 @@ class OrderPreview(BaseModel):
     effective_service_type_display: str | None = Field(default=None, description="最终服务类型的用户展示文案。")
     order_info: OrderInfo = Field(default_factory=OrderInfo, description="当前已收集的订单事实。")
     products: ProductSection = Field(default_factory=ProductSection, description="商品检索、候选及选中状态。")
+    order_items: OrderItemsSection = Field(default_factory=OrderItemsSection, description="最终要提交的商品明细。")
     form: OrderForm = Field(default_factory=OrderForm, description="当前预下单业务字段；前端决定具体组件。")
     validation: WorkflowValidation = Field(default_factory=WorkflowValidation, description="订单数据完整性校验结果。")
     capabilities: WorkflowCapabilities = Field(default_factory=WorkflowCapabilities, description="后端当前允许执行的确定性命令。")

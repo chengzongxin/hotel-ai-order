@@ -16,6 +16,7 @@ from graph.constants import PHASE_COLLECTING, PHASE_PRE_ORDER, PHASE_PRODUCT_SEL
 from schemas.user import UserContext
 from services.order_context_service import load_order_context
 from services.order_normalizer import normalize_order_defaults
+from services.order_items import build_order_item
 from tools.hosting_coverage import check_hosting_product_coverage
 from tools.order_payload_managed import align_order_second_area_with_spu
 
@@ -121,6 +122,7 @@ class OrderWorkflowService:
             "product_selection_rejected": False,
             "phase": PHASE_PRE_ORDER,
             "step": "search_product_node",
+            "order_items": [build_order_item(selected_product, order_info)],
         }
         return patch
 
@@ -191,6 +193,7 @@ class OrderWorkflowService:
             "product_selection_rejected": False,
             "phase": PHASE_PRE_ORDER,
             "step": "search_product_node",
+            "order_items": [build_order_item(selected, order_info)],
         }
         return patch
 

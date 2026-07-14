@@ -151,6 +151,7 @@ def clear_product_workflow_state() -> dict[str, object]:
     return {
         "products": [],
         "selected_product_code": None,
+        "order_items": [],
         "effective_service_type": None,
         "coverage_result": {},
         "order_context": {},
@@ -854,6 +855,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "order_info": {},
         "products": [],
         "selected_product_code": None,
+        "order_items": [],
         "missing_info": [],
         "submission": empty_submission(),
         "retry_count": 0,

@@ -1,23 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ProductOption, UiOrderField } from '../types/order'
+import type { ProductOption, SubmittedOrder, UiOrderField } from '../types/order'
 
 const props = defineProps<{
   orderId?: string | null
   serviceType?: string | null
   selectedProduct?: ProductOption | null
   fields?: UiOrderField[]
-  submittedOrder?: {
-    order_no?: string | null
-    service_type?: string | null
-    effective_service_type?: string | null
-    product_name?: string | null
-    room_number?: string | null
-    area?: string | null
-    expected_start_time?: string | null
-    contacts?: string | null
-    phone?: string | null
-  } | null
+  submittedOrder?: SubmittedOrder | null
 }>()
 
 function valueOf(keys: string[]): string | null {
@@ -81,6 +71,19 @@ const expectedTimeText = computed(() => props.submittedOrder?.expected_start_tim
       <div class="rounded-2xl border border-white/70 bg-white/70 px-3.5 py-3">
         <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">期望时间</p>
         <p class="mt-1 truncate text-[13px] font-semibold text-slate-800">{{ expectedTimeText }}</p>
+      </div>
+    </div>
+
+    <div v-if="submittedOrder?.items?.length" class="relative mt-4 rounded-2xl border border-white/70 bg-white/70 p-3.5">
+      <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">商品明细</p>
+      <div class="mt-2 space-y-2">
+        <div v-for="item in submittedOrder.items" :key="item.id" class="flex items-center justify-between gap-3 text-xs">
+          <div class="min-w-0">
+            <p class="truncate font-semibold text-slate-700">{{ item.name }}</p>
+            <p class="truncate text-[11px] text-slate-400">{{ item.code }}</p>
+          </div>
+          <span class="shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700">× {{ item.quantity }}</span>
+        </div>
       </div>
     </div>
 

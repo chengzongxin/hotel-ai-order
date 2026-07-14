@@ -61,6 +61,7 @@ async def submit_real_order(
     service_type: str | None = None,
     effective_service_type: str | None = None,
     coverage_result: JsonDict | None = None,
+    order_items: list[JsonDict] | None = None,
 ) -> ToolResult:
     active_user = user
     final_service_type = effective_service_type or service_type
@@ -71,14 +72,24 @@ async def submit_real_order(
         )
     order_context = await load_managed_repair_order_context(active_user)
 
+    source_items = order_items or [{"product_snapshot": matched_product, "quantity": order_info.get("product_quantity") or 1}]
+    resolved_items: list[JsonDict] = []
     spu: JsonDict = {}
     spu_query_error: str | None = None
-    try:
-        result = await query_spu_detail(matched_product, active_user)
-        if result:
-            spu = result
-    except Exception as exc:
-        spu_query_error = f"{type(exc).__name__}: {exc}"
+    for index, item in enumerate(source_items):
+        product = item.get("product_snapshot") or matched_product
+        item_spu: JsonDict = {}
+        try:
+            result = await query_spu_detail(product, active_user)
+            if result:
+                item_spu = result
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            spu_query_error = "; ".join(value for value in [spu_query_error, error] if value)
+        if index == 0:
+            spu = item_spu
+            matched_product = product
+        resolved_items.append({"item": item, "product": product, "spu": item_spu})
 
     if final_service_type == "托管维修":
         from tools.order_submit_managed import submit_managed_repair_order
@@ -93,6 +104,7 @@ async def submit_real_order(
             service_type=service_type,
             coverage_result=coverage_result,
             spu_query_error=spu_query_error,
+            resolved_items=resolved_items if order_items else None,
         )
 
     from tools.order_submit_single import submit_single_order
@@ -107,6 +119,7 @@ async def submit_real_order(
         service_type=final_service_type,
         coverage_result=coverage_result,
         spu_query_error=spu_query_error,
+        resolved_items=resolved_items if order_items else None,
     )
 
 

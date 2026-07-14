@@ -14,6 +14,8 @@ from schemas.order_preview import (
     OrderForm,
     OrderFormField,
     OrderInfo,
+    OrderItem,
+    OrderItemsSection,
     OrderPhase,
     OrderPreview,
     ProductOption,
@@ -25,6 +27,7 @@ from schemas.order_preview import (
     WorkflowValidation,
 )
 from tools.order_payload_managed import align_order_second_area_with_spu
+from services.order_items import get_order_items
 
 
 def product_raw_to_option(
@@ -115,6 +118,7 @@ def _has_client_data(
             state.get("products"),
             state.get("coverage_result"),
             state.get("order_card_fields"),
+            state.get("order_items"),
             submitted_order,
             phase == OrderPhase.CANCELLED.value,
             submission_state
@@ -128,6 +132,7 @@ def _capabilities(
     phase: str,
     products: list[dict[str, Any]],
     selected_code: str | None,
+    order_items: list[dict[str, Any]],
     selection_rejected: bool,
     missing_fields: list[str],
     submission_state: str,
@@ -147,7 +152,7 @@ def _capabilities(
     )
     editing = (
         phase == OrderPhase.PRE_ORDER.value
-        and bool(selected_code)
+        and bool(order_items)
         and not busy
         and not submitted
     )
@@ -160,6 +165,27 @@ def _capabilities(
         confirm_order=can_submit,
         cancel_order=active and not busy,
         retry_submission=ready and submission_state == SubmissionState.FAILED.value,
+        add_order_item=editing,
+        update_order_item=editing,
+        remove_order_item=editing and len(order_items) > 1,
+    )
+
+
+def _project_order_item(raw: dict[str, Any], *, editable: bool, removable: bool) -> OrderItem:
+    return OrderItem(
+        id=str(raw.get("id") or ""),
+        code=str(raw.get("product_code") or ""),
+        name=str(raw.get("product_name") or ""),
+        service_type=str(raw.get("service_type") or ""),
+        quantity=max(int(raw.get("quantity") or 1), 1),
+        unit=raw.get("unit"),
+        price=raw.get("price"),
+        fault=raw.get("fault"),
+        area=raw.get("area"),
+        second_area=raw.get("second_area"),
+        second_area_id=raw.get("second_area_id"),
+        can_edit=editable,
+        can_remove=removable,
     )
 
 
@@ -170,6 +196,7 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     order_info = dict(state.get("order_info") or {})
     products = list(state.get("products") or [])
     selected_code = state.get("selected_product_code")
+    order_items = get_order_items(state)
     phase = _infer_phase(state)
     submission_raw = state.get("submission") or {}
     submission_state = str(
@@ -250,8 +277,19 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     selected_code = products_section.selected_code
     validation_ready = (
         phase == OrderPhase.PRE_ORDER.value
-        and bool(selected_code)
+        and bool(order_items)
         and not missing_fields
+    )
+    item_editable = phase == OrderPhase.PRE_ORDER.value and submission_state not in {
+        SubmissionState.SUBMITTING.value,
+        SubmissionState.SUCCEEDED.value,
+    }
+    order_items_section = OrderItemsSection(
+        items=[
+            _project_order_item(item, editable=item_editable, removable=item_editable and len(order_items) > 1)
+            for item in order_items
+        ],
+        total_quantity=sum(max(int(item.get("quantity") or 1), 1) for item in order_items),
     )
 
     service_type_display = state.get("service_type_display") or format_service_type(
@@ -271,6 +309,7 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
         effective_service_type_display=effective_service_type_display,
         order_info=OrderInfo.model_validate(order_info),
         products=products_section,
+        order_items=order_items_section,
         form=OrderForm(
             fields=[
                 OrderFormField.model_validate(field)
@@ -286,6 +325,7 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
             phase=phase,
             products=products,
             selected_code=selected_code,
+            order_items=order_items,
             selection_rejected=bool(state.get("product_selection_rejected")),
             missing_fields=missing_fields,
             submission_state=submission_state,

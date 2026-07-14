@@ -31,6 +31,10 @@
           "selection_rejected": false,
           "items": []
         },
+        "order_items": {
+          "items": [],
+          "total_quantity": 0
+        },
         "form": {"fields": []},
         "validation": {"ready": false, "missing_fields": []},
         "capabilities": {
@@ -39,7 +43,10 @@
           "update_order": false,
           "confirm_order": false,
           "cancel_order": true,
-          "retry_submission": false
+          "retry_submission": false,
+          "add_order_item": false,
+          "update_order_item": false,
+          "remove_order_item": false
         },
         "coverage": {"checked": false, "covered": null},
         "submission": {"state": "not_attempted", "missing_fields": []},
@@ -89,6 +96,7 @@ History 接口返回完整 `conversation_messages`，不再返回顶层 `order_p
 | `effective_service_type_display` | 最终服务类型展示文案 |
 | `order_info` | 可安全展示的订单事实 |
 | `products` | 商品候选与选择状态 |
+| `order_items` | 最终提交的商品明细；每项包含稳定 `id`、商品编码、数量及商品级故障/区域信息 |
 | `form` | 后端给出的业务字段，前端决定具体控件 |
 | `validation` | 完整性校验和缺失字段 |
 | `capabilities` | 当前允许执行的确定性命令 |
@@ -107,8 +115,18 @@ History 接口返回完整 `conversation_messages`，不再返回顶层 `order_p
 | 选择商品 | `POST /api/chat/{session_id}/select-product` | `select_product` |
 | 拒绝全部候选 | `POST /api/chat/{session_id}/reject-products` | `reject_products` |
 | 修改字段 | `PATCH /api/chat/{session_id}/order-info` | `update_order` |
+| 新增商品 | `POST /api/chat/{session_id}/order-items` | `add_order_item` |
+| 修改商品 | `PATCH /api/chat/{session_id}/order-items/{item_id}` | `update_order_item` |
+| 删除商品 | `DELETE /api/chat/{session_id}/order-items/{item_id}` | `remove_order_item` |
 | 确认下单 | `POST /api/chat/{session_id}/confirm` | `confirm_order` |
 | 取消订单 | `POST /api/chat/{session_id}/cancel` | `cancel_order` |
+
+新增商品请求体为 `{"product_code":"FWSP01550","quantity":1}`；修改商品请求体可包含
+`quantity` 或 `fault`。同一商品再次新增会合并数量，订单至少保留一个商品。当前仅允许
+在同一订单中添加相同服务类型的商品，维保外降级订单不允许混合托管维修商品。
+
+`products` 只表示检索候选，`order_items` 才是确认下单时的最终商品集合。提交成功后，
+相同明细会保存在 `submitted_order.items`，用于历史消息中的成功卡片展示。
 
 ## 流式事件
 

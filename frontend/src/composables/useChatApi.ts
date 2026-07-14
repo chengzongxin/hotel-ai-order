@@ -97,6 +97,48 @@ export function useChatApi(deps: ChatApiDeps) {
     }
   }
 
+  async function mutateOrderItem(path: string, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown) {
+    if (deps.isUpdatingOrderInfo.value || deps.isSending.value) return
+    deps.isUpdatingOrderInfo.value = true
+    deps.errorMessage.value = ''
+    try {
+      const res = await fetch(path, {
+        method,
+        headers: currentApiHeaders(),
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      if (!res.ok) throw await buildResponseError(res, `更新商品失败 ${res.status}`)
+      deps.upsertConversationMessages(responseMessages(await res.json()))
+    } catch (err) {
+      deps.errorMessage.value = err instanceof Error ? err.message : '更新订单商品失败'
+    } finally {
+      deps.isUpdatingOrderInfo.value = false
+    }
+  }
+
+  async function addOrderItem(productCode: string, quantity = 1) {
+    await mutateOrderItem(
+      `/api/chat/${encodeURIComponent(deps.sessionId.value)}/order-items`,
+      'POST',
+      { product_code: productCode, quantity },
+    )
+  }
+
+  async function updateOrderItem(itemId: string, updates: { quantity?: number; fault?: string }) {
+    await mutateOrderItem(
+      `/api/chat/${encodeURIComponent(deps.sessionId.value)}/order-items/${encodeURIComponent(itemId)}`,
+      'PATCH',
+      updates,
+    )
+  }
+
+  async function removeOrderItem(itemId: string) {
+    await mutateOrderItem(
+      `/api/chat/${encodeURIComponent(deps.sessionId.value)}/order-items/${encodeURIComponent(itemId)}`,
+      'DELETE',
+    )
+  }
+
   async function selectProduct(item: ProductOption) {
     const code = item.code?.trim()
     if (!code || deps.isSelectingProduct.value || deps.isSending.value || deps.isProductSelected(item)) return
@@ -296,6 +338,9 @@ export function useChatApi(deps: ChatApiDeps) {
   return {
     loadSessionHistory,
     updateOrderInfoField,
+    addOrderItem,
+    updateOrderItem,
+    removeOrderItem,
     selectProduct,
     rejectProducts,
     confirmOrder,

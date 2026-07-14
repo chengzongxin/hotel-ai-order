@@ -51,3 +51,13 @@ class UpdateOrderInfoRequest(BaseModel):
         description="要更新的预下单字段，key 对应 order_preview.form.fields[].key",
         examples=[{"contacts": "李四", "phone": "13600000000"}],
     )
+
+
+class AddOrderItemRequest(BaseModel):
+    product_code: str = Field(min_length=1, description="要加入预下单的标准商品编码。")
+    quantity: int = Field(default=1, ge=1, description="加入数量，最小为 1。")
+
+
+class UpdateOrderItemRequest(BaseModel):
+    quantity: int | None = Field(default=None, ge=1, description="修改后的商品数量。")
+    fault: str | None = Field(default=None, description="该商品的故障或服务说明。")

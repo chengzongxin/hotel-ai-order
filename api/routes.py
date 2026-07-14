@@ -16,17 +16,22 @@ from graph.checkpoint import (
 )
 from services.order_session_service import (
     cancel_order_in_session,
+    add_order_item_in_session,
     confirm_order_in_session,
     reject_products_in_session,
     select_product_in_session,
     update_order_info_in_session,
+    update_order_item_in_session,
+    remove_order_item_in_session,
 )
 from rag.spu_loader import SpuExcelLoader
 from schemas.chat import (
     ChatRequest,
+    AddOrderItemRequest,
     ConversationResponse,
     SelectProductRequest,
     UpdateOrderInfoRequest,
+    UpdateOrderItemRequest,
 )
 from services.conversation_service import validate_conversation_messages
 from schemas.product import (
@@ -160,6 +165,39 @@ async def update_order_info(
             updates=request.updates,
             user=user,
         )
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ConversationResponse(**result)
+
+
+@router.post("/chat/{session_id}/order-items", response_model=ConversationResponse)
+async def add_order_item(session_id: str, request: AddOrderItemRequest, user: UserContext = Depends(get_current_user)) -> ConversationResponse:
+    try:
+        result = await add_order_item_in_session(session_id, request.product_code, request.quantity, user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ConversationResponse(**result)
+
+
+@router.patch("/chat/{session_id}/order-items/{item_id}", response_model=ConversationResponse)
+async def update_order_item(session_id: str, item_id: str, request: UpdateOrderItemRequest, user: UserContext = Depends(get_current_user)) -> ConversationResponse:
+    try:
+        result = await update_order_item_in_session(session_id, item_id, request.model_dump(exclude_unset=True), user)
+    except SessionAccessError as exc:
+        raise _session_access_error() from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ConversationResponse(**result)
+
+
+@router.delete("/chat/{session_id}/order-items/{item_id}", response_model=ConversationResponse)
+async def remove_order_item(session_id: str, item_id: str, user: UserContext = Depends(get_current_user)) -> ConversationResponse:
+    try:
+        result = await remove_order_item_in_session(session_id, item_id, user)
     except SessionAccessError as exc:
         raise _session_access_error() from exc
     except ValueError as exc:

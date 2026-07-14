@@ -75,6 +75,7 @@ export function useOrderPreview(
   const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
   const productSelectionRejected = computed(() => Boolean(orderPreview.value?.products?.selection_rejected))
   const formFields = computed(() => orderPreview.value?.form?.fields ?? [])
+  const orderItems = computed(() => orderPreview.value?.order_items?.items ?? [])
   const isProductSelectionPhase = computed(() => phase.value === 'product_selection')
   const isPreOrderPhase = computed(() => phase.value === 'pre_order')
   const hasProductOptions = computed(() => productItems.value.length > 0)
@@ -108,6 +109,9 @@ export function useOrderPreview(
   const canRejectProducts = computed(
     () => Boolean(capabilities.value.reject_products) && !isSending.value,
   )
+  const canAddOrderItem = computed(() => Boolean(capabilities.value.add_order_item) && !isUpdatingOrderInfo.value)
+  const canUpdateOrderItem = computed(() => Boolean(capabilities.value.update_order_item) && !isUpdatingOrderInfo.value)
+  const canRemoveOrderItem = computed(() => Boolean(capabilities.value.remove_order_item) && !isUpdatingOrderInfo.value)
 
   const isOrderSubmitted = computed(() => phase.value === 'submitted' || submissionState.value === 'succeeded')
 
@@ -157,7 +161,9 @@ export function useOrderPreview(
   })
 
   const orderFields = computed<UiOrderField[]>(() => {
-    return formFields.value.map((field) => ({
+    return formFields.value
+      .filter((field) => !(orderItems.value.length && field.key === 'product_quantity'))
+      .map((field) => ({
       key: field.key,
       icon: iconForOrderField(field.key),
       label: field.label,
@@ -167,7 +173,7 @@ export function useOrderPreview(
       inputType: field.input_type || 'text',
       options: field.options || [],
       hint: field.hint ?? null,
-    }))
+      }))
   })
 
   const filledCount = computed(() => orderFields.value.filter((field) => Boolean(field.value)).length)
@@ -194,6 +200,7 @@ export function useOrderPreview(
     selectedProductCode,
     productSelectionRejected,
     selectedProduct,
+    orderItems,
     isProductSelectionPhase,
     isPreOrderPhase,
     isAwaitingProductSelection,
@@ -207,6 +214,9 @@ export function useOrderPreview(
     canSubmit,
     canSelectProduct,
     canRejectProducts,
+    canAddOrderItem,
+    canUpdateOrderItem,
+    canRemoveOrderItem,
     hasProductOptions,
     isOrderSubmitted,
     showChatOrderPanel,

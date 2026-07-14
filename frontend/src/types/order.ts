@@ -102,6 +102,30 @@ export interface WorkflowCapabilities {
   confirm_order?: boolean
   cancel_order?: boolean
   retry_submission?: boolean
+  add_order_item?: boolean
+  update_order_item?: boolean
+  remove_order_item?: boolean
+}
+
+export interface OrderItem {
+  id: string
+  code: string
+  name: string
+  service_type?: string | null
+  quantity: number
+  unit?: string | null
+  price?: string | null
+  fault?: string | null
+  area?: string | null
+  second_area?: string | null
+  second_area_id?: string | null
+  can_edit?: boolean
+  can_remove?: boolean
+}
+
+export interface OrderItemsSection {
+  items?: OrderItem[]
+  total_quantity?: number
 }
 
 export interface CoverageSection {
@@ -147,6 +171,7 @@ export interface SubmittedOrder {
   product_quantity?: number | null
   contacts?: string | null
   phone?: string | null
+  items?: OrderItem[]
 }
 
 export interface OrderPreview {
@@ -168,6 +193,7 @@ export interface OrderPreview {
     product_quantity?: number | null
   }
   products?: ProductSection
+  order_items?: OrderItemsSection
   form?: OrderForm
   validation?: WorkflowValidation
   capabilities?: WorkflowCapabilities

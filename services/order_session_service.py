@@ -19,18 +19,20 @@ from graph.builder import (
 from graph.checkpoint import checkpoint_path, get_graph_config
 from graph.constants import PHASE_PRE_ORDER, PHASE_PRODUCT_SELECTION
 from graph.order_fields import collect_missing_order_info
-from graph.products import find_product_by_code, get_selected_product
+from graph.products import find_product_by_code
 from graph.submission import empty_submission, get_effective_service_type, submit_order_from_state
 from memory.postgres_log import save_conversation_log
 from memory.readable_sqlite_saver import ReadableAsyncSqliteSaver
 from schemas.user import SessionAccessError, UserContext, require_user
-from services.order_normalizer import normalize_order_defaults
-from services.order_workflow import OrderWorkflowService
 from services.conversation_service import (
     build_conversation_turn,
     update_active_conversation_preview,
 )
+from services.order_items import add_or_merge_order_item, find_order_item, get_order_items
+from services.order_normalizer import normalize_order_defaults
+from services.order_workflow import OrderWorkflowService
 from services.session_access import ensure_session_access
+from rag.spu_loader import SpuExcelLoader
 
 
 @asynccontextmanager
@@ -171,6 +173,91 @@ async def update_order_info_in_session(
         }
 
 
+async def add_order_item_in_session(
+    session_id: str,
+    product_code: str,
+    quantity: int,
+    user: UserContext,
+) -> dict[str, object]:
+    async with _order_session(session_id, user) as (_, graph, config, state):
+        if state.get("phase") != PHASE_PRE_ORDER:
+            raise ValueError("当前阶段不能新增商品")
+        product = next(
+            (record.to_dict() for record in SpuExcelLoader().load() if record.service_product_code == product_code),
+            None,
+        )
+        if not product:
+            raise ValueError(f"商品 {product_code} 不存在或已下架")
+        expected_type = state.get("service_type")
+        if expected_type and product.get("service_order_type") != expected_type:
+            raise ValueError(f"只能添加同为【{expected_type}】的商品")
+        if get_effective_service_type(state) != expected_type:
+            raise ValueError("维保范围外已转为单次订单，暂不能与托管维修商品合并下单")
+        order_items = add_or_merge_order_item(
+            get_order_items(state),
+            product,
+            state.get("order_info") or {},
+            quantity,
+        )
+        update = {"order_items": order_items, "submission": empty_submission()}
+        await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
+        message = update_active_conversation_preview(
+            messages=state.get("conversation_messages") or [],
+            state={**state, **update},
+            fallback_content="已更新预下单商品。",
+        )
+        await graph.aupdate_state(config, {"conversation_messages": [message]}, as_node="ask_node")
+        return {"session_id": session_id, "conversation_messages": [message]}
+
+
+async def update_order_item_in_session(
+    session_id: str,
+    item_id: str,
+    updates: dict[str, object],
+    user: UserContext,
+) -> dict[str, object]:
+    async with _order_session(session_id, user) as (_, graph, config, state):
+        if state.get("phase") != PHASE_PRE_ORDER:
+            raise ValueError("当前阶段不能修改商品")
+        items = get_order_items(state)
+        item = find_order_item(items, item_id)
+        if not item:
+            raise ValueError("订单商品不存在")
+        if updates.get("quantity") is not None:
+            item["quantity"] = max(int(updates["quantity"]), 1)
+        if "fault" in updates:
+            item["fault"] = str(updates.get("fault") or "").strip() or None
+        update = {"order_items": items, "submission": empty_submission()}
+        await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
+        message = update_active_conversation_preview(
+            messages=state.get("conversation_messages") or [], state={**state, **update}, fallback_content="已更新预下单商品。"
+        )
+        await graph.aupdate_state(config, {"conversation_messages": [message]}, as_node="ask_node")
+        return {"session_id": session_id, "conversation_messages": [message]}
+
+
+async def remove_order_item_in_session(
+    session_id: str,
+    item_id: str,
+    user: UserContext,
+) -> dict[str, object]:
+    async with _order_session(session_id, user) as (_, graph, config, state):
+        if state.get("phase") != PHASE_PRE_ORDER:
+            raise ValueError("当前阶段不能删除商品")
+        items = get_order_items(state)
+        if len(items) <= 1:
+            raise ValueError("订单至少需要保留一个商品")
+        if not find_order_item(items, item_id):
+            raise ValueError("订单商品不存在")
+        update = {"order_items": [item for item in items if str(item.get("id")) != item_id], "submission": empty_submission()}
+        await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
+        message = update_active_conversation_preview(
+            messages=state.get("conversation_messages") or [], state={**state, **update}, fallback_content="已更新预下单商品。"
+        )
+        await graph.aupdate_state(config, {"conversation_messages": [message]}, as_node="ask_node")
+        return {"session_id": session_id, "conversation_messages": [message]}
+
+
 async def confirm_order_in_session(
     session_id: str,
     user: UserContext,
@@ -179,12 +266,7 @@ async def confirm_order_in_session(
         if state.get("phase") != PHASE_PRE_ORDER:
             raise ValueError("当前阶段不能确认下单")
 
-        selected_product = get_selected_product(
-            state.get("products") or [],
-            state.get("selected_product_code"),
-            default_to_first=False,
-        )
-        if not selected_product:
+        if not get_order_items(state):
             raise ValueError("请先选择商品，再确认下单")
 
         service_type = get_effective_service_type(state)

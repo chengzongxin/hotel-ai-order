@@ -368,3 +368,58 @@ def build_managed_repair_order_payload(
     if not selected_address:
         missing.append("hosting_card")
     return payload, sorted(set(missing))
+
+
+def build_managed_repair_multi_payload(
+    order_info: JsonDict,
+    resolved_items: list[JsonDict],
+    selected_address: JsonDict,
+    contacts: str,
+    phone: str,
+    area_tree: list[JsonDict],
+    global_config: JsonDict,
+    ide_name: str = "",
+) -> tuple[JsonDict, list[str]]:
+    payload: JsonDict = {}
+    details: list[JsonDict] = []
+    detail_by_key: dict[tuple[Any, ...], JsonDict] = {}
+    missing: list[str] = []
+    for resolved in resolved_items:
+        item = resolved.get("item") or {}
+        item_info = {
+            **order_info,
+            "product_quantity": item.get("quantity") or 1,
+            "fault": item.get("fault") or order_info.get("fault"),
+            "area": item.get("area") or order_info.get("area"),
+            "second_area": item.get("second_area") or order_info.get("second_area"),
+            "second_area_id": item.get("second_area_id") or order_info.get("second_area_id"),
+        }
+        item_payload, item_missing = build_managed_repair_order_payload(
+            order_info=item_info,
+            spu=resolved.get("spu") or {},
+            selected_address=selected_address,
+            contacts=contacts,
+            phone=phone,
+            area_tree=area_tree,
+            global_config=global_config,
+            ide_name=ide_name,
+        )
+        if not payload:
+            payload = item_payload
+        for detail in item_payload.get("orderDetailList") or []:
+            key = (
+                detail.get("spuTypeId"),
+                detail.get("firstAreaId"),
+                detail.get("firstAreaName"),
+                detail.get("roomNum"),
+            )
+            existing = detail_by_key.get(key)
+            if existing is None:
+                existing = {**detail, "orderSpuList": list(detail.get("orderSpuList") or [])}
+                detail_by_key[key] = existing
+                details.append(existing)
+            else:
+                existing["orderSpuList"].extend(detail.get("orderSpuList") or [])
+        missing.extend(item_missing)
+    payload["orderDetailList"] = details
+    return payload, sorted(set(missing))

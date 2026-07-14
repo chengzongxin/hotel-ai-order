@@ -84,6 +84,9 @@ class AgentState(TypedDict, total=False):
     # 当前选中的商品编码；未指定时默认取 products[0]。
     selected_product_code: str | None
 
+    # 最终提交的商品明细；products 仅表示当前检索候选。
+    order_items: list[dict[str, Any]]
+
     # 真实提交动作状态，包括请求参数、接口返回、失败原因和订单号。
     submission: dict[str, Any]
 

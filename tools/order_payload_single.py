@@ -335,3 +335,63 @@ def build_single_order_payload(
     if not selected_address:
         missing.append("address_context")
     return payload, sorted(set(missing))
+
+
+def build_single_order_multi_payload(
+    order_info: JsonDict,
+    resolved_items: list[JsonDict],
+    selected_address: JsonDict,
+    contacts: str,
+    phone: str,
+    service_type: str | None,
+    ide_name: str = "",
+) -> tuple[JsonDict, list[str]]:
+    payload: JsonDict = {}
+    categories: list[JsonDict] = []
+    category_by_key: dict[tuple[object, ...], JsonDict] = {}
+    missing: list[str] = []
+    for resolved in resolved_items:
+        item = resolved.get("item") or {}
+        item_info = {
+            **order_info,
+            "product_quantity": item.get("quantity") or 1,
+            "fault": item.get("fault") or order_info.get("fault"),
+            "area": item.get("area") or order_info.get("area"),
+            "second_area": item.get("second_area") or order_info.get("second_area"),
+        }
+        item_payload, item_missing = build_single_order_payload(
+            order_info=item_info,
+            spu=resolved.get("spu") or {},
+            matched_product=resolved.get("product") or {},
+            category_context=resolved.get("category_context") or {},
+            selected_address=selected_address,
+            contacts=contacts,
+            phone=phone,
+            service_type=service_type,
+            ide_name=ide_name,
+        )
+        if not payload:
+            payload = item_payload
+        for category in item_payload.get("categorySaveReqVOS") or []:
+            key = (
+                category.get("spuTypeId"),
+                category.get("spuCategoryId"),
+                category.get("workStartTime"),
+                category.get("workEndTime"),
+                category.get("roomNum"),
+                category.get("isArrive"),
+            )
+            existing = category_by_key.get(key)
+            if existing is None:
+                existing = {
+                    **category,
+                    "sId": f"ai_order_group_{len(categories) + 1}",
+                    "goodsSaveReqVOList": list(category.get("goodsSaveReqVOList") or []),
+                }
+                category_by_key[key] = existing
+                categories.append(existing)
+            else:
+                existing["goodsSaveReqVOList"].extend(category.get("goodsSaveReqVOList") or [])
+        missing.extend(item_missing)
+    payload["categorySaveReqVOS"] = categories
+    return payload, sorted(set(missing))

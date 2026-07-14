@@ -20,6 +20,7 @@ async def submit_managed_repair_order(
     service_type: str | None,
     coverage_result: JsonDict | None = None,
     spu_query_error: str | None = None,
+    resolved_items: list[JsonDict] | None = None,
 ) -> ToolResult:
     """托管维修真实下单流程。"""
 
@@ -30,19 +31,22 @@ async def submit_managed_repair_order(
         _post_app,
         build_managed_repair_order_payload,
     )
+    from tools.order_payload_managed import build_managed_repair_multi_payload
 
     contacts = _clean_text(order_info.get("contacts")) or order_context["contacts"]
     phone = _clean_text(order_info.get("phone")) or order_context["phone"]
-    payload, missing_fields = build_managed_repair_order_payload(
-        order_info=order_info,
-        spu=spu,
-        selected_address=order_context["selected_address"],
-        contacts=contacts,
-        phone=phone,
-        area_tree=order_context["area_tree"],
-        global_config=order_context["global_config"],
-        ide_name=user.ide_name,
-    )
+    if resolved_items:
+        payload, missing_fields = build_managed_repair_multi_payload(
+            order_info=order_info, resolved_items=resolved_items,
+            selected_address=order_context["selected_address"], contacts=contacts, phone=phone,
+            area_tree=order_context["area_tree"], global_config=order_context["global_config"], ide_name=user.ide_name,
+        )
+    else:
+        payload, missing_fields = build_managed_repair_order_payload(
+            order_info=order_info, spu=spu, selected_address=order_context["selected_address"],
+            contacts=contacts, phone=phone, area_tree=order_context["area_tree"],
+            global_config=order_context["global_config"], ide_name=user.ide_name,
+        )
     data: JsonDict = {
         "request_payload": payload,
         "missing_fields": missing_fields,

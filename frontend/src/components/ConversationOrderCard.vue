@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, toRef } from 'vue'
+import { computed, ref, toRef } from 'vue'
 import type { OrderPreview, ProductOption } from '../types/order'
 import { useOrderPreview } from '../composables/useOrderPreview'
 import OrderPreviewCard from './OrderPreviewCard.vue'
 import OrderStatusNotices from './OrderStatusNotices.vue'
 import OrderSuccessCard from './OrderSuccessCard.vue'
 import ProductSelectionCard from './ProductSelectionCard.vue'
+import ProductPickerModal from './ProductPickerModal.vue'
 
 const props = defineProps<{
   preview: OrderPreview
@@ -23,7 +24,12 @@ const emit = defineEmits<{
   updateField: [key: string, value: string | null]
   confirm: []
   cancel: []
+  addItem: [productCode: string]
+  updateItem: [itemId: string, updates: { quantity?: number; fault?: string }]
+  removeItem: [itemId: string]
 }>()
+
+const showProductPicker = ref(false)
 
 const context = useOrderPreview(
   toRef(props, 'preview'),
@@ -39,12 +45,20 @@ const canSelect = computed(() => props.active && context.canSelectProduct.value)
 const canReject = computed(() => props.active && context.canRejectProducts.value)
 const canConfirm = computed(() => props.active && context.canConfirmOrder.value)
 const canCancel = computed(() => props.active && context.canCancelOrder.value)
+const canAddItem = computed(() => props.active && context.canAddOrderItem.value)
+const canUpdateItem = computed(() => props.active && context.canUpdateOrderItem.value)
+const canRemoveItem = computed(() => props.active && context.canRemoveOrderItem.value)
 const showFailureOnly = computed(
   () => !context.showDraftOrderCard.value && context.hasSubmissionFailure.value,
 )
 
 function handleUpdateField(key: string, value: string) {
   emit('updateField', key, value)
+}
+
+function handleAddItem(productCode: string) {
+  emit('addItem', productCode)
+  showProductPicker.value = false
 }
 </script>
 
@@ -96,10 +110,25 @@ function handleUpdateField(key: string, value: string) {
       :updating-field-key="active ? updatingFieldKey : null"
       :can-confirm-order="canConfirm"
       :can-cancel-order="canCancel"
+      :order-items="context.orderItems.value"
+      :can-add-order-item="canAddItem"
+      :can-update-order-item="canUpdateItem"
+      :can-remove-order-item="canRemoveItem"
       :submission-failure-message="context.submissionFailureMessage.value"
       @update-field="handleUpdateField"
       @confirm="emit('confirm')"
       @cancel="emit('cancel')"
+      @add-item="showProductPicker = true"
+      @update-item="(itemId, updates) => emit('updateItem', itemId, updates)"
+      @remove-item="emit('removeItem', $event)"
+    />
+    <ProductPickerModal
+      :open="showProductPicker"
+      :service-type="preview.service_type"
+      :existing-codes="context.orderItems.value.map((item) => item.code)"
+      :loading="isUpdatingOrderInfo"
+      @close="showProductPicker = false"
+      @select="handleAddItem"
     />
   </div>
 

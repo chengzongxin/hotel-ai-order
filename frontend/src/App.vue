@@ -82,6 +82,7 @@ const {
   productFeedback,
   selectedProductCode,
   selectedProduct,
+  orderItems,
   showDraftOrderCard,
   isSubmittingOrder,
   hasSubmissionFailure,
@@ -89,6 +90,8 @@ const {
   canSubmit,
   canConfirmOrder,
   canCancelOrder,
+  canUpdateOrderItem,
+  canRemoveOrderItem,
   missingInfoText,
   submissionMissingText,
   coverageNotice,
@@ -124,6 +127,9 @@ const chatApi = useChatApi({
 const {
   loadSessionHistory,
   updateOrderInfoField,
+  addOrderItem,
+  updateOrderItem,
+  removeOrderItem,
   selectProduct,
   rejectProducts,
   confirmOrder,
@@ -459,6 +465,9 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
                       @update-field="updateOrderInfoField"
                       @confirm="confirmOrder"
                       @cancel="cancelOrder"
+                      @add-item="addOrderItem"
+                      @update-item="updateOrderItem"
+                      @remove-item="removeOrderItem"
                     />
                     <p class="mt-2 text-[11px] text-slate-400">{{ message.time }}</p>
                   </div>
@@ -575,9 +584,14 @@ onUnmounted(() => document.removeEventListener('mousedown', closeHistoryOnOutsid
           :updating-field-key="updatingFieldKey"
           :can-confirm-order="canConfirmOrder"
           :can-cancel-order="canCancelOrder"
+          :order-items="orderItems"
+          :can-update-order-item="canUpdateOrderItem"
+          :can-remove-order-item="canRemoveOrderItem"
           @update-field="updateOrderInfoField"
           @confirm="confirmOrder"
           @cancel="cancelOrder"
+          @update-item="updateOrderItem"
+          @remove-item="removeOrderItem"
         />
 
         <!-- API params card -->
