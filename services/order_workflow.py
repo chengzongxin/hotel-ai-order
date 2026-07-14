@@ -8,12 +8,6 @@ LangGraph-compatible state patches.
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from domain.events import (
-    OrderCardUpdated,
-    ProductMatched,
-    ProductSelected,
-    event_to_state_patch,
-)
 from domain.validation import missing_fields_for_order
 from graph.order_fields import build_order_card_fields, normalize_order_card_update
 from graph.products import find_product_by_code, get_selected_product, resolve_selected_code
@@ -22,7 +16,6 @@ from graph.constants import PHASE_COLLECTING, PHASE_PRE_ORDER, PHASE_PRODUCT_SEL
 from schemas.user import UserContext
 from services.order_context_service import load_order_context
 from services.order_normalizer import normalize_order_defaults
-from services.order_routing import resolve_order_submit_route
 from tools.hosting_coverage import check_hosting_product_coverage
 from tools.order_payload_managed import align_order_second_area_with_spu
 
@@ -30,7 +23,6 @@ JsonDict = dict[str, Any]
 NormalizeOrderDefaults = Callable[[str | None, JsonDict, str], JsonDict]
 LoadOrderContext = Callable[[UserContext], Awaitable[JsonDict]]
 CheckCoverage = Callable[..., Awaitable[JsonDict]]
-ResolveSubmitRoute = Callable[[str | None], str | None]
 
 
 @dataclass
@@ -38,7 +30,6 @@ class OrderWorkflowService:
     normalize_order_defaults: NormalizeOrderDefaults = normalize_order_defaults
     load_order_context: LoadOrderContext = load_order_context
     check_hosting_product_coverage: CheckCoverage = check_hosting_product_coverage
-    resolve_order_submit_route: ResolveSubmitRoute = resolve_order_submit_route
 
     def match_products(
         self,
@@ -73,10 +64,9 @@ class OrderWorkflowService:
                 {
                     "effective_service_type": None,
                     "coverage_result": {},
-                    "order_submit_route": None,
                 }
             )
-        return event_to_state_patch(ProductMatched(payload=patch))
+        return patch
 
     def reject_products(self, service_type: str | None = None) -> JsonDict:
         patch = {
@@ -85,14 +75,13 @@ class OrderWorkflowService:
             "service_type": service_type,
             "effective_service_type": None,
             "coverage_result": {},
-            "order_submit_route": None,
             "order_card_fields": [],
             "product_selection_rejected": True,
             "missing_info": [],
             "phase": PHASE_COLLECTING,
             "step": "search_product_node",
         }
-        return event_to_state_patch(ProductMatched(payload=patch))
+        return patch
 
     def select_existing_product_by_rank(
         self,
@@ -133,7 +122,7 @@ class OrderWorkflowService:
             "phase": PHASE_PRE_ORDER,
             "step": "search_product_node",
         }
-        return event_to_state_patch(ProductSelected(payload=patch))
+        return patch
 
     async def select_product(
         self,
@@ -197,14 +186,13 @@ class OrderWorkflowService:
             "service_type": service_type,
             "effective_service_type": effective_service_type,
             "coverage_result": coverage_data,
-            "order_submit_route": self.resolve_order_submit_route(effective_service_type),
             "order_info": order_info,
             "submission": empty_submission(),
             "product_selection_rejected": False,
             "phase": PHASE_PRE_ORDER,
             "step": "search_product_node",
         }
-        return event_to_state_patch(ProductSelected(payload=patch))
+        return patch
 
     async def prepare_pre_order(
         self,
@@ -266,7 +254,7 @@ class OrderWorkflowService:
             "phase": PHASE_PRE_ORDER,
             "step": "prepare_order_context_node",
         }
-        return event_to_state_patch(OrderCardUpdated(payload=patch))
+        return patch
 
     def validate(
         self,

@@ -506,4 +506,3 @@ async def test_install_and_measure_flows_select_first_product(
     assert selected_preview["service_type"] == expected_service_type
     assert selected_preview["effective_service_type"] == expected_service_type
     assert selected_preview["products"]["selected_code"] == expected_code
-    assert state["order_submit_route"] in {"single_install", "single_measure"}

@@ -4,15 +4,6 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 
-def add_order_events(
-    left: list[dict[str, Any]] | None,
-    right: list[dict[str, Any]] | None,
-) -> list[dict[str, Any]]:
-    """Append workflow events emitted by nodes and deterministic API updates."""
-
-    return [*(left or []), *(right or [])]
-
-
 def upsert_conversation_messages(
     left: list[dict[str, Any]] | None,
     right: list[dict[str, Any]] | None,
@@ -68,9 +59,6 @@ class AgentState(TypedDict, total=False):
     # 托管维修商品是否在当前用户维保卡范围内的校验结果。
     coverage_result: dict[str, Any]
 
-    # 真实提交路由，例如 managed_repair、single_repair、single_install、single_measure。
-    order_submit_route: str | None
-
     # 下单卡片默认值，来自用户登录态、维保卡、地址、商品接口等。
     order_context: dict[str, Any]
 
@@ -89,7 +77,6 @@ class AgentState(TypedDict, total=False):
 
     # 最近一次已提交的订单，供成功卡片和用户追问“刚才那个单号”时使用。
     last_order: dict[str, Any]
-    submitted_order: dict[str, Any]
 
     # 商品检索结果（按相似度排序）。
     products: list[dict[str, Any]]
@@ -112,12 +99,5 @@ class AgentState(TypedDict, total=False):
     # 用户偏离当前任务的次数，适合做对话纠偏。
     off_topic_count: int
 
-    # 压缩后的历史摘要，适合长对话时减少上下文长度。
-    conversation_summary: str
-
     # 用户最近一轮输入，方便节点快速读取，不必总是解析 messages。
     last_user_message: str
-
-    # 订单流程事件日志，用于审计关键状态变化和后续问题回放。
-    order_events: Annotated[list[dict[str, Any]], add_order_events]
-    last_order_event: str | None

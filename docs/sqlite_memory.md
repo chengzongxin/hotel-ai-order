@@ -117,8 +117,7 @@ turn_input_state = {
 
 `GET /chat/{session_id}/history` 现在从 LangGraph checkpoint 读取 state：
 
-- `messages` 来自 `state["messages"]`
-- `conversation_summary` 来自 `state["conversation_summary"]`
+- `conversation_messages` 来自 `state["conversation_messages"]`
 
 `DELETE /chat/{session_id}` 会删除对应 LangGraph thread 的 checkpoint。
 
@@ -126,4 +125,4 @@ turn_input_state = {
 
 方案 B 暂时不再用本地消息表生成摘要。
 
-如果后续长对话变多，建议新增一个 `summary_node`，让摘要也成为 LangGraph state 的一部分。这样 summary 的生成、保存和调试都能继续留在图里。
+当前主图没有摘要字段。如果后续长对话变多，可新增 `summary_node` 并正式定义摘要的生成、保存和消费链路。

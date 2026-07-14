@@ -10,7 +10,6 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from domain.events import OrderConfirmed, event_to_state_patch
 from graph.builder import (
     build_graph,
     build_missing_info_fallback_question,
@@ -198,14 +197,10 @@ async def confirm_order_in_session(
             },
             last_user_message=state.get("last_user_message", ""),
         )
-        confirmed_event_patch = event_to_state_patch(
-            OrderConfirmed(
-                payload={
-                    "order_info": order_info,
-                    "phase": PHASE_PRE_ORDER,
-                }
-            )
-        )
+        confirmed_state_patch = {
+            "order_info": order_info,
+            "phase": PHASE_PRE_ORDER,
+        }
         missing_info = collect_missing_order_info(
             service_type,
             order_info,
@@ -214,11 +209,9 @@ async def confirm_order_in_session(
         if missing_info:
             answer = build_missing_info_fallback_question(missing_info)
             update = {
-                "order_info": order_info,
+                **confirmed_state_patch,
                 "missing_info": missing_info,
-                "phase": PHASE_PRE_ORDER,
                 "submission": empty_submission(),
-                **confirmed_event_patch,
             }
             await graph.aupdate_state(config, update, as_node="validate_order_node")
             conversation_messages = build_conversation_turn(
@@ -240,19 +233,14 @@ async def confirm_order_in_session(
 
         confirmed_state = {
             **state,
-            "order_info": order_info,
+            **confirmed_state_patch,
             "missing_info": [],
-            **confirmed_event_patch,
         }
         submit_update = await submit_order_from_state(
             confirmed_state,
             active_user,
             emit=False,
         )
-        submit_update["order_events"] = [
-            *(confirmed_event_patch.get("order_events") or []),
-            *(submit_update.get("order_events") or []),
-        ]
         await graph.aupdate_state(config, submit_update, as_node="submit_node")
         answer_messages = submit_update.get("messages") or []
         answer = str(answer_messages[-1].content) if answer_messages else "已处理确认下单请求。"

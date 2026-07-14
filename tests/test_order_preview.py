@@ -319,7 +319,6 @@ def test_build_order_preview_model_ignores_last_order_outside_submitted_phase():
             "phase": "idle",
             "order_info": {},
             "products": [],
-            "submitted_order": {"order_no": "SO123"},
             "last_order": {"order_no": "SO123"},
         }
     )

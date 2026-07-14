@@ -159,13 +159,13 @@ flowchart TD
 | --- | --- | --- |
 | `intent_node` | 调用结构化 LLM，识别 `intent` 并抽取 `order_info`。提交成功后的新订单只看最新用户输入，避免旧订单被重新抽取。 | 输入 `messages`、`last_order`、`phase`；输出 `intent`、`order_info`、`phase`、`last_user_message` |
 | `search_product_node` | 根据 `product + fault + 用户原文` 生成检索 query，调用 `search_product_tool` 取 Top3；也处理用户输入"1/2/3/以上都不符合"。 | 输出 `products`、`selected_product_code`、`service_type`、`phase` |
-| `coverage_node` | 托管维修商品校验维保卡覆盖范围；非托管维修跳过；范围外时 `effective_service_type` 可降级为单次维修。 | 输出 `coverage_result`、`effective_service_type`、`order_submit_route` |
+| `coverage_node` | 托管维修商品校验维保卡覆盖范围；非托管维修跳过；范围外时 `effective_service_type` 可降级为单次维修。 | 输出 `coverage_result`、`effective_service_type` |
 | `prepare_order_context_node` | 读取维保卡、用户资料、地址、全局配置等默认值，并由 `graph/order_fields.py` 生成前端卡片字段。 | 输出 `order_context`、`order_card_fields`、`phase=pre_order` |
 | `validate_order_node` | 按最终服务类型校验必填字段，合并卡片必填项，决定继续追问还是进入确认。 | 输出 `missing_info`、`phase=pre_order` |
 | `ask_node` | 对缺失字段生成追问；处理商品不合适、偏题、重复追问等场景。 | 输出 AI 消息、`off_topic_count` |
 | `assist_node` | 无活跃订单时，使用 `create_agent()` 辅助智能体处理闲聊或简单问题。 | 输出辅助回复 |
 | `confirm_node` | 信息完整后生成确认提示；如果本轮已经明确 `user_confirmed=true`，路由会进入提交。 | 输出确认话术、`phase=pre_order` |
-| `submit_node` | 调用 `graph/submission.py::submit_order_from_state`，构造真实参数并提交订单。成功后写入 `submitted_order/last_order` 并清空活跃订单状态。 | 输出 `submission`、`phase=submitted/pre_order` |
+| `submit_node` | 调用 `graph/submission.py::submit_order_from_state`，构造真实参数并提交订单。成功后写入 `last_order` 并清空活跃订单状态。 | 输出 `submission`、`phase=submitted/pre_order` |
 | `cancel_node` | 用户取消时清空当前订单相关状态。 | 输出 `phase=cancelled`、空 `order_info/products` |
 
 ### 路由判定规则
@@ -234,8 +234,7 @@ not_attempted → submitting → succeeded
 | `order_card_fields` | 后端生成、前端直接渲染的预下单卡片字段 |
 | `missing_info` | 还需要用户补充的字段 |
 | `submission` | 真实提交动作状态、请求参数、接口返回和失败原因 |
-| `submitted_order` | 成功提交后的订单快照，供成功卡片展示 |
-| `last_order` | 最近一次成功提交的订单摘要 |
+| `last_order` | 最近一次成功提交的订单快照；同时用于成功卡片和后续追问 |
 
 ## AI 对话与确定性操作
 
@@ -708,7 +707,6 @@ Studio 输入的是 LangGraph State，不是 FastAPI 请求体。示例：
   ],
   "retry_count": 0,
   "off_topic_count": 0,
-  "conversation_summary": "",
   "last_user_message": "1208房间空调不制冷，比较急"
 }
 ```
@@ -878,7 +876,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 | --- | --- | --- |
 | 新增订单字段 | `graph/state.py`、`IntentResult`、`prompts/intent/intent.md`、`graph/order_fields.py`、`schemas/order_preview.py` | `frontend/src/types/order.ts`、预览卡片展示/编辑逻辑 |
 | 新增卡片字段 | `build_order_card_fields()`、`normalize_order_card_update()`、`collect_missing_order_info()` | `OrderPreviewCard.vue` 的输入类型、校验和保存 |
-| 新增服务类型 | 商品数据归一化、`resolve_order_submit_route()`、`get_required_order_fields()`、提交 payload 构造 | 服务类型展示、状态提示、必要时新增卡片文案 |
+| 新增服务类型 | 商品数据归一化、`get_required_order_fields()`、提交入口分流和 payload 构造 | 服务类型展示、状态提示、必要时新增卡片文案 |
 | 修改商品字段 | `services/workflow_projection.py::product_raw_to_option()`、`docs/api_order_preview.md` | `ProductSelectionCard.vue`、`frontend/src/types/order.ts` |
 | 修改提交状态 | `graph/submission.py`、`schemas/order_preview.py::SubmissionSection` | `OrderStatusNotices.vue`、确认按钮禁用/重试逻辑 |
 
@@ -889,7 +887,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 - 修改订单字段时，要同步 `graph/order_fields.py`、`schemas/order_preview.py`、`frontend/src/types/order.ts`。
 - 修改内部状态字段时，只需同步 `graph/state.py` 和 `services/workflow_projection.py`；前端不依赖 `AgentState`。
 - 对外契约是 `order_preview.form.fields`，内部仍用 `order_card_fields` 保存表单状态；字段 `key` 一旦发布要谨慎修改。
-- `submit_order_from_state()` 成功后必须清空 `products`、`selected_product_code`、`order_info` 等活跃订单字段，但要保留 `submission` 和 `submitted_order` 给成功卡片展示。
+- `submit_order_from_state()` 成功后必须清空 `products`、`selected_product_code`、`order_info` 等活跃订单字段，但要保留 `submission` 和内部唯一的 `last_order`；对外再投影为 `submitted_order`。
 - `last_order` 用来回答"刚才那个订单"这类追问，不等于当前活跃订单。
 - 所有会话读取和更新前都要调用 `ensure_session_access()`，避免用户访问别人的 checkpoint。
 - 确定性接口更新 checkpoint 时要重新生成 `order_card_fields` 和 `missing_info`，否则前端会看到旧卡片或旧缺字段提示。

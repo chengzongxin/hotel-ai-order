@@ -9,7 +9,6 @@ from graph.products import format_service_type_display, get_selected_product
 from graph.prompts import render_prompt
 from graph.state import AgentState
 from graph.streaming import run_traced_tool_call
-from domain.events import OrderSubmitted, event_to_state_patch
 from schemas.user import UserContext
 from tools.order_submit import submit_real_order
 from utils.logger_handler import trace_logger
@@ -49,7 +48,6 @@ def clear_active_order_state() -> dict[str, object]:
         "service_type": None,
         "effective_service_type": None,
         "coverage_result": {},
-        "order_submit_route": None,
         "order_context": {},
         "order_card_fields": [],
         "order_info": {},
@@ -253,16 +251,12 @@ async def submit_order_from_state(
     if is_submitted:
         output.update(
             {
+                **clear_active_order_state(),
                 "phase": PHASE_SUBMITTED,
                 "last_order": submitted_order,
-                "submitted_order": submitted_order,
-                **clear_active_order_state(),
+                "submission": submission,
             }
         )
-        output["submission"] = submission
-        output["phase"] = PHASE_SUBMITTED
-        output["last_order"] = submitted_order
-        output["submitted_order"] = submitted_order
     else:
         output.update(
             {
@@ -270,22 +264,11 @@ async def submit_order_from_state(
                 "service_type": state.get("service_type"),
                 "effective_service_type": state.get("effective_service_type"),
                 "coverage_result": state.get("coverage_result") or {},
-                "order_submit_route": state.get("order_submit_route"),
                 "order_context": state.get("order_context") or {},
                 "order_card_fields": state.get("order_card_fields") or [],
                 "order_info": order_info,
             }
         )
-    output.update(
-        event_to_state_patch(
-            OrderSubmitted(
-                payload={
-                    "submission": submission,
-                    "phase": output.get("phase"),
-                }
-            )
-        )
-    )
     trace_logger(
         "node.submit.output",
         answer=answer,

@@ -32,11 +32,9 @@ from graph.products import (
 )
 from graph.state import AgentState
 from graph.submission import empty_submission, get_effective_service_type, submit_order_from_state
-from domain.events import OrderCancelled, UserMessageReceived, event_to_state_patch
 from services.order_workflow import OrderWorkflowService
 from services.order_normalizer import normalize_order_defaults
 from services.order_context_service import load_order_context
-from services.order_routing import resolve_order_submit_route
 from services.conversation_service import build_conversation_turn
 from services.session_access import ensure_session_access
 from memory.postgres_log import save_conversation_log
@@ -155,7 +153,6 @@ def clear_product_workflow_state() -> dict[str, object]:
         "selected_product_code": None,
         "effective_service_type": None,
         "coverage_result": {},
-        "order_submit_route": None,
         "order_context": {},
         "order_card_fields": [],
         "missing_info": [],
@@ -307,21 +304,11 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     if intent in {"create_order", "confirm_order"}:
         output["service_type"] = service_type
     if intent in {"create_order", "confirm_order"} and state.get("phase") == PHASE_SUBMITTED:
-        output.update(
-            {
-                **clear_product_workflow_state(),
-                "submitted_order": {},
-            }
-        )
+        output.update(clear_product_workflow_state())
     elif service_type_changed:
         output.update(clear_product_workflow_state())
     elif intent in {"smalltalk", "unknown"} and state.get("phase") == PHASE_SUBMITTED:
-        output.update(
-            {
-                "submission": empty_submission(),
-                "submitted_order": {},
-            }
-        )
+        output.update({"submission": empty_submission()})
     trace_logger("node.intent.output", **output)
     if intent in {"create_order", "confirm_order"}:
         emit_status("intent_node", "已完成需求理解，准备匹配商品...")
@@ -437,7 +424,6 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         return {
             "effective_service_type": None,
             "coverage_result": {},
-            "order_submit_route": None,
             "step": "coverage_node",
         }
     service_type = state.get("service_type")
@@ -445,7 +431,6 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         return {
             "effective_service_type": None,
             "coverage_result": {},
-            "order_submit_route": None,
             "step": "coverage_node",
         }
 
@@ -458,7 +443,6 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
                 "reason": "非托管维修商品，无需校验维保卡范围",
                 "effective_service_type": service_type,
             },
-            "order_submit_route": resolve_order_submit_route(service_type),
             "step": "coverage_node",
         }
 
@@ -506,7 +490,6 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
     output = {
         "effective_service_type": effective_service_type,
         "coverage_result": coverage_data,
-        "order_submit_route": resolve_order_submit_route(effective_service_type),
         "order_info": order_info,
         "step": "coverage_node",
     }
@@ -865,7 +848,6 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "service_type": None,
         "effective_service_type": None,
         "coverage_result": {},
-        "order_submit_route": None,
         "order_context": {},
         "order_card_fields": [],
         "phase": PHASE_CANCELLED,
@@ -877,7 +859,6 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "retry_count": 0,
         "off_topic_count": 0,
     }
-    output.update(event_to_state_patch(OrderCancelled(payload={"phase": PHASE_CANCELLED})))
     trace_logger(
         "node.cancel.output",
         answer=answer,
@@ -1053,14 +1034,6 @@ async def stream_agent_events(
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
-        **event_to_state_patch(
-            UserMessageReceived(
-                payload={
-                    "last_user_message": user_message,
-                    "user_id": active_user.user_id,
-                }
-            )
-        ),
     }
 
     try:
@@ -1205,14 +1178,6 @@ async def run_agent(
         "user_id": active_user.user_id,
         "messages": [HumanMessage(content=user_message)],
         "last_user_message": user_message,
-        **event_to_state_patch(
-            UserMessageReceived(
-                payload={
-                    "last_user_message": user_message,
-                    "user_id": active_user.user_id,
-                }
-            )
-        ),
     }
 
     async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:

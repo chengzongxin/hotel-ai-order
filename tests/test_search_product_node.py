@@ -340,7 +340,6 @@ async def test_submit_node_keeps_pre_order_when_real_submit_disabled(monkeypatch
     state = {
         "service_type": "单次维修服务",
         "effective_service_type": "单次维修服务",
-        "order_submit_route": "single_repair",
         "order_info": {"product": "门锁", "fault": "打不开", "expected_start_time": "明天上午"},
         "products": [{"service_product_code": "A", "service_product_name": "门锁", "service_order_type": "单次维修服务"}],
         "selected_product_code": "A",
@@ -401,9 +400,8 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
     assert result["submission"]["state"] == "succeeded"
     assert result["submission"]["order_no"] == "SO123"
     assert result["last_order"]["order_no"] == "SO123"
-    assert result["submitted_order"]["order_no"] == "SO123"
-    assert result["submitted_order"]["contacts"] == "默认联系人"
-    assert result["submitted_order"]["phone"] == "13900001111"
+    assert result["last_order"]["contacts"] == "默认联系人"
+    assert result["last_order"]["phone"] == "13900001111"
     assert result["order_info"] == {}
     assert result["missing_info"] == []
     assert result["products"] == []

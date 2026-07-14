@@ -99,7 +99,6 @@ async def test_history_returns_only_client_conversation_messages(monkeypatch) ->
     async def fake_get_checkpoint_state(session_id: str, user: UserContext):
         return {
             "messages": ["internal LangChain messages are not public"],
-            "conversation_summary": "internal summary",
             "conversation_messages": conversation_messages,
         }
 

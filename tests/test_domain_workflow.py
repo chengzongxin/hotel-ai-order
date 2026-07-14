@@ -1,6 +1,5 @@
 import pytest
 
-from domain.events import ProductSelected, apply_order_event
 from domain.validation import missing_fields_for_order, validate_order_ready
 from services.order_normalizer import normalize_order_defaults
 from services.order_workflow import OrderWorkflowService
@@ -102,19 +101,6 @@ def test_validation_rules_delegate_service_required_fields():
     assert missing_fields_for_order("单次测量", {"product": "窗帘"}) == ["expected_start_time"]
 
 
-def test_order_event_reducer_projection_appends_event():
-    state = {"phase": "collecting"}
-    projected = apply_order_event(
-        state,
-        ProductSelected(payload={"selected_product_code": "A", "phase": "pre_order"}),
-    )
-
-    assert projected["selected_product_code"] == "A"
-    assert projected["phase"] == "pre_order"
-    assert projected["last_order_event"] == "ProductSelected"
-    assert projected["order_events"][0]["type"] == "ProductSelected"
-
-
 def test_order_workflow_service_uses_default_dependencies():
     service = OrderWorkflowService()
 
@@ -136,7 +122,6 @@ def test_order_workflow_service_uses_default_dependencies():
     assert update["phase"] == "product_selection"
     assert update["service_type"] == "托管维修"
     assert update["order_info"]["managed_repair_scope"] == "客房"
-    assert update["last_order_event"] == "ProductMatched"
 
 
 def test_order_workflow_uses_conversation_service_type_when_selecting_product():

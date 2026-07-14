@@ -87,7 +87,7 @@ def _infer_phase(state: dict[str, Any]) -> str:
         return str(getattr(phase, "value", phase))
 
     products = state.get("products") or []
-    submitted = state.get("submitted_order") or state.get("last_order") or {}
+    submitted = state.get("last_order") or {}
     submission_state = (state.get("submission") or {}).get("state")
     if submitted.get("order_no") or submission_state == SubmissionState.SUCCEEDED:
         return OrderPhase.SUBMITTED.value
@@ -176,7 +176,7 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
         submission_raw.get("state") or SubmissionState.NOT_ATTEMPTED.value
     )
 
-    submitted_candidate = state.get("submitted_order") or state.get("last_order") or None
+    submitted_candidate = state.get("last_order") or None
     submitted_order_raw = (
         submitted_candidate
         if phase == OrderPhase.SUBMITTED.value

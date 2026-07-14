@@ -56,8 +56,7 @@ Graph run 的 metadata 里会带：
 {
   "session_id": "...",
   "app_env": "local",
-  "message_count": 2,
-  "has_conversation_summary": true
+  "message_count": 2
 }
 ```
 
@@ -68,7 +67,6 @@ Graph run 的 metadata 里会带：
 - `order_info`
 - `missing_info`
 - `retry_count`
-- `conversation_summary`
 
 ### Token
 

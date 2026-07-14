@@ -62,7 +62,7 @@ flowchart LR
 | `assist_node` | 无活跃订单时的闲聊与工具问答 |
 | `confirm_node` | 展示预下单信息，等待确认 |
 | `cancel_node` | 取消并清空预下单状态 |
-| `submit_node` | 经 `graph/submission.py` 提交订单，写入 `submitted_order` 并清空活跃单 |
+| `submit_node` | 经 `graph/submission.py` 提交订单，写入内部 `last_order` 并清空活跃单；客户端投影为 `submitted_order` |
 
 **已实现的具体能力：**
 
@@ -257,7 +257,7 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 | **真实下单** | 四类 create 接口与 payload 代码已具备 | **生产联调验证**、失败重试、字段覆盖仍需确认 |
 | **下单开关** | 默认 `.env.example` 中 `USER_APP_SUBMIT_ENABLED=false` | 生产需配 token、默认地址、酒店名、区域 ID 等 |
 | **订单修改** | Prompt 说「直接说明要改哪里」 | 无独立 `modify_order` 意图/节点，靠 intent 重新抽取 |
-| **conversation_summary** | State 有字段，`memory/sqlite_memory.py` 有压缩逻辑 | **主图未接入**，长对话仍靠全量 messages |
+| **长对话摘要** | `memory/sqlite_memory.py` 有独立实验代码 | **主图未接入**，AgentState 不保存未消费的摘要字段 |
 | **PostgreSQL 日志** | `save_conversation_log` 可选写入 | 默认 `POSTGRES_ENABLED=false` |
 | **Redis 记忆** | `memory/redis_memory.py` 存在 | **主流程未使用**（checkpoint 用 SQLite） |
 | **Qdrant** | Docker 已部署 | 商品检索仍用 **本地 Chroma**，Qdrant 未接入 |
@@ -284,7 +284,7 @@ uv run pytest tests/test_product_recall_eval.py -v -m embedding
 | 待实现项 | 说明 |
 | --- | --- |
 | ASR 容错 | 文档有 asr_001/002 用例，代码无置信度/二次确认逻辑 |
-| 长对话压缩 | 接入 `conversation_summary` 到 intent/ask 节点 |
+| 长对话压缩 | 设计并接入正式的 summary 节点与消费链路 |
 | 恶意输入防护 | fixtures 有 malicious case，缺代码级 guard |
 | CI 友好 E2E | mock LLM / record-replay，降低集成测试成本 |
 | 低置信召回策略 | 已有候选卡片，可优化阈值展示与转人工 |
