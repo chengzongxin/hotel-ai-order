@@ -348,7 +348,11 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         trace_logger("node.search_product.rejected", **output)
         return output
 
-    if existing_products and selection in {1, 2, 3}:
+    if (
+        existing_products
+        and selection is not None
+        and 1 <= selection <= len(existing_products)
+    ):
         output = workflow.select_existing_product_by_rank(state=state, selection=int(selection))
         trace_logger("node.search_product.selected_by_text", selection=selection, **output)
         return output
@@ -386,7 +390,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
 
     search_params = {
         "query": search_query,
-        "top_k": 3,
+        "top_k": 10,
         "threshold": None,
         "service_type": service_type,
     }

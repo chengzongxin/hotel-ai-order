@@ -105,7 +105,7 @@ def is_cancel_request(text: str) -> bool:
 
 
 def parse_product_selection(text: str | None) -> int | None:
-    """解析用户对 Top3 商品的选择；0 表示“以上都不符合”。"""
+    """解析用户对候选商品的序号选择；0 表示“以上都不符合”。"""
 
     if not text:
         return None
@@ -132,10 +132,35 @@ def parse_product_selection(text: str | None) -> int | None:
         "选3": 3,
         "选择3": 3,
         "三": 3,
+        "第四": 4,
+        "第四个": 4,
+        "四": 4,
+        "第五": 5,
+        "第五个": 5,
+        "五": 5,
+        "第六": 6,
+        "第六个": 6,
+        "六": 6,
+        "第七": 7,
+        "第七个": 7,
+        "七": 7,
+        "第八": 8,
+        "第八个": 8,
+        "八": 8,
+        "第九": 9,
+        "第九个": 9,
+        "九": 9,
+        "第十": 10,
+        "第十个": 10,
+        "十": 10,
     }
+    for selection in range(4, 11):
+        mapping[str(selection)] = selection
+        mapping[f"选{selection}"] = selection
+        mapping[f"选择{selection}"] = selection
     if normalized in mapping:
         return mapping[normalized]
-    match = re.search(r"(?:选|选择|第)?\s*([123])\s*(?:个|项)?", normalized)
+    match = re.fullmatch(r"(?:选|选择|第)?\s*(10|[1-9])\s*(?:个|项)?", normalized)
     if match:
         return int(match.group(1))
     return None

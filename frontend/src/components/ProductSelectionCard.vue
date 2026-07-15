@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import type { ProductOption } from '../types/order'
+
+const BATCH_SIZE = 3
 
 const props = defineProps<{
   items: ProductOption[]
@@ -17,6 +20,26 @@ const emit = defineEmits<{
   reject: []
 }>()
 
+const batchIndex = ref(0)
+const showAll = ref(false)
+const batchCount = computed(() => Math.ceil(props.items.length / BATCH_SIZE))
+const visibleItems = computed(() => {
+  if (showAll.value || props.items.length <= BATCH_SIZE) return props.items
+  const start = batchIndex.value * BATCH_SIZE
+  return props.items.slice(start, start + BATCH_SIZE)
+})
+
+watch(
+  () => props.items.map((item) => item.code).join(','),
+  () => {
+    batchIndex.value = 0
+    showAll.value = false
+  },
+)
+
+function showNextBatch() {
+  batchIndex.value = (batchIndex.value + 1) % batchCount.value
+}
 </script>
 
 <template>
@@ -31,7 +54,7 @@ const emit = defineEmits<{
 
     <div class="space-y-2">
       <div
-        v-for="item in items"
+        v-for="item in visibleItems"
         :key="`chat-${item.code}`"
         class="relative w-full rounded border p-3 text-left transition-all duration-200"
         :class="[
@@ -63,6 +86,24 @@ const emit = defineEmits<{
           </span>
           <span v-else-if="!isSubmitted" class="text-[11px] font-medium text-indigo-500">点击选择</span>
         </div>
+      </div>
+
+      <div v-if="isAwaitingSelection && items.length > BATCH_SIZE" class="flex gap-2">
+        <button
+          v-if="!showAll"
+          type="button"
+          class="flex-1 rounded border border-slate-200 bg-white px-3 py-2 text-center text-[12px] font-medium text-slate-600 transition hover:border-indigo-300 hover:text-indigo-600"
+          @click="showNextBatch"
+        >
+          换一批（{{ batchIndex + 1 }}/{{ batchCount }}）
+        </button>
+        <button
+          type="button"
+          class="flex-1 rounded border border-slate-200 bg-white px-3 py-2 text-center text-[12px] font-medium text-slate-600 transition hover:border-indigo-300 hover:text-indigo-600"
+          @click="showAll = !showAll"
+        >
+          {{ showAll ? '收起' : `查看全部（${items.length}）` }}
+        </button>
       </div>
 
       <button
