@@ -1,4 +1,4 @@
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -26,6 +26,73 @@ def upsert_conversation_messages(
             positions[message_id] = len(merged)
         merged.append(item)
     return merged
+
+
+OrderPhase = Literal["idle", "collecting", "product_selection", "pre_order", "submitted", "cancelled"]
+SubmissionStatus = Literal["not_attempted", "submitting", "succeeded", "failed", "disabled"]
+
+
+class OrderItemState(TypedDict, total=False):
+    id: str
+    product_code: str
+    product_name: str
+    service_type: str
+    quantity: int
+    fault: str | None
+    unit: str | None
+    price: str | None
+    product_snapshot: dict[str, Any]
+    coverage: dict[str, Any]
+    validation: dict[str, Any]
+
+
+class SubmissionState(TypedDict, total=False):
+    attempted: bool
+    state: SubmissionStatus
+    order_no: str | None
+    failure_code: str | None
+    failure_message: str | None
+    missing_fields: list[str]
+    request_payload: dict[str, Any]
+    response_payload: dict[str, Any]
+
+
+class ProductRequestState(TypedDict, total=False):
+    room_number: str | None
+    product: str | None
+    fault: str | None
+    area: str | None
+    second_area: str | None
+    second_area_id: str | None
+    managed_repair_scope: str | None
+    available_second_areas: list[str]
+    available_second_area_options: list[dict[str, Any]]
+    second_area_needs_confirmation: bool
+
+
+class OrderCommonState(TypedDict, total=False):
+    room_number: str | None
+    area: str | None
+    second_area: str | None
+    second_area_id: str | None
+    managed_repair_scope: str | None
+    available_second_areas: list[str]
+    available_second_area_options: list[dict[str, Any]]
+    second_area_needs_confirmation: bool
+    urgency: str | None
+    expected_start_time: str | None
+    goods_arrival_status: str | None
+    contacts: str | None
+    phone: str | None
+    remark: str | None
+    special_requirement: str | None
+    total_fee: str | None
+    user_confirmed: bool
+    user_cancelled: bool
+
+
+class OrderState(OrderCommonState, total=False):
+    items: list[OrderItemState]
 
 
 class AgentState(TypedDict, total=False):
@@ -66,14 +133,19 @@ class AgentState(TypedDict, total=False):
     order_card_fields: list[dict[str, Any]]
 
     # 订单主流程阶段，同时决定前端展示哪类主卡片。
-    phase: str | None
+    phase: OrderPhase | None
 
     # 用户选择“以上都不符合”后，用于触发重新描述和重新检索。
     product_selection_rejected: bool
 
-    # 已从用户输入中提取出的结构化订单信息，例如 room_number、product、fault、
-    # expected_start_time、goods_arrival_status、managed_repair_scope。
-    order_info: dict[str, Any]
+    # 用户在预下单阶段明确更换商品描述时，触发重新检索并重建商品明细。
+    product_change_requested: bool
+
+    # 商品选择前的自然语言需求；选择后商品级字段迁入 order.items。
+    product_request: ProductRequestState
+
+    # 与客户端一致的订单对象：公共字段和最终商品明细。
+    order: OrderState
 
     # 最近一次已提交的订单，供成功卡片和用户追问“刚才那个单号”时使用。
     last_order: dict[str, Any]
@@ -81,14 +153,8 @@ class AgentState(TypedDict, total=False):
     # 商品检索结果（按相似度排序）。
     products: list[dict[str, Any]]
 
-    # 当前选中的商品编码；未指定时默认取 products[0]。
-    selected_product_code: str | None
-
-    # 最终提交的商品明细；products 仅表示当前检索候选。
-    order_items: list[dict[str, Any]]
-
     # 真实提交动作状态，包括请求参数、接口返回、失败原因和订单号。
-    submission: dict[str, Any]
+    submission: SubmissionState
 
     # 仍然缺失、需要继续追问用户的订单信息名。
     missing_info: list[str]

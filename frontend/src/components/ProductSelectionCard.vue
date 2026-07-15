@@ -4,7 +4,6 @@ import type { ProductOption } from '../types/order'
 const props = defineProps<{
   items: ProductOption[]
   feedback?: string | null
-  selectedCode?: string | null
   selectingCode?: string | null
   isAwaitingSelection?: boolean
   isSelecting?: boolean
@@ -18,9 +17,6 @@ const emit = defineEmits<{
   reject: []
 }>()
 
-function isSelected(item: ProductOption): boolean {
-  return Boolean(item.is_selected || (item.code && item.code === props.selectedCode))
-}
 </script>
 
 <template>
@@ -39,7 +35,7 @@ function isSelected(item: ProductOption): boolean {
         :key="`chat-${item.code}`"
         class="relative w-full rounded border p-3 text-left transition-all duration-200"
         :class="[
-          isSelected(item) ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-200' : 'border-slate-200 bg-white',
+          'border-slate-200 bg-white',
           canSelect && !isSelecting ? 'cursor-pointer hover:border-indigo-200 hover:shadow-sm' : '',
           isSubmitted ? 'opacity-95' : '',
         ]"
@@ -64,15 +60,6 @@ function isSelected(item: ProductOption): boolean {
           >
             <span class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600"></span>
             选择中…
-          </span>
-          <span
-            v-else-if="isSelected(item)"
-            class="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600"
-          >
-            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
-            </svg>
-            {{ isSubmitted ? '已下单' : '已选中' }}
           </span>
           <span v-else-if="!isSubmitted" class="text-[11px] font-medium text-indigo-500">点击选择</span>
         </div>

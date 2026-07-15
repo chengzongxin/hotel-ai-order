@@ -106,7 +106,7 @@ def test_order_workflow_service_uses_default_dependencies():
 
     update = service.match_products(
         state={
-            "order_info": {"room_number": "301", "product": "门锁", "fault": "打不开"},
+            "product_request": {"room_number": "301", "product": "门锁", "fault": "打不开"},
             "last_user_message": "301 门锁打不开",
         },
         products=[
@@ -121,7 +121,7 @@ def test_order_workflow_service_uses_default_dependencies():
 
     assert update["phase"] == "product_selection"
     assert update["service_type"] == "托管维修"
-    assert update["order_info"]["managed_repair_scope"] == "客房"
+    assert update["product_request"]["managed_repair_scope"] == "客房"
 
 
 def test_order_workflow_uses_conversation_service_type_when_selecting_product():
@@ -130,7 +130,7 @@ def test_order_workflow_uses_conversation_service_type_when_selecting_product():
     update = service.select_product_patch(
         state={
             "service_type": "单次安装",
-            "order_info": {"product": "窗帘"},
+            "product_request": {"product": "窗帘"},
         },
         selected_product={
             "service_product_code": "MEASURE",
@@ -185,7 +185,7 @@ async def test_select_product_builds_second_area_dropdown_from_spu_detail():
         state={
             "service_type": "托管维修",
             "last_user_message": "1506 窗户关不上，有点漏风",
-            "order_info": {
+            "product_request": {
                 "room_number": "1506",
                 "product": "窗户",
                 "fault": "关不上，有点漏风",
@@ -203,7 +203,9 @@ async def test_select_product_builds_second_area_dropdown_from_spu_detail():
     )
 
     second_area_field = next(field for field in update["order_card_fields"] if field["key"] == "second_area")
-    assert update["order_info"]["second_area"] == "客房区域"
+    assert update["order"]["second_area"] == "客房区域"
+    assert update["order"]["contacts"] == "张三"
+    assert update["order"]["phone"] == "13800000000"
     assert second_area_field["input_type"] == "select"
     assert second_area_field["value"] == "1545054022"
     assert second_area_field["options"] == [

@@ -15,7 +15,7 @@ from services.conversation_service import (
 def workflow_state(*, phase: str = "product_selection") -> dict[str, Any]:
     return {
         "phase": phase,
-        "order_info": {
+        "product_request": {
             "room_number": "1208",
             "product": "空调",
             "fault": "不制冷",
@@ -28,7 +28,6 @@ def workflow_state(*, phase: str = "product_selection") -> dict[str, Any]:
             }
         ],
         "product_search_status": "success",
-        "selected_product_code": None,
         "missing_info": [],
     }
 
@@ -65,7 +64,7 @@ def test_form_edit_updates_latest_workflow_message_without_appending() -> None:
     active_id = messages[-1]["id"]
     updated_state = {
         **workflow_state(phase="pre_order"),
-        "selected_product_code": "AC001",
+        "order": {"items": [{"id": "item-1", "product_code": "AC001", "product_name": "空调维修", "service_type": "托管维修", "quantity": 1, "room_number": "1208", "fault": "不制冷", "area": "客房", "product_snapshot": {"service_product_code": "AC001", "service_product_name": "空调维修", "service_order_type": "托管维修"}}]},
         "order_card_fields": [
             {
                 "key": "contacts",
@@ -85,7 +84,8 @@ def test_form_edit_updates_latest_workflow_message_without_appending() -> None:
 
     assert updated["id"] == active_id
     assert updated["content"] == "请确认预下单信息。"
-    assert updated["order_preview"]["form"]["fields"][0]["value"] == "李四"
+    assert "value" not in updated["order_preview"]["form"]["fields"][0]
+    assert updated["order_preview"]["order"]["contacts"] is None
 
 
 @pytest.mark.asyncio

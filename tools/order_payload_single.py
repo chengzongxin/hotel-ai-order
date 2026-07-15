@@ -354,6 +354,7 @@ def build_single_order_multi_payload(
         item = resolved.get("item") or {}
         item_info = {
             **order_info,
+            "room_number": item.get("room_number") or order_info.get("room_number"),
             "product_quantity": item.get("quantity") or 1,
             "fault": item.get("fault") or order_info.get("fault"),
             "area": item.get("area") or order_info.get("area"),

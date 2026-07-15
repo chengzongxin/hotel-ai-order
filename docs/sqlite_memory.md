@@ -62,7 +62,10 @@ SELECT
     thread_id,
     checkpoint_id,
     json_extract(state_json, '$.step') AS node_name,
-    json_extract(state_json, '$.order_info.room_number') AS room_number,
+    COALESCE(
+        json_extract(state_json, '$.order.items[0].room_number'),
+        json_extract(state_json, '$.product_request.room_number')
+    ) AS room_number,
     state_json
 FROM checkpoints
 WHERE state_json IS NOT NULL

@@ -18,38 +18,19 @@
       "role": "ai",
       "content": "为您推荐以下服务商品，请选择。",
       "order_preview": {
-        "schema_version": 1,
+        "schema_version": 4,
         "phase": "product_selection",
-        "order_info": {
+        "product_request": {
           "room_number": "1208",
           "product": "空调",
           "fault": "不制冷"
         },
-        "products": {
-          "status": "success",
-          "selected_code": null,
-          "selection_rejected": false,
-          "items": []
-        },
-        "order_items": {
-          "items": [],
-          "total_quantity": 0
-        },
+        "order": {"urgency": "medium", "items": []},
+        "products": [],
         "form": {"fields": []},
-        "validation": {"ready": false, "missing_fields": []},
-        "capabilities": {
-          "select_product": true,
-          "reject_products": true,
-          "update_order": false,
-          "confirm_order": false,
-          "cancel_order": true,
-          "retry_submission": false,
-          "add_order_item": false,
-          "update_order_item": false,
-          "remove_order_item": false
-        },
-        "coverage": {"checked": false, "covered": null},
-        "submission": {"state": "not_attempted", "missing_fields": []},
+        "errors": [],
+        "actions": ["select_product", "reject_products", "cancel_order"],
+        "submission": {"state": "not_attempted", "order_no": null, "message": null},
         "submitted_order": null
       }
     }
@@ -86,27 +67,32 @@ History 接口返回完整 `conversation_messages`，不再返回顶层 `order_p
 
 `order_preview` 表示某条 AI 回复完成时的业务状态快照，不指定 Vue 组件或页面布局。
 
+从 v4 开始，客户端契约收敛为最小模型。`product_request` 只保存商品选择前的自然语言
+需求；选中商品后清空。房号、一级区域、二级区域和托管范围位于 `order` 顶层，供
+所有商品共用；商品编码、数量和故障位于 `order.items`。缺失字段使用
+`errors`，允许操作使用 `actions`。维保结果只保存在对应的 `order.items[].coverage`。
+`form.fields` 只描述字段，不再复制字段值。
+
 | 字段 | 说明 |
 | --- | --- |
-| `schema_version` | 对外契约版本，当前为 `1` |
+| `schema_version` | 对外契约版本，当前为 `4` |
 | `phase` | `idle` / `collecting` / `product_selection` / `pre_order` / `submitted` / `cancelled` |
 | `service_type` | 商品确定的原始服务类型 |
 | `service_type_display` | 原始服务类型展示文案 |
 | `effective_service_type` | 维保校验后最终用于提交的服务类型 |
 | `effective_service_type_display` | 最终服务类型展示文案 |
-| `order_info` | 可安全展示的订单事实 |
-| `products` | 商品候选与选择状态 |
-| `order_items` | 最终提交的商品明细；每项包含稳定 `id`、商品编码、数量及商品级故障/区域信息 |
-| `form` | 后端给出的业务字段，前端决定具体控件 |
-| `validation` | 完整性校验和缺失字段 |
-| `capabilities` | 当前允许执行的确定性命令 |
-| `coverage` | 维保范围校验摘要 |
+| `product_request` | 商品选择前的自然语言需求；选中商品后为空 |
+| `order` | 整单公共字段及 `items` 商品明细 |
+| `products` | 当前商品候选数组 |
+| `form` | 无值的字段展示 Schema，前端从 `order` 取值 |
+| `errors` | 当前缺失或错误的字段路径 |
+| `actions` | 当前允许执行的操作名称数组 |
 | `submission` | 下单状态和客户端安全失败信息 |
 | `submitted_order` | 成功提交后的订单快照 |
 
 后端负责业务阶段、数据、校验和权限；前端负责把 `phase` 映射为商品选择、预下单、
 成功或取消组件。历史消息中的快照只读，只有最后一条带 `order_preview` 的 AI 消息
-可以根据 `capabilities` 发起操作，后端收到命令后仍会再次校验。
+可以根据 `actions` 发起操作，后端收到命令后仍会再次校验。
 
 ## 确定性命令
 
@@ -125,7 +111,7 @@ History 接口返回完整 `conversation_messages`，不再返回顶层 `order_p
 `quantity` 或 `fault`。同一商品再次新增会合并数量，订单至少保留一个商品。当前仅允许
 在同一订单中添加相同服务类型的商品，维保外降级订单不允许混合托管维修商品。
 
-`products` 只表示检索候选，`order_items` 才是确认下单时的最终商品集合。提交成功后，
+`products` 只表示检索候选，不保存选中状态；`order.items` 才是确认下单时的最终商品集合。提交成功后，
 相同明细会保存在 `submitted_order.items`，用于历史消息中的成功卡片展示。
 
 ## 流式事件

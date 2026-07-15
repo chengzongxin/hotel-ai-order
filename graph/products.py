@@ -18,32 +18,6 @@ def find_product_by_code(
     return None
 
 
-def resolve_selected_code(
-    products: list[dict[str, Any]],
-    selected_code: str | None,
-    *,
-    default_to_first: bool = True,
-) -> str | None:
-    """返回有效的选中编码；未指定时默认 Top1。"""
-    if selected_code and find_product_by_code(products, selected_code):
-        return selected_code.strip()
-    if default_to_first and products:
-        return str(products[0].get("service_product_code") or "").strip() or None
-    return None
-
-
-def get_selected_product(
-    products: list[dict[str, Any]],
-    selected_code: str | None,
-    *,
-    default_to_first: bool = True,
-) -> dict[str, Any]:
-    code = resolve_selected_code(products, selected_code, default_to_first=default_to_first)
-    if not code:
-        return {}
-    return find_product_by_code(products, code) or {}
-
-
 def format_service_type_display(
     service_type: str | None,
     order_info: dict[str, Any],
@@ -180,11 +154,14 @@ def build_product_selection_feedback(products: list[dict[str, Any]], search_quer
 def derive_product_section_fields(state: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
     """从 state 推导 API products 区块的 status / query / feedback。"""
     products = state.get("products") or []
-    order_info = state.get("order_info") or {}
+    from services.order_items import build_effective_order_info
+
+    order_info = build_effective_order_info(state)
     search_query = build_product_search_query(order_info, state.get("service_type"))
     status = infer_product_search_status(products, search_query)
 
-    selected = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
+    first_item = next((item for item in ((state.get("order") or {}).get("items") or []) if isinstance(item, dict)), {})
+    selected = first_item.get("product_snapshot") if isinstance(first_item.get("product_snapshot"), dict) else {}
     service_type = state.get("service_type")
     feedback = (
         build_product_search_feedback(order_info, selected, service_type, state.get("coverage_result") or {})

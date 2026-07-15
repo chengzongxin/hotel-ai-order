@@ -10,13 +10,23 @@ from typing import Any, Awaitable, Callable
 
 from domain.validation import missing_fields_for_order
 from graph.order_fields import build_order_card_fields, normalize_order_card_update
-from graph.products import find_product_by_code, get_selected_product, resolve_selected_code
+from graph.products import find_product_by_code
 from graph.submission import empty_submission
 from graph.constants import PHASE_COLLECTING, PHASE_PRE_ORDER, PHASE_PRODUCT_SELECTION
 from schemas.user import UserContext
 from services.order_context_service import load_order_context
 from services.order_normalizer import normalize_order_defaults
-from services.order_items import build_order_item
+from services.order_items import (
+    build_effective_order_info,
+    build_order_state,
+    build_order_item,
+    get_order_common,
+    get_order_items,
+    strip_item_fields,
+    split_order_info,
+    sync_primary_item_from_order_info,
+    validate_order_items,
+)
 from tools.hosting_coverage import check_hosting_product_coverage
 from tools.order_payload_managed import align_order_second_area_with_spu
 
@@ -39,24 +49,20 @@ class OrderWorkflowService:
         products: list[JsonDict],
         service_type: str | None,
     ) -> JsonDict:
-        selected_code = resolve_selected_code(
-            products,
-            state.get("selected_product_code"),
-            default_to_first=False,
-        )
         order_info = self.normalize_order_defaults(
             service_type,
-            state.get("order_info") or {},
+            build_effective_order_info(state),
             str(state.get("last_user_message") or ""),
         )
         patch = {
             "products": products,
-            "selected_product_code": selected_code,
             "service_type": service_type,
-            "order_info": order_info,
+            **split_order_info(order_info, keep_product_request=True),
             "product_selection_rejected": False,
+            "product_change_requested": False,
             "missing_info": [] if products else ["product_match"],
             "order_card_fields": [],
+            "submission": empty_submission(),
             "phase": PHASE_PRODUCT_SELECTION if products else PHASE_COLLECTING,
             "step": "search_product_node",
         }
@@ -72,12 +78,14 @@ class OrderWorkflowService:
     def reject_products(self, service_type: str | None = None) -> JsonDict:
         patch = {
             "products": [],
-            "selected_product_code": None,
+            "order": {"items": []},
             "service_type": service_type,
             "effective_service_type": None,
             "coverage_result": {},
             "order_card_fields": [],
+            "submission": empty_submission(),
             "product_selection_rejected": True,
+            "product_change_requested": False,
             "missing_info": [],
             "phase": PHASE_COLLECTING,
             "step": "search_product_node",
@@ -112,17 +120,17 @@ class OrderWorkflowService:
             raise ValueError("当前订单服务类型未确定")
         order_info = self.normalize_order_defaults(
             service_type,
-            state.get("order_info") or {},
+            build_effective_order_info(state),
             str(state.get("last_user_message") or ""),
         )
         patch: JsonDict = {
-            "selected_product_code": product_code.strip(),
             "service_type": service_type,
-            "order_info": order_info,
+            "product_request": {},
             "product_selection_rejected": False,
+            "product_change_requested": False,
             "phase": PHASE_PRE_ORDER,
             "step": "search_product_node",
-            "order_items": [build_order_item(selected_product, order_info)],
+            "order": build_order_state(strip_item_fields(order_info), [build_order_item(selected_product, order_info)]),
         }
         return patch
 
@@ -143,7 +151,7 @@ class OrderWorkflowService:
             raise ValueError("当前订单服务类型未确定")
         order_info = self.normalize_order_defaults(
             service_type,
-            state.get("order_info") or {},
+            build_effective_order_info(state),
             str(state.get("last_user_message") or ""),
         )
         effective_service_type = service_type
@@ -178,22 +186,29 @@ class OrderWorkflowService:
             }
 
         pre_order_patch = await self.prepare_pre_order(
-            state={**state, "order_info": order_info},
+            state={**state, **split_order_info(order_info, keep_product_request=True)},
             service_type=effective_service_type,
             user=user,
         )
+        order_item = build_order_item(selected, order_info)
+        order_item["coverage"] = coverage_data
+        validated_items, _ = validate_order_items(
+            effective_service_type,
+            strip_item_fields(order_info),
+            [order_item],
+        )
         patch = {
             **pre_order_patch,
-            "selected_product_code": product_code.strip(),
             "service_type": service_type,
             "effective_service_type": effective_service_type,
             "coverage_result": coverage_data,
-            "order_info": order_info,
+            "product_request": {},
             "submission": empty_submission(),
             "product_selection_rejected": False,
+            "product_change_requested": False,
             "phase": PHASE_PRE_ORDER,
             "step": "search_product_node",
-            "order_items": [build_order_item(selected, order_info)],
+            "order": build_order_state(get_order_common(pre_order_patch), validated_items),
         }
         return patch
 
@@ -205,7 +220,19 @@ class OrderWorkflowService:
         user: UserContext,
     ) -> JsonDict:
         order_context = state.get("order_context") or await self.load_order_context(user)
-        order_info = state.get("order_info") or {}
+        current_info = build_effective_order_info(state)
+        order_info = {
+            **{
+                key: value
+                for key, value in {
+                    "contacts": order_context.get("contacts"),
+                    "phone": order_context.get("phone"),
+                }.items()
+                if value
+            },
+            **current_info,
+        }
+        order = build_order_state(strip_item_fields(order_info), get_order_items(state))
         order_card_fields = build_order_card_fields(
             service_type=service_type,
             order_info=order_info,
@@ -214,6 +241,7 @@ class OrderWorkflowService:
         missing_info = missing_fields_for_order(service_type, order_info, order_card_fields)
         return {
             "order_context": order_context,
+            "order": order,
             "order_card_fields": order_card_fields,
             "missing_info": missing_info,
             "phase": PHASE_PRE_ORDER,
@@ -227,16 +255,12 @@ class OrderWorkflowService:
         service_type: str | None,
         user: UserContext,
     ) -> JsonDict:
-        selected_product = get_selected_product(
-            state.get("products") or [],
-            state.get("selected_product_code"),
-            default_to_first=False,
-        )
-        if not selected_product:
+        items = get_order_items(state)
+        if not items:
             raise ValueError("请先选择商品，再修改预下单信息")
 
         order_info = normalize_order_card_update(
-            order_info=state.get("order_info") or {},
+            order_info=build_effective_order_info(state),
             updates=updates,
             service_type=service_type,
         )
@@ -245,18 +269,29 @@ class OrderWorkflowService:
             order_info,
             str(state.get("last_user_message") or ""),
         )
+        updated_items = sync_primary_item_from_order_info(items, order_info)
+        updated_items, item_missing = validate_order_items(
+            service_type,
+            strip_item_fields(order_info),
+            updated_items,
+        )
         pre_order_patch = await self.prepare_pre_order(
-            state={**state, "order_info": order_info},
+            state={**state, "product_request": {}, "order": build_order_state(strip_item_fields(order_info), updated_items)},
             service_type=service_type,
             user=user,
         )
         patch = {
             **pre_order_patch,
-            "order_info": order_info,
+            "product_request": {},
+            "order": build_order_state(get_order_common(pre_order_patch), updated_items),
             "submission": empty_submission(),
             "phase": PHASE_PRE_ORDER,
             "step": "prepare_order_context_node",
         }
+        patch["missing_info"] = [
+            *(pre_order_patch.get("missing_info") or []),
+            *(field for field in item_missing if field not in (pre_order_patch.get("missing_info") or [])),
+        ]
         return patch
 
     def validate(

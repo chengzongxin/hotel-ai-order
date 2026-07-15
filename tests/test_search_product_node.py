@@ -34,7 +34,7 @@ async def test_search_product_node_skips_research_on_confirm(monkeypatch):
             "intent": "confirm_order",
             "products": [{"service_product_code": "FWSP01537", "service_product_name": "门锁"}],
             "selected_product_code": "FWSP01537",
-            "order_info": {"user_confirmed": True},
+            "order": {"user_confirmed": True, "items": [{"id": "item-1", "product_code": "FWSP01537", "product_name": "门锁", "service_type": "托管维修", "quantity": 1, "product_snapshot": {"service_product_code": "FWSP01537", "service_product_name": "门锁", "service_order_type": "托管维修"}}]},
         }
     )
 
@@ -62,6 +62,7 @@ async def test_search_product_node_skips_research_when_supplementing_info_after_
             }
         ],
         "selected_product_code": "DOOR_HARDWARE",
+        "order": {"items": [{"id": "item-1", "product_code": "DOOR_HARDWARE", "product_name": "门五金(中修)", "service_type": "单次安装", "quantity": 1, "area": "公区", "managed_repair_scope": "公区", "fault": "需要维修", "product_snapshot": {"service_product_code": "DOOR_HARDWARE", "service_product_name": "门五金(中修)", "service_order_type": "单次安装"}}]},
         "missing_info": ["second_area"],
         "order_info": {
             "area": "公区",
@@ -80,7 +81,7 @@ async def test_search_product_node_skips_research_when_supplementing_info_after_
 
 
 @pytest.mark.asyncio
-async def test_search_product_node_preserves_selected_code(monkeypatch):
+async def test_fresh_product_search_has_no_selected_order_item(monkeypatch):
     tool_products = [
         {"service_product_code": "A", "service_product_name": "Top1", "service_order_type": "托管维修"},
         {"service_product_code": "B", "service_product_name": "Top2", "service_order_type": "托管维修"},
@@ -100,13 +101,12 @@ async def test_search_product_node_preserves_selected_code(monkeypatch):
     result = await search_product_node(
         {
             "intent": "create_order",
-            "order_info": {"product": "门锁", "fault": "打不开"},
+                "product_request": {"product": "门锁", "fault": "打不开"},
             "last_user_message": "301 门锁打不开",
-            "selected_product_code": "B",
         }
     )
 
-    assert result["selected_product_code"] == "B"
+    assert result["order"]["items"] == []
     assert result["products"] == tool_products
     assert result["service_type"] == "托管维修"
     assert calls[0]["service_type"] == "托管维修"
@@ -224,7 +224,7 @@ def test_order_preview_rebuilds_stale_second_area_text_field_from_spu_detail():
             "service_type": "托管维修",
             "effective_service_type": "托管维修",
             "last_user_message": "1506 窗户关不上，有点漏风",
-            "order_info": {
+            "product_request": {
                 "managed_repair_scope": "客房",
                 "area": "客房",
                 "room_number": "1506",
@@ -277,7 +277,7 @@ def test_order_preview_rebuilds_stale_second_area_text_field_from_spu_detail():
     assert preview is not None
     second_area_field = next(field for field in preview["form"]["fields"] if field["key"] == "second_area")
     assert second_area_field["input_type"] == "select"
-    assert second_area_field["value"] == "1545054022"
+    assert "value" not in second_area_field
     assert second_area_field["options"] == [
         {"label": "客房区域（客房）", "value": "1545054022"},
         {"label": "洗衣房（公区）", "value": "1545054019"},
@@ -340,7 +340,7 @@ async def test_submit_node_keeps_pre_order_when_real_submit_disabled(monkeypatch
     state = {
         "service_type": "单次维修服务",
         "effective_service_type": "单次维修服务",
-        "order_info": {"product": "门锁", "fault": "打不开", "expected_start_time": "明天上午"},
+        "order": {"expected_start_time": "明天上午", "items": [{"id": "item-1", "product_code": "A", "product_name": "门锁", "service_type": "单次维修服务", "quantity": 1, "fault": "打不开", "product_snapshot": {"service_product_code": "A", "service_product_name": "门锁", "service_order_type": "单次维修服务"}}]},
         "products": [{"service_product_code": "A", "service_product_name": "门锁", "service_order_type": "单次维修服务"}],
         "selected_product_code": "A",
         "order_card_fields": [{"key": "expected_time", "label": "期望时间", "value": "明天上午"}],
@@ -351,7 +351,7 @@ async def test_submit_node_keeps_pre_order_when_real_submit_disabled(monkeypatch
     assert result["phase"] == "pre_order"
     assert result["submission"]["state"] == "disabled"
     assert result["submission"]["failure_code"] == "submit_disabled"
-    assert result["order_info"] == state["order_info"]
+    assert result["order"] == state["order"]
     assert result["order_card_fields"] == state["order_card_fields"]
     assert result["missing_info"] == []
     assert "last_order" not in result
@@ -390,7 +390,7 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
         {
             "service_type": "单次维修服务",
             "effective_service_type": "单次维修服务",
-            "order_info": {"product": "门锁", "fault": "打不开", "expected_start_time": "明天上午"},
+            "order": {"expected_start_time": "明天上午", "items": [{"id": "item-1", "product_code": "A", "product_name": "门锁", "service_type": "单次维修服务", "quantity": 1, "fault": "打不开", "product_snapshot": {"service_product_code": "A", "service_product_name": "门锁", "service_order_type": "单次维修服务"}}]},
             "products": [{"service_product_code": "A", "service_product_name": "门锁", "service_order_type": "单次维修服务"}],
             "selected_product_code": "A",
         }
@@ -402,10 +402,11 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
     assert result["last_order"]["order_no"] == "SO123"
     assert result["last_order"]["contacts"] == "默认联系人"
     assert result["last_order"]["phone"] == "13900001111"
-    assert result["order_info"] == {}
+    assert result["product_request"] == {}
+    assert result["order"] == {"items": []}
     assert result["missing_info"] == []
     assert result["products"] == []
-    assert result["selected_product_code"] is None
+    assert result["order"] == {"items": []}
     preview = build_order_preview(result)
     assert preview is not None
     assert preview["phase"] == "submitted"

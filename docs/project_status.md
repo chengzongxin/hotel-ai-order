@@ -119,7 +119,7 @@ service_type 精确过滤
     ↓
 BM25 + Chroma 混合排名
     ↓
-用户选品 → selected_product_code（不得覆盖 service_type）
+用户选品 → 创建首个 order.items 明细（不得覆盖 service_type）
 ```
 
 ---

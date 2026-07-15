@@ -388,11 +388,13 @@ def build_managed_repair_multi_payload(
         item = resolved.get("item") or {}
         item_info = {
             **order_info,
+            "room_number": item.get("room_number") or order_info.get("room_number"),
             "product_quantity": item.get("quantity") or 1,
             "fault": item.get("fault") or order_info.get("fault"),
             "area": item.get("area") or order_info.get("area"),
             "second_area": item.get("second_area") or order_info.get("second_area"),
             "second_area_id": item.get("second_area_id") or order_info.get("second_area_id"),
+            "managed_repair_scope": item.get("managed_repair_scope") or order_info.get("managed_repair_scope"),
         }
         item_payload, item_missing = build_managed_repair_order_payload(
             order_info=item_info,

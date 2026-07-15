@@ -1,10 +1,9 @@
 """order_preview 结构单元测试。"""
 
-from graph.products import get_selected_product, resolve_selected_code
-from services.workflow_projection import build_order_preview_model, build_product_section
+from services.workflow_projection import build_order_preview_model, build_product_options
 
 
-def test_build_product_section_from_products_list():
+def test_build_product_options_from_products_list():
     products = [
         {
             "service_product_code": "FWSP01537",
@@ -22,22 +21,18 @@ def test_build_product_section_from_products_list():
         },
     ]
 
-    section = build_product_section(
+    options = build_product_options(
         products=products,
-        selected_code="FWSP01537",
         search_status="success",
         search_query="门锁 打不开",
         search_feedback="已匹配到门锁损坏（困客人）",
     )
 
-    assert section.status == "success"
-    assert section.selected_code == "FWSP01537"
-    assert len(section.items) == 2
-    assert section.items[0].is_selected is True
-    assert section.items[1].is_selected is False
+    assert len(options) == 2
+    assert options[0].code == "FWSP01537"
 
 
-def test_build_product_section_does_not_select_top1_without_user_choice():
+def test_build_product_options_do_not_add_selection_state():
     products = [
         {
             "service_product_code": "FWSP01537",
@@ -46,16 +41,15 @@ def test_build_product_section_does_not_select_top1_without_user_choice():
         }
     ]
 
-    section = build_product_section(
+    options = build_product_options(
         products=products,
-        selected_code=None,
         search_status="success",
         search_query="门锁 打不开",
         search_feedback=None,
     )
+    assert options[0].is_recommended is True
+    assert not hasattr(options[0], "is_selected")
 
-    assert section.selected_code is None
-    assert section.items[0].is_selected is False
 
 
 def test_build_order_preview_model_marks_product_selection_phase():
@@ -79,15 +73,9 @@ def test_build_order_preview_model_marks_product_selection_phase():
     assert preview is not None
     payload = preview.model_dump(mode="json")
     assert payload["phase"] == "product_selection"
-    assert payload["products"]["selected_code"] is None
+    assert payload["products"][0]["code"] == "FWSP01537"
     assert payload["form"]["fields"] == []
-    assert payload["capabilities"]["select_product"] is True
-
-
-def test_resolve_selected_code_defaults_to_top1():
-    products = [{"service_product_code": "FWSP01537", "service_product_name": "A"}]
-    assert resolve_selected_code(products, None) == "FWSP01537"
-    assert get_selected_product(products, None)["service_product_name"] == "A"
+    assert "select_product" in payload["actions"]
 
 
 def test_build_order_preview_model_uses_single_products_field():
@@ -105,16 +93,15 @@ def test_build_order_preview_model_uses_single_products_field():
                 }
             ],
             "selected_product_code": "FWSP01537",
+            "order": {"items": [{"id": "item-1", "product_code": "FWSP01537", "product_name": "门锁损坏（困客人）", "service_type": "托管维修", "quantity": 1, "fault": "打不开", "room_number": "301", "area": "客房", "product_snapshot": {"service_product_code": "FWSP01537", "service_product_name": "门锁损坏（困客人）", "service_order_type": "托管维修"}}]},
             "missing_info": [],
         }
     )
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert payload["products"]["items"][0]["code"] == "FWSP01537"
-    assert payload["products"]["status"] == "success"
-    assert payload["products"]["query"] == "门锁 打不开"
-    assert "门锁损坏" in (payload["products"]["feedback"] or "")
+    assert payload["products"][0]["code"] == "FWSP01537"
+    assert payload["order"]["items"][0]["code"] == "FWSP01537"
 
 
 def test_build_order_preview_model_includes_effective_service_type_and_coverage():
@@ -146,13 +133,9 @@ def test_build_order_preview_model_includes_effective_service_type_and_coverage(
     payload = preview.model_dump(mode="json")
     assert payload["service_type"] == "托管维修"
     assert payload["effective_service_type"] == "单次维修服务"
-    assert payload["coverage"]["checked"] is True
-    assert payload["coverage"]["covered"] is False
-    assert payload["validation"] == {
-        "ready": False,
-        "missing_fields": ["expected_start_time"],
-    }
-    assert payload["capabilities"]["confirm_order"] is False
+    assert "coverage" not in payload
+    assert payload["errors"] == ["expected_start_time"]
+    assert "confirm_order" not in payload["actions"]
 
 
 def test_build_order_preview_model_includes_second_area_match_feedback():
@@ -178,6 +161,7 @@ def test_build_order_preview_model_includes_second_area_match_feedback():
                 }
             ],
             "selected_product_code": "FWSP01643",
+            "order": {"room_number": "301", "area": "客房", "second_area": "客房区域", "managed_repair_scope": "客房", "items": [{"id": "item-1", "product_code": "FWSP01643", "product_name": "壁纸/墙布(≤3平米小修)", "service_type": "托管维修", "quantity": 1, "fault": "破损", "product_snapshot": {"service_product_code": "FWSP01643", "service_product_name": "壁纸/墙布(≤3平米小修)", "service_order_type": "托管维修"}}]},
             "coverage_result": {
                 "checked": True,
                 "covered": True,
@@ -197,9 +181,8 @@ def test_build_order_preview_model_includes_second_area_match_feedback():
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert "区域匹配" in payload["products"]["feedback"]
-    assert "客房区域" in payload["products"]["feedback"]
-    assert payload["coverage"]["checked"] is True
+    assert "coverage" not in payload
+    assert payload["order"]["second_area"] == "客房区域"
 
 
 def test_build_order_preview_model_warns_unmatched_second_area():
@@ -224,6 +207,7 @@ def test_build_order_preview_model_warns_unmatched_second_area():
                 }
             ],
             "selected_product_code": "FWSP01643",
+            "order": {"items": [{"id": "item-1", "product_code": "FWSP01643", "product_name": "壁纸/墙布(≤3平米小修)", "service_type": "托管维修", "quantity": 1, "fault": "破损", "room_number": "301", "area": "客房", "managed_repair_scope": "客房", "product_snapshot": {"service_product_code": "FWSP01643", "service_product_name": "壁纸/墙布(≤3平米小修)", "service_order_type": "托管维修"}}]},
             "coverage_result": {
                 "checked": False,
                 "covered": None,
@@ -256,8 +240,7 @@ def test_build_order_preview_model_warns_unmatched_second_area():
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert "区域待确认" in payload["products"]["feedback"]
-    assert "客房设备" in payload["products"]["feedback"]
+    assert payload["errors"] == ["second_area"]
     assert payload["form"]["fields"][0]["key"] == "second_area"
     assert payload["form"]["fields"][0]["options"] == [{"label": "客房区域", "value": "客房区域"}]
 
@@ -266,7 +249,7 @@ def test_build_order_preview_model_warns_for_low_confidence_products():
     preview = build_order_preview_model(
         {
             "phase": "product_selection",
-            "order_info": {"room_number": "301", "product": "吹风的东西", "fault": "不冷"},
+            "product_request": {"room_number": "301", "product": "吹风的东西", "fault": "不冷"},
             "products": [
                 {
                     "service_product_code": "A",
@@ -281,15 +264,14 @@ def test_build_order_preview_model_warns_for_low_confidence_products():
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert payload["products"]["selected_code"] is None
-    assert "置信度偏低" in payload["products"]["feedback"]
+    assert payload["products"][0]["score"] == 0.38
 
 
 def test_build_order_preview_model_warns_for_ambiguous_products():
     preview = build_order_preview_model(
         {
             "phase": "product_selection",
-            "order_info": {"room_number": "301", "product": "门锁", "fault": "打不开"},
+            "product_request": {"room_number": "301", "product": "门锁", "fault": "打不开"},
             "products": [
                 {
                     "service_product_code": "A",
@@ -310,7 +292,7 @@ def test_build_order_preview_model_warns_for_ambiguous_products():
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert "多个相近" in payload["products"]["feedback"]
+    assert [item["code"] for item in payload["products"]] == ["A", "B"]
 
 
 def test_build_order_preview_model_ignores_last_order_outside_submitted_phase():
@@ -361,6 +343,7 @@ def test_ready_preview_exposes_capabilities_without_internal_payloads():
                 }
             ],
             "selected_product_code": "LOCK_REPAIR",
+            "order": {"items": [{"id": "item-1", "product_code": "LOCK_REPAIR", "product_name": "门锁维修", "service_type": "单次维修服务", "quantity": 1, "fault": "打不开", "room_number": "301", "product_snapshot": {"service_product_code": "LOCK_REPAIR", "service_product_name": "门锁维修", "service_order_type": "单次维修服务"}}]},
             "order_card_fields": [
                 {
                     "key": "room_number",
@@ -380,10 +363,12 @@ def test_ready_preview_exposes_capabilities_without_internal_payloads():
 
     assert preview is not None
     payload = preview.model_dump(mode="json")
-    assert payload["validation"] == {"ready": True, "missing_fields": []}
-    assert payload["capabilities"]["update_order"] is True
-    assert payload["capabilities"]["confirm_order"] is True
-    assert payload["capabilities"]["cancel_order"] is True
+    assert payload["errors"] == []
+    assert "update_order" in payload["actions"]
+    assert "confirm_order" in payload["actions"]
+    assert "cancel_order" in payload["actions"]
     assert "request_payload" not in payload["submission"]
     assert "response_payload" not in payload["submission"]
-    assert "user_confirmed" not in payload["order_info"]
+    assert "order_info" not in payload
+    assert payload["product_request"]["product"] is None
+    assert payload["order"]["user_confirmed"] is False

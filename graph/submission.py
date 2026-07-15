@@ -6,7 +6,8 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from graph.products import format_service_type_display
-from services.order_items import get_order_items
+from services.order_items import build_effective_order_info, build_order_state, get_order_common, get_order_items
+from services.order_state import assert_order_state_invariants, reset_active_order_state
 from graph.prompts import render_prompt
 from graph.state import AgentState
 from graph.streaming import run_traced_tool_call
@@ -45,18 +46,7 @@ def first_text(*values: object) -> str | None:
 def clear_active_order_state() -> dict[str, object]:
     """清空当前进行中的订单状态，保留 last_order 供后续追问使用。"""
 
-    return {
-        "service_type": None,
-        "effective_service_type": None,
-        "coverage_result": {},
-        "order_context": {},
-        "order_card_fields": [],
-        "order_info": {},
-        "products": [],
-        "selected_product_code": None,
-        "order_items": [],
-        "missing_info": [],
-    }
+    return reset_active_order_state()
 
 
 def empty_submission() -> dict[str, object]:
@@ -94,6 +84,8 @@ def build_submission_result(
         "response_payload": submit_data,
     }
     if is_submitted:
+        base["request_payload"] = {}
+        base["response_payload"] = {}
         return base
 
     if submit_data.get("submit_enabled") is False:
@@ -145,13 +137,16 @@ async def submit_order_from_state(
 ) -> dict[str, object]:
     """根据当前状态提交订单。"""
 
+    assert_order_state_invariants(dict(state))
     order_items = get_order_items(state)
+    if not order_items:
+        raise ValueError("提交订单前必须至少选择一个商品")
     selected_product = (order_items[0].get("product_snapshot") or {}) if order_items else {}
-    order_info = state.get("order_info", {})
+    order_info = build_effective_order_info(state)
     submit_params = {
         "order_info": order_info,
         "matched_product": selected_product,
-        "order_items": order_items,
+        "order": build_order_state(get_order_common(state), order_items),
         "service_type": state.get("service_type"),
         "effective_service_type": get_effective_service_type(state),
         "coverage_result": state.get("coverage_result") or {},
@@ -190,17 +185,14 @@ async def submit_order_from_state(
     if is_submitted:
         submitted_order = {
             "order_no": order_no or "",
-            "service_type": format_service_type(state.get("service_type"), state.get("order_info", {})),
-            "effective_service_type": format_service_type(get_effective_service_type(state), state.get("order_info", {})),
+            "service_type": format_service_type(state.get("service_type"), order_info),
+            "effective_service_type": format_service_type(get_effective_service_type(state), order_info),
             **order_info,
             "contacts": first_text(order_info.get("contacts"), submit_data.get("contacts"), request_payload.get("contacts")),
             "phone": first_text(order_info.get("phone"), submit_data.get("phone"), request_payload.get("phone")),
             "product_code": selected_product.get("service_product_code"),
             "product_name": selected_product.get("service_product_name"),
             "product_order_type": selected_product.get("service_order_type"),
-            "selected_product": selected_product,
-            "request_payload": request_payload,
-            "response_payload": submit_data,
             "coverage_result": state.get("coverage_result") or {},
             "items": [
                 {
@@ -212,9 +204,8 @@ async def submit_order_from_state(
                     "unit": item.get("unit"),
                     "price": item.get("price"),
                     "fault": item.get("fault"),
-                    "area": item.get("area"),
-                    "second_area": item.get("second_area"),
-                    "second_area_id": item.get("second_area_id"),
+                    "coverage": item.get("coverage") or {},
+                    "validation": item.get("validation") or {},
                     "can_edit": False,
                     "can_remove": False,
                 }
@@ -224,7 +215,7 @@ async def submit_order_from_state(
         answer = render_prompt(
             "submit/submit.md",
             order_id=order_no or "",
-            service_type=format_service_type(get_effective_service_type(state), state.get("order_info", {})),
+            service_type=format_service_type(get_effective_service_type(state), order_info),
             order_info=order_info,
             matched_product=selected_product,
         )
@@ -262,8 +253,7 @@ async def submit_order_from_state(
         "step": "submit_node",
         "submission": submission,
         "products": state.get("products") or [],
-        "selected_product_code": state.get("selected_product_code"),
-        "order_items": order_items,
+        "order": build_order_state(get_order_common(state), order_items),
         "missing_info": missing_fields,
         "retry_count": 0 if is_submitted else state.get("retry_count", 0),
         "off_topic_count": 0,
@@ -286,7 +276,8 @@ async def submit_order_from_state(
                 "coverage_result": state.get("coverage_result") or {},
                 "order_context": state.get("order_context") or {},
                 "order_card_fields": state.get("order_card_fields") or [],
-                "order_info": order_info,
+                "product_request": state.get("product_request") or {},
+                "order": build_order_state(get_order_common(state), order_items),
             }
         )
     trace_logger(

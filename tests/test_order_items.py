@@ -1,6 +1,17 @@
 """多商品订单状态与 payload 聚合回归测试。"""
 
-from services.order_items import add_or_merge_order_item, build_order_item
+import pytest
+
+from services.order_items import (
+    add_or_merge_order_item,
+    build_effective_order_info,
+    build_order_item,
+    get_order_items,
+    strip_item_fields,
+    sync_primary_item_from_order_info,
+    validate_order_items,
+)
+from services.order_state import assert_order_state_invariants
 from services.workflow_projection import build_order_preview_model
 from tools.order_payload_managed import build_managed_repair_multi_payload
 from tools.order_payload_single import build_single_order_multi_payload
@@ -27,6 +38,50 @@ def test_order_items_add_and_merge_quantity():
     assert items[1]["product_code"] == "B"
 
 
+def test_order_items_have_no_legacy_selected_product_fallback():
+    state = {
+        "products": [_product("A")],
+        "selected_product_code": "A",
+        "order_info": {"fault": "损坏"},
+    }
+
+    assert get_order_items(state) == []
+
+
+def test_primary_item_is_the_only_source_for_product_fields():
+    item = build_order_item(_product("A"), {"fault": "旧故障", "room_number": "1208"})
+    updated = sync_primary_item_from_order_info([item], {"fault": "新故障", "room_number": "1306"})
+    common = strip_item_fields({"fault": "新故障", "room_number": "1306", "contacts": "张三"})
+    effective = build_effective_order_info({"order": {**common, "items": updated}})
+
+    assert common == {"room_number": "1306", "contacts": "张三"}
+    assert effective["fault"] == "新故障"
+    assert effective["room_number"] == "1306"
+
+
+def test_state_invariants_reject_pre_order_without_items_and_duplicate_products():
+    with pytest.raises(ValueError, match="至少有一个"):
+        assert_order_state_invariants({"phase": "pre_order", "order": {"items": []}})
+
+    item = build_order_item(_product("A"), {})
+    duplicate = build_order_item(_product("A"), {})
+    with pytest.raises(ValueError, match="重复明细"):
+        assert_order_state_invariants({"phase": "pre_order", "order": {"items": [item, duplicate]}})
+
+
+def test_shared_second_area_is_not_reported_as_an_item_error():
+    item = build_order_item(_product("A"), {"fault": "损坏"})
+
+    validated, item_errors = validate_order_items(
+        "托管维修",
+        {"room_number": "1208", "area": "客房"},
+        [item],
+    )
+
+    assert item_errors == []
+    assert validated[0]["validation"] == {"valid": True, "missing_fields": []}
+
+
 def test_preview_exposes_cart_and_item_capabilities():
     items = [
         build_order_item(_product("A"), {}, quantity=2),
@@ -36,17 +91,16 @@ def test_preview_exposes_cart_and_item_capabilities():
         "phase": "pre_order",
         "service_type": "托管维修",
         "effective_service_type": "托管维修",
-        "order_info": {"room_number": "1208", "fault": "损坏"},
-        "order_items": items,
+        "order": {"items": items},
         "missing_info": [],
     })
 
     assert preview is not None
-    assert preview.order_items.total_quantity == 3
-    assert len(preview.order_items.items) == 2
-    assert preview.capabilities.add_order_item is True
-    assert preview.capabilities.remove_order_item is True
-    assert preview.capabilities.confirm_order is True
+    assert sum(item.quantity for item in preview.order.items) == 3
+    assert len(preview.order.items) == 2
+    assert "add_item" in preview.actions
+    assert "remove_item" in preview.actions
+    assert "confirm_order" in preview.actions
 
 
 def test_managed_multi_payload_contains_one_detail_per_item():

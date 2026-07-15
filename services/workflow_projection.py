@@ -5,36 +5,30 @@ from typing import Any
 from graph.order_fields import build_order_card_fields
 from graph.products import (
     derive_product_section_fields,
-    get_selected_product,
-    resolve_selected_code,
 )
 from graph.text_parsing import format_service_type
 from schemas.order_preview import (
-    CoverageSection,
+    ClientOrder,
     OrderForm,
     OrderFormField,
-    OrderInfo,
+    OrderCommon,
     OrderItem,
-    OrderItemsSection,
     OrderPhase,
     OrderPreview,
+    ProductRequest,
     ProductOption,
-    ProductSection,
     SubmissionSection,
     SubmissionState,
     SubmittedOrder,
-    WorkflowCapabilities,
-    WorkflowValidation,
 )
 from tools.order_payload_managed import align_order_second_area_with_spu
-from services.order_items import get_order_items
+from services.order_items import build_effective_order_info, get_order_common, get_order_items
 
 
 def product_raw_to_option(
     raw: dict[str, Any],
     *,
     rank: int,
-    selected_code: str | None,
 ) -> ProductOption:
     code = str(raw.get("service_product_code") or "")
     return ProductOption(
@@ -52,36 +46,23 @@ def product_raw_to_option(
         score=raw.get("score"),
         rank=rank,
         is_recommended=rank == 1,
-        is_selected=bool(code and code == selected_code),
     )
 
 
-def build_product_section(
+def build_product_options(
     *,
     products: list[dict[str, Any]],
-    selected_code: str | None,
     search_status: str | None,
     search_query: str | None,
     search_feedback: str | None,
     selection_rejected: bool = False,
-) -> ProductSection:
-    resolved_code = resolve_selected_code(
-        products,
-        selected_code,
-        default_to_first=False,
-    )
-    return ProductSection(
-        status=search_status,
-        query=search_query,
-        feedback=search_feedback,
-        selected_code=resolved_code,
-        selection_rejected=selection_rejected,
-        items=[
-            product_raw_to_option(raw, rank=index, selected_code=resolved_code)
+) -> list[ProductOption]:
+    del search_status, search_query, search_feedback, selection_rejected
+    return [
+            product_raw_to_option(raw, rank=index)
             for index, raw in enumerate(products, start=1)
             if raw.get("service_product_code")
-        ],
-    )
+        ]
 
 
 def _infer_phase(state: dict[str, Any]) -> str:
@@ -96,11 +77,11 @@ def _infer_phase(state: dict[str, Any]) -> str:
         return OrderPhase.SUBMITTED.value
     if state.get("product_selection_rejected"):
         return OrderPhase.COLLECTING.value
-    if state.get("selected_product_code") and state.get("order_card_fields"):
+    if get_order_items(state) and state.get("order_card_fields"):
         return OrderPhase.PRE_ORDER.value
     if products:
         return OrderPhase.PRODUCT_SELECTION.value
-    if state.get("order_info"):
+    if state.get("product_request") or state.get("order"):
         return OrderPhase.COLLECTING.value
     return OrderPhase.IDLE.value
 
@@ -114,11 +95,12 @@ def _has_client_data(
     submission_state = str((state.get("submission") or {}).get("state") or "")
     return any(
         (
-            state.get("order_info"),
+            state.get("product_request"),
+            state.get("order"),
             state.get("products"),
             state.get("coverage_result"),
             state.get("order_card_fields"),
-            state.get("order_items"),
+            get_order_items(state),
             submitted_order,
             phase == OrderPhase.CANCELLED.value,
             submission_state
@@ -127,16 +109,15 @@ def _has_client_data(
     )
 
 
-def _capabilities(
+def _actions(
     *,
     phase: str,
     products: list[dict[str, Any]],
-    selected_code: str | None,
     order_items: list[dict[str, Any]],
     selection_rejected: bool,
     missing_fields: list[str],
     submission_state: str,
-) -> WorkflowCapabilities:
+) -> list[str]:
     busy = submission_state == SubmissionState.SUBMITTING.value
     submitted = submission_state == SubmissionState.SUCCEEDED.value
     active = phase in {
@@ -158,17 +139,20 @@ def _capabilities(
     )
     ready = editing and not missing_fields
     can_submit = ready and submission_state != SubmissionState.DISABLED.value
-    return WorkflowCapabilities(
-        select_product=selecting,
-        reject_products=selecting,
-        update_order=editing,
-        confirm_order=can_submit,
-        cancel_order=active and not busy,
-        retry_submission=ready and submission_state == SubmissionState.FAILED.value,
-        add_order_item=editing,
-        update_order_item=editing,
-        remove_order_item=editing and len(order_items) > 1,
-    )
+    actions: list[str] = []
+    if selecting:
+        actions.extend(("select_product", "reject_products"))
+    if editing:
+        actions.extend(("update_order", "add_item", "update_item"))
+    if editing and len(order_items) > 1:
+        actions.append("remove_item")
+    if can_submit:
+        actions.append("confirm_order")
+    if active and not busy:
+        actions.append("cancel_order")
+    if ready and submission_state == SubmissionState.FAILED.value:
+        actions.append("retry_submission")
+    return actions
 
 
 def _project_order_item(raw: dict[str, Any], *, editable: bool, removable: bool) -> OrderItem:
@@ -181,9 +165,8 @@ def _project_order_item(raw: dict[str, Any], *, editable: bool, removable: bool)
         unit=raw.get("unit"),
         price=raw.get("price"),
         fault=raw.get("fault"),
-        area=raw.get("area"),
-        second_area=raw.get("second_area"),
-        second_area_id=raw.get("second_area_id"),
+        coverage=raw.get("coverage") or {},
+        errors=list((raw.get("validation") or {}).get("missing_fields") or []),
         can_edit=editable,
         can_remove=removable,
     )
@@ -193,9 +176,8 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
     """Project internal state into the typed client workflow model."""
 
     projected_state = dict(state)
-    order_info = dict(state.get("order_info") or {})
+    order_info = build_effective_order_info(state)
     products = list(state.get("products") or [])
-    selected_code = state.get("selected_product_code")
     order_items = get_order_items(state)
     phase = _infer_phase(state)
     submission_raw = state.get("submission") or {}
@@ -255,42 +237,32 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
                 ),
             )
 
-    projected_state.update(
-        {
-            "order_info": order_info,
-            "coverage_result": coverage_result,
-            "service_type": service_type,
-        }
-    )
+    projected_state.update({"coverage_result": coverage_result, "service_type": service_type})
     search_status, search_query, search_feedback = derive_product_section_fields(
         projected_state
     )
-    products_section = build_product_section(
+    product_options = build_product_options(
         products=products,
-        selected_code=selected_code,
         search_status=search_status,
         search_query=search_query,
         search_feedback=search_feedback,
         selection_rejected=bool(state.get("product_selection_rejected")),
     )
     missing_fields = list(state.get("missing_info") or [])
-    selected_code = products_section.selected_code
-    validation_ready = (
-        phase == OrderPhase.PRE_ORDER.value
-        and bool(order_items)
-        and not missing_fields
-    )
+    for item in order_items:
+        validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
+        for field in validation.get("missing_fields") or []:
+            qualified = f"items.{item.get('id')}.{field}"
+            if qualified not in missing_fields:
+                missing_fields.append(qualified)
     item_editable = phase == OrderPhase.PRE_ORDER.value and submission_state not in {
         SubmissionState.SUBMITTING.value,
         SubmissionState.SUCCEEDED.value,
     }
-    order_items_section = OrderItemsSection(
-        items=[
+    projected_items = [
             _project_order_item(item, editable=item_editable, removable=item_editable and len(order_items) > 1)
             for item in order_items
-        ],
-        total_quantity=sum(max(int(item.get("quantity") or 1), 1) for item in order_items),
-    )
+        ]
 
     service_type_display = state.get("service_type_display") or format_service_type(
         service_type,
@@ -307,9 +279,12 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
         service_type_display=service_type_display,
         effective_service_type=effective_service_type,
         effective_service_type_display=effective_service_type_display,
-        order_info=OrderInfo.model_validate(order_info),
-        products=products_section,
-        order_items=order_items_section,
+        product_request=ProductRequest.model_validate(state.get("product_request") or {}),
+        order=ClientOrder(
+            **OrderCommon.model_validate(get_order_common(state)).model_dump(),
+            items=projected_items,
+        ),
+        products=product_options,
         form=OrderForm(
             fields=[
                 OrderFormField.model_validate(field)
@@ -317,21 +292,20 @@ def build_order_preview_model(state: dict[str, Any]) -> OrderPreview | None:
                 if isinstance(field, dict)
             ]
         ),
-        validation=WorkflowValidation(
-            ready=validation_ready,
-            missing_fields=missing_fields,
-        ),
-        capabilities=_capabilities(
+        errors=missing_fields,
+        actions=_actions(
             phase=phase,
             products=products,
-            selected_code=selected_code,
             order_items=order_items,
             selection_rejected=bool(state.get("product_selection_rejected")),
             missing_fields=missing_fields,
             submission_state=submission_state,
         ),
-        coverage=CoverageSection.model_validate(coverage_result),
-        submission=SubmissionSection.model_validate(submission_raw),
+        submission=SubmissionSection(
+            state=submission_state,
+            order_no=submission_raw.get("order_no"),
+            message=submission_raw.get("failure_message"),
+        ),
         submitted_order=(
             SubmittedOrder.model_validate(submitted_order_raw)
             if submitted_order_raw

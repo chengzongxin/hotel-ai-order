@@ -31,16 +31,6 @@ class SubmissionState(str, Enum):
     DISABLED = "disabled"
 
 
-class SubmissionFailureCode(str, Enum):
-    """可供前端分类展示和埋点的提交失败原因。"""
-
-    SUBMIT_DISABLED = "submit_disabled"
-    MISSING_REQUIRED_FIELDS = "missing_required_fields"
-    ORDER_NO_MISSING = "order_no_missing"
-    API_ERROR = "api_error"
-    UNKNOWN = "unknown"
-
-
 class UrgencyLevel(str, Enum):
     """订单紧急程度。"""
 
@@ -48,15 +38,6 @@ class UrgencyLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     URGENT = "urgent"
-
-
-class ProductSearchStatus(str, Enum):
-    """本轮标准商品检索结果状态。"""
-
-    SKIPPED = "skipped"
-    SUCCESS = "success"
-    NO_MATCH = "no_match"
-    ERROR = "error"
 
 
 class OrderFieldSource(str, Enum):
@@ -77,8 +58,8 @@ class OrderFieldInputType(str, Enum):
     NUMBER = "number"
 
 
-class OrderInfo(BaseModel):
-    """从多轮对话中收集、且允许展示给当前用户的订单事实。"""
+class ProductRequest(BaseModel):
+    """商品选择前从自然语言中抽取的商品需求。"""
 
     room_number: str | None = Field(
         default=None,
@@ -110,11 +91,24 @@ class OrderInfo(BaseModel):
         description="托管维修范围；当前主要为 `客房` 或 `公区`。",
         examples=["客房"],
     )
-    urgency: UrgencyLevel | str | None = Field(
-        default=None,
-        description="紧急程度：low、medium、high 或 urgent。",
-        examples=["medium"],
-    )
+    second_area_id: str | None = Field(default=None, description="二级区域 ID。")
+    available_second_areas: list[str] = Field(default_factory=list, description="可选二级区域名称。")
+    available_second_area_options: list[dict[str, Any]] = Field(default_factory=list, description="结构化二级区域选项。")
+    second_area_needs_confirmation: bool = Field(default=False, description="是否需要用户确认二级区域。")
+
+
+class OrderCommon(BaseModel):
+    """作用于整张订单的公共字段。"""
+
+    room_number: str | None = Field(default=None, description="本订单所有商品共用的房号或位置。")
+    area: str | None = Field(default=None, description="本订单所有商品共用的一级区域。")
+    second_area: str | None = Field(default=None, description="本订单所有商品共用的二级区域。")
+    second_area_id: str | None = Field(default=None, description="共用二级区域 ID。")
+    managed_repair_scope: str | None = Field(default=None, description="共用托管维修范围。")
+    available_second_areas: list[str] = Field(default_factory=list, description="可选二级区域。")
+    available_second_area_options: list[dict[str, Any]] = Field(default_factory=list, description="结构化二级区域选项。")
+    second_area_needs_confirmation: bool = Field(default=False, description="是否需要确认二级区域。")
+    urgency: UrgencyLevel | str | None = Field(default=None, description="紧急程度。")
     expected_start_time: str | None = Field(
         default=None,
         description="用户期望的开工时间，可包含自然语言或规范化时间文本。",
@@ -125,12 +119,13 @@ class OrderInfo(BaseModel):
         description="安装类订单的货物到场状态。",
         examples=["已到场"],
     )
-    product_quantity: int | None = Field(
-        default=None,
-        ge=1,
-        description="下单商品数量，最小为 1。",
-        examples=[1],
-    )
+    contacts: str | None = Field(default=None, description="订单联系人。")
+    phone: str | None = Field(default=None, description="订单联系电话。")
+    remark: str | None = Field(default=None, description="订单备注。")
+    special_requirement: str | None = Field(default=None, description="特殊要求。")
+    total_fee: str | None = Field(default=None, description="订单总费用展示值。")
+    user_confirmed: bool = Field(default=False, description="用户是否确认下单。")
+    user_cancelled: bool = Field(default=False, description="用户是否取消下单。")
 
 
 class ProductOption(BaseModel):
@@ -156,21 +151,6 @@ class ProductOption(BaseModel):
     )
     rank: int = Field(description="候选商品排序，从 1 开始。", ge=1, examples=[1])
     is_recommended: bool = Field(default=False, description="是否为当前候选列表的第一推荐项。")
-    is_selected: bool = Field(default=False, description="用户当前是否已经选中该商品。")
-
-
-class ProductSection(BaseModel):
-    """本轮商品检索、候选与选中状态。"""
-
-    status: ProductSearchStatus | str | None = Field(
-        default=None,
-        description="检索状态：skipped、success、no_match 或 error。",
-    )
-    query: str | None = Field(default=None, description="后端实际用于商品检索的查询文本。", examples=["门锁 打不开"])
-    feedback: str | None = Field(default=None, description="解释匹配结果或引导用户选择的提示文案。")
-    selected_code: str | None = Field(default=None, description="用户当前选中的标准商品编码；未选择时为 null。")
-    selection_rejected: bool = Field(default=False, description="用户是否明确选择了“以上都不符合”。")
-    items: list[ProductOption] = Field(default_factory=list, description="按 rank 升序排列的商品候选列表。")
 
 
 class OrderItem(BaseModel):
@@ -184,18 +164,10 @@ class OrderItem(BaseModel):
     unit: str | None = Field(default=None, description="商品计量单位。")
     price: str | None = Field(default=None, description="商品参考单价。")
     fault: str | None = Field(default=None, description="该商品对应的故障或服务说明。")
-    area: str | None = Field(default=None, description="该商品所在一级区域。")
-    second_area: str | None = Field(default=None, description="该商品所在二级区域。")
-    second_area_id: str | None = Field(default=None, description="该商品二级区域 ID。")
+    coverage: dict[str, Any] = Field(default_factory=dict, description="该商品的维保范围校验摘要。")
+    errors: list[str] = Field(default_factory=list, description="该商品仍需补充的字段。")
     can_edit: bool = Field(default=True, description="当前是否允许修改该商品明细。")
     can_remove: bool = Field(default=True, description="当前是否允许删除该商品明细。")
-
-
-class OrderItemsSection(BaseModel):
-    """当前订单最终要提交的商品明细集合。"""
-
-    items: list[OrderItem] = Field(default_factory=list, description="按加入顺序排列的商品明细。")
-    total_quantity: int = Field(default=0, ge=0, description="全部商品数量合计。")
 
 
 class OrderFormOption(BaseModel):
@@ -210,7 +182,6 @@ class OrderFormField(BaseModel):
 
     key: str = Field(description="字段稳定标识；更新订单信息时作为 updates 的 key。", examples=["expected_time"])
     label: str = Field(description="面向用户的字段名称。", examples=["期望开工/完工时间"])
-    value: Any = Field(default=None, description="当前字段值；类型由 input_type 和业务字段决定。")
     required: bool = Field(default=False, description="该字段在当前服务类型下是否必填。")
     source: OrderFieldSource = Field(default=OrderFieldSource.SYSTEM, description="当前值来源：user、system 或 product。")
     editable: bool = Field(default=True, description="后端是否允许用户通过确定性接口修改该字段。")
@@ -231,47 +202,6 @@ class OrderForm(BaseModel):
     fields: list[OrderFormField] = Field(default_factory=list, description="前端按顺序渲染的预下单字段。")
 
 
-class CoverageSection(BaseModel):
-    """托管维修维保范围校验摘要。"""
-
-    checked: bool = Field(default=False, description="是否已经执行维保范围校验。")
-    covered: bool | None = Field(default=None, description="是否在维保范围内；未校验或不适用时为 null。")
-    reason: str | None = Field(default=None, description="校验结果、降级原因或待补充信息说明。")
-    effective_service_type: str | None = Field(default=None, description="范围校验后最终采用的服务类型。")
-    hosting_card_name: str | None = Field(default=None, description="命中的维保卡或维保套餐名称。")
-
-
-class WorkflowValidation(BaseModel):
-    """当前订单数据完整性校验结果。"""
-
-    ready: bool = Field(
-        default=False,
-        description="订单业务数据是否完整；不等同于按钮当前是否可点击，操作权限以 capabilities 为准。",
-    )
-    missing_fields: list[str] = Field(
-        default_factory=list,
-        description="仍需补充的业务字段 key；为空表示数据完整。",
-        examples=[["expected_start_time"]],
-    )
-
-
-class WorkflowCapabilities(BaseModel):
-    """后端当前接受的确定性业务命令。
-
-    前端决定在哪里、以什么组件展示这些操作；后端收到命令后仍会再次校验。
-    """
-
-    select_product: bool = Field(default=False, description="当前是否允许选择一个商品候选。")
-    reject_products: bool = Field(default=False, description="当前是否允许拒绝全部商品候选。")
-    update_order: bool = Field(default=False, description="当前是否允许修改预下单字段。")
-    confirm_order: bool = Field(default=False, description="当前是否允许确认并提交订单。")
-    cancel_order: bool = Field(default=False, description="当前是否允许取消进行中的订单。")
-    retry_submission: bool = Field(default=False, description="上次提交失败后，当前是否满足再次提交条件。")
-    add_order_item: bool = Field(default=False, description="当前是否允许向预下单增加商品。")
-    update_order_item: bool = Field(default=False, description="当前是否允许修改商品数量或故障说明。")
-    remove_order_item: bool = Field(default=False, description="当前是否允许删除商品明细。")
-
-
 class SubmissionSection(BaseModel):
     """真实下单动作的客户端安全摘要。"""
 
@@ -280,9 +210,13 @@ class SubmissionSection(BaseModel):
         description="提交状态：not_attempted、submitting、succeeded、failed 或 disabled。",
     )
     order_no: str | None = Field(default=None, description="提交成功后返回的真实订单号。", examples=["SO202607130001"])
-    failure_code: SubmissionFailureCode | str | None = Field(default=None, description="提交失败分类码，供前端选择提示和埋点。")
-    failure_message: str | None = Field(default=None, description="已经脱敏、可展示给用户的提交失败说明。")
-    missing_fields: list[str] = Field(default_factory=list, description="真实下单接口仍缺失的参数或业务字段名称。")
+    message: str | None = Field(default=None, description="已经脱敏、可展示给用户的提交结果说明。")
+
+
+class ClientOrder(OrderCommon):
+    """客户端直接使用的订单；公共字段与商品明细归于一个对象。"""
+
+    items: list[OrderItem] = Field(default_factory=list, description="最终要提交的商品明细。")
 
 
 class SubmittedOrder(BaseModel):
@@ -316,59 +250,39 @@ class OrderPreview(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "schema_version": 1,
+                    "schema_version": 4,
                     "phase": "pre_order",
                     "service_type": "托管维修",
                     "service_type_display": "托管维修（客房）",
                     "effective_service_type": "托管维修",
                     "effective_service_type_display": "托管维修（客房）",
-                    "order_info": {
-                        "room_number": "301",
-                        "product": "门锁",
-                        "fault": "打不开",
-                        "area": "客房",
+                    "product_request": {},
+                    "order": {
                         "urgency": "medium",
-                    },
-                    "products": {
-                        "status": "success",
-                        "query": "门锁 打不开",
-                        "selected_code": "FWSP01537",
-                        "selection_rejected": False,
                         "items": [],
                     },
+                    "products": [],
                     "form": {"fields": []},
-                    "validation": {"ready": True, "missing_fields": []},
-                    "capabilities": {
-                        "select_product": False,
-                        "reject_products": False,
-                        "update_order": True,
-                        "confirm_order": True,
-                        "cancel_order": True,
-                        "retry_submission": False,
-                    },
-                    "coverage": {"checked": True, "covered": True},
-                    "submission": {"state": "not_attempted", "missing_fields": []},
+                    "errors": [],
+                    "actions": ["update_order", "confirm_order", "cancel_order"],
+                    "submission": {"state": "not_attempted", "order_no": None, "message": None},
                     "submitted_order": None,
                 }
             ]
         }
     )
 
-    schema_version: int = Field(default=1, description="客户端状态契约版本；用于兼容未来字段演进。", examples=[1])
+    schema_version: int = Field(default=4, description="客户端最小状态契约版本。", examples=[4])
     phase: OrderPhase | str = Field(default=OrderPhase.IDLE, description="订单主流程阶段；前端可据此选择展示区域。")
     service_type: str | None = Field(default=None, description="由当前订单对话关键词确定的原始服务类型。")
     service_type_display: str | None = Field(default=None, description="原始服务类型的用户展示文案。")
     effective_service_type: str | None = Field(default=None, description="维保校验后最终用于字段校验和提交的服务类型。")
     effective_service_type_display: str | None = Field(default=None, description="最终服务类型的用户展示文案。")
-    order_info: OrderInfo = Field(default_factory=OrderInfo, description="当前已收集的订单事实。")
-    products: ProductSection = Field(default_factory=ProductSection, description="商品检索、候选及选中状态。")
-    order_items: OrderItemsSection = Field(default_factory=OrderItemsSection, description="最终要提交的商品明细。")
+    product_request: ProductRequest = Field(default_factory=ProductRequest, description="商品选择前的自然语言需求。")
+    order: ClientOrder = Field(default_factory=ClientOrder, description="订单公共字段和最终商品明细。")
+    products: list[ProductOption] = Field(default_factory=list, description="当前可选择的商品候选。")
     form: OrderForm = Field(default_factory=OrderForm, description="当前预下单业务字段；前端决定具体组件。")
-    validation: WorkflowValidation = Field(default_factory=WorkflowValidation, description="订单数据完整性校验结果。")
-    capabilities: WorkflowCapabilities = Field(default_factory=WorkflowCapabilities, description="后端当前允许执行的确定性命令。")
-    coverage: CoverageSection = Field(
-        default_factory=CoverageSection,
-        description="当前所选商品的托管维修维保范围校验摘要。",
-    )
+    errors: list[str] = Field(default_factory=list, description="当前订单仍需补充的字段路径。")
+    actions: list[str] = Field(default_factory=list, description="当前允许执行的确定性操作。")
     submission: SubmissionSection = Field(default_factory=SubmissionSection, description="真实下单动作状态和安全错误摘要。")
     submitted_order: SubmittedOrder | None = Field(default=None, description="提交成功后的订单快照；未成功时为 null。")

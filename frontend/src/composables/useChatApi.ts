@@ -13,7 +13,6 @@ import { SESSION_KEY } from './useChatSession'
 type ChatApiDeps = {
   sessionId: Ref<string>
   messages: Ref<ChatMessage[]>
-  selectedProductCode: Ref<string | null>
   errorMessage: Ref<string>
   streamStatus: Ref<string>
   isSending: Ref<boolean>
@@ -32,7 +31,6 @@ type ChatApiDeps = {
     aiMessageId: string,
     messages: ConversationMessagePayload[],
   ) => void
-  isProductSelected: (item: ProductOption) => boolean
   canConfirmOrder: Ref<boolean>
 }
 
@@ -76,7 +74,7 @@ export function useChatApi(deps: ChatApiDeps) {
   }
 
   async function updateOrderInfoField(key: string, value: string | null) {
-    if (!deps.selectedProductCode.value || deps.isUpdatingOrderInfo.value) return
+    if (deps.isUpdatingOrderInfo.value) return
     deps.isUpdatingOrderInfo.value = true
     deps.updatingFieldKey.value = key
     deps.errorMessage.value = ''
@@ -141,7 +139,7 @@ export function useChatApi(deps: ChatApiDeps) {
 
   async function selectProduct(item: ProductOption) {
     const code = item.code?.trim()
-    if (!code || deps.isSelectingProduct.value || deps.isSending.value || deps.isProductSelected(item)) return
+    if (!code || deps.isSelectingProduct.value || deps.isSending.value) return
 
     deps.isSelectingProduct.value = true
     deps.selectingProductCode.value = code

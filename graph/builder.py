@@ -28,13 +28,23 @@ from graph.order_fields import (
 from graph.products import (
     build_product_search_feedback,
     build_product_search_query,
-    get_selected_product,
 )
 from graph.state import AgentState
 from graph.submission import empty_submission, get_effective_service_type, submit_order_from_state
 from services.order_workflow import OrderWorkflowService
 from services.order_normalizer import normalize_order_defaults
 from services.order_context_service import load_order_context
+from services.order_state import reset_active_order_state, reset_product_state
+from services.order_items import (
+    build_effective_order_info,
+    build_order_state,
+    get_order_items,
+    get_primary_order_product,
+    strip_item_fields,
+    split_order_info,
+    sync_primary_item_from_order_info,
+    validate_order_items,
+)
 from services.conversation_service import build_conversation_turn
 from services.session_access import ensure_session_access
 from memory.postgres_log import save_conversation_log
@@ -149,29 +159,17 @@ def clear_product_workflow_state() -> dict[str, object]:
     """服务类型改变后清空依赖旧类型的商品和预下单状态。"""
 
     return {
-        "products": [],
-        "selected_product_code": None,
-        "order_items": [],
-        "effective_service_type": None,
-        "coverage_result": {},
-        "order_context": {},
-        "order_card_fields": [],
-        "missing_info": [],
+        **reset_product_state(),
         "submission": empty_submission(),
-        "product_selection_rejected": False,
     }
 
 
 def get_product_search_feedback(state: AgentState) -> str | None:
-    selected_product = get_selected_product(
-        state.get("products") or [],
-        state.get("selected_product_code"),
-        default_to_first=False,
-    )
+    selected_product = get_primary_order_product(state)
     if not selected_product:
         return None
     return build_product_search_feedback(
-        order_info=state.get("order_info") or {},
+        order_info=build_effective_order_info(state),
         selected_product=selected_product,
         service_type=get_effective_service_type(state),
         coverage_result=state.get("coverage_result") or {},
@@ -181,7 +179,7 @@ def get_product_search_feedback(state: AgentState) -> str | None:
 def get_extractor_history(state: AgentState) -> str:
     """提交后的新订单默认只看最新输入，避免已提交订单被重新抽取。"""
 
-    if state.get("last_order") and not state.get("order_info"):
+    if state.get("last_order") and not state.get("product_request") and not state.get("order"):
         return f"human: {get_last_human_message(state.get('messages', []))}"
     return format_messages(state.get("messages", []))
 
@@ -247,7 +245,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "user_confirmed": result.user_confirmed,
         "user_cancelled": user_cancelled,
     }
-    existing_order_info = state.get("order_info", {}) if has_active_order(state) else {}
+    existing_order_info = build_effective_order_info(state) if has_active_order(state) else {}
     if intent in {"smalltalk", "unknown", "cancel_order"}:
         order_info = existing_order_info if has_active_order(state) else {}
         if intent == "cancel_order":
@@ -295,19 +293,41 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         and service_type
         and service_type != current_service_type
     )
+    primary_product = get_primary_order_product(state)
+    detected_product_name = str(detected_fields.get("product") or "").strip()
+    current_product_names = {
+        str(primary_product.get("service_product_name") or "").strip(),
+        str((get_order_items(state)[0] if get_order_items(state) else {}).get("product_name") or "").strip(),
+    }
+    product_change_requested = bool(
+        get_order_items(state)
+        and detected_product_name
+        and not any(
+            name and (detected_product_name in name or name in detected_product_name)
+            for name in current_product_names
+        )
+    )
     output: dict[str, object] = {
         "intent": intent,
         "phase": phase,
-        "order_info": order_info,
+        **split_order_info(order_info, keep_product_request=not bool(get_order_items(state))),
         "step": "intent_node",
         "last_user_message": last_user_message,
+        "product_change_requested": product_change_requested,
     }
+    if get_order_items(state) and intent in {"create_order", "confirm_order"} and not service_type_changed and not product_change_requested:
+        output["order"] = build_order_state(
+            strip_item_fields(order_info),
+            sync_primary_item_from_order_info(get_order_items(state), order_info),
+        )
+        output["product_request"] = {}
     if intent in {"create_order", "confirm_order"}:
         output["service_type"] = service_type
     if intent in {"create_order", "confirm_order"} and state.get("phase") == PHASE_SUBMITTED:
         output.update(clear_product_workflow_state())
-    elif service_type_changed:
+    elif service_type_changed or product_change_requested:
         output.update(clear_product_workflow_state())
+        output["product_change_requested"] = product_change_requested
     elif intent in {"smalltalk", "unknown"} and state.get("phase") == PHASE_SUBMITTED:
         output.update({"submission": empty_submission()})
     trace_logger("node.intent.output", **output)
@@ -333,38 +353,31 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
         trace_logger("node.search_product.selected_by_text", selection=selection, **output)
         return output
 
-    if state.get("intent") == "confirm_order" and existing_products:
+    if state.get("intent") == "confirm_order" and get_order_items(state):
         trace_logger(
             "node.search_product.skip",
             reason="confirm_with_existing_products",
-            selected_product_code=state.get("selected_product_code"),
             product_count=len(existing_products),
         )
         return {"step": "search_product_node"}
 
-    selected_product = get_selected_product(
-        existing_products,
-        state.get("selected_product_code"),
-        default_to_first=False,
-    )
-    if state.get("intent") == "create_order" and selected_product and is_collecting_non_product_fields(state):
+    selected_product = get_primary_order_product(state)
+    if state.get("intent") == "create_order" and selected_product and not state.get("product_change_requested"):
         trace_logger(
             "node.search_product.skip",
             reason="supplement_info_with_selected_product",
-            selected_product_code=state.get("selected_product_code"),
             missing_info=state.get("missing_info") or [],
             product_count=len(existing_products),
         )
         return {"step": "search_product_node"}
 
-    order_info = state.get("order_info", {})
+    order_info = build_effective_order_info(state)
     service_type = infer_service_type(last_msg, state.get("service_type"))
 
     search_query = build_product_search_query(order_info, service_type)
     if not search_query:
         output = {
             "products": [],
-            "selected_product_code": None,
             "service_type": service_type,
             "step": "search_product_node",
         }
@@ -398,7 +411,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
     )
 
     output = workflow.match_products(
-        state={**state, "order_info": normalized_order_info},
+        state={**state, **split_order_info(normalized_order_info, keep_product_request=True)},
         products=products,
         service_type=service_type,
     )
@@ -416,11 +429,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
 async def coverage_node(state: AgentState) -> dict[str, object]:
     """托管维修商品下单前，校验当前用户维保卡是否覆盖该商品。"""
 
-    selected_product = get_selected_product(
-        state.get("products") or [],
-        state.get("selected_product_code"),
-        default_to_first=False,
-    )
+    selected_product = get_primary_order_product(state)
     if (state.get("products") or []) and not selected_product:
         return {
             "effective_service_type": None,
@@ -448,8 +457,9 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         }
 
     emit_status("coverage_node", "正在校验维保卡范围...")
+    effective_order_info = build_effective_order_info(state)
     coverage_params = {
-        "order_info": state.get("order_info") or {},
+        "order_info": effective_order_info,
         "matched_product": selected_product,
         "last_user_message": state.get("last_user_message", ""),
     }
@@ -459,7 +469,7 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
         display_name="维保范围校验",
         params=coverage_params,
         action=lambda: check_hosting_product_coverage(
-            order_info=state.get("order_info") or {},
+            order_info=effective_order_info,
             matched_product=selected_product,
             user=user_from_runtime_config(),
             last_user_message=state.get("last_user_message", ""),
@@ -469,7 +479,7 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
     effective_service_type = coverage_data.get("effective_service_type") or service_type
     order_info = normalize_order_defaults(
         service_type=effective_service_type,
-        order_info=state.get("order_info", {}),
+        order_info=effective_order_info,
         last_user_message=state.get("last_user_message", ""),
     )
     spu_detail = coverage_data.get("spu_detail") if isinstance(coverage_data.get("spu_detail"), dict) else {}
@@ -488,10 +498,14 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
     else:
         emit_status("coverage_node", "该商品在维保范围内，可继续托管维修下单。")
 
+    updated_items = sync_primary_item_from_order_info(get_order_items(state), order_info)
+    if updated_items:
+        updated_items[0]["coverage"] = coverage_data
     output = {
         "effective_service_type": effective_service_type,
         "coverage_result": coverage_data,
-        "order_info": order_info,
+        **split_order_info(order_info, keep_product_request=False),
+        "order": build_order_state(strip_item_fields(order_info), updated_items),
         "step": "coverage_node",
     }
     trace_logger(
@@ -507,11 +521,7 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
 async def prepare_order_context_node(state: AgentState) -> dict[str, object]:
     """选择商品后，准备预下单卡片所需的默认值和展示字段。"""
 
-    selected_product = get_selected_product(
-        state.get("products") or [],
-        state.get("selected_product_code"),
-        default_to_first=False,
-    )
+    selected_product = get_primary_order_product(state)
     if not selected_product:
         return {
             "order_context": {},
@@ -523,8 +533,8 @@ async def prepare_order_context_node(state: AgentState) -> dict[str, object]:
     workflow_service = get_order_workflow_service()
     prepare_params = {
         "service_type": service_type,
-        "order_info": state.get("order_info") or {},
-        "selected_product_code": selected_product.get("service_product_code"),
+        "order_info": build_effective_order_info(state),
+        "product_code": selected_product.get("service_product_code"),
     }
     prepared = await run_traced_tool_call(
         step="prepare_order_context_node",
@@ -549,8 +559,7 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
     """按订单类型检查缺失字段，并记录重试次数。"""
 
     products = state.get("products") or []
-    selected_product = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
-    if products and not selected_product:
+    if products and not get_order_items(state):
         return {
             "missing_info": ["selected_product"],
             "retry_count": state.get("retry_count", 0),
@@ -561,7 +570,7 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
     service_type = get_effective_service_type(state)
     order_info = normalize_order_defaults(
         service_type=service_type,
-        order_info=state.get("order_info", {}),
+        order_info=build_effective_order_info(state),
         last_user_message=state.get("last_user_message", ""),
     )
     required_fields = get_required_order_fields(service_type, order_info)
@@ -576,13 +585,22 @@ async def validate_order_node(state: AgentState) -> dict[str, object]:
             if "expected_start_time" not in missing_info:
                 missing_info.append("expected_start_time")
 
+    updated_items = sync_primary_item_from_order_info(get_order_items(state), order_info)
+    updated_items, item_missing = validate_order_items(
+        service_type,
+        strip_item_fields(order_info),
+        updated_items,
+    )
+    missing_info.extend(field for field in item_missing if field not in missing_info)
+
     retry_count = state.get("retry_count", 0)
     if missing_info:
         retry_count += 1
 
     output = {
         "missing_info": missing_info,
-        "order_info": order_info,
+        **split_order_info(order_info, keep_product_request=False),
+        "order": build_order_state(strip_item_fields(order_info), updated_items),
         "retry_count": retry_count,
         "phase": PHASE_PRE_ORDER,
         "step": "validate_order_node",
@@ -630,7 +648,7 @@ async def build_missing_info_question(state: AgentState) -> str:
 
     prompt = render_prompt(
         "ask/missing_info.md",
-        order_info=state.get("order_info", {}),
+        order_info=build_effective_order_info(state),
         missing_info=missing_info,
         asked_questions=get_asked_questions(state.get("messages", [])),
         last_user_message=get_last_human_message(state.get("messages", [])),
@@ -643,14 +661,14 @@ async def build_topic_boundary_response(state: AgentState) -> str:
     missing_info = state.get("missing_info", [])
     active_order = has_active_order(state)
     next_question = build_missing_info_fallback_question(missing_info) if active_order else ""
-    if active_order and not missing_info and not state.get("order_info"):
+    if active_order and not missing_info and not build_effective_order_info(state):
         next_question = "请说房号和故障。"
     prompt = render_prompt(
         "ask/off_topic.md",
         last_user_message=get_last_human_message(state.get("messages", [])),
         active_order=active_order,
         status=state.get("phase") or PHASE_IDLE,
-        order_info=state.get("order_info", {}) if active_order else {},
+        order_info=build_effective_order_info(state) if active_order else {},
         last_order=state.get("last_order", {}),
         missing_info=missing_info,
         next_question=next_question,
@@ -673,7 +691,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     is_topic_deviation = state.get("intent") in {"unknown", "smalltalk"}
     product_search_feedback = get_product_search_feedback(state)
     products = state.get("products") or []
-    selected_product = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
+    selected_product = get_primary_order_product(state)
     last_user_message = get_last_human_message(state.get("messages", []))
     selected_by_text = parse_product_selection(last_user_message) in {1, 2, 3}
 
@@ -721,7 +739,8 @@ async def ask_node(state: AgentState) -> dict[str, object]:
         output.update(
             {
                 "service_type": None,
-                "order_info": {},
+                "product_request": {},
+                "order": {"items": []},
                 "missing_info": [],
                 "retry_count": 0,
             }
@@ -780,13 +799,9 @@ async def assist_node(state: AgentState) -> dict[str, object]:
 async def confirm_node(state: AgentState) -> dict[str, object]:
     """让用户确认订单信息。"""
 
-    order_info = state.get("order_info", {})
+    order_info = build_effective_order_info(state)
     service_type = get_effective_service_type(state)
-    selected_product = get_selected_product(
-        state.get("products") or [],
-        state.get("selected_product_code"),
-        default_to_first=False,
-    )
+    selected_product = get_primary_order_product(state)
 
     if order_info.get("user_confirmed"):
         trace_logger("node.confirm.skip", reason="user_confirmed")
@@ -843,20 +858,11 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
     answer = render_prompt("cancel/cancel.md")
     await emit_token_text(answer, step="cancel_node")
     output = {
+        **reset_active_order_state(),
         "messages": [AIMessage(content=answer)],
         "step": "cancel_node",
         "intent": "cancel_order",
-        "service_type": None,
-        "effective_service_type": None,
-        "coverage_result": {},
-        "order_context": {},
-        "order_card_fields": [],
         "phase": PHASE_CANCELLED,
-        "order_info": {},
-        "products": [],
-        "selected_product_code": None,
-        "order_items": [],
-        "missing_info": [],
         "submission": empty_submission(),
         "retry_count": 0,
         "off_topic_count": 0,
@@ -865,7 +871,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
         "node.cancel.output",
         answer=answer,
         previous_phase=state.get("phase"),
-        previous_order_info=state.get("order_info", {}),
+        previous_order_info=build_effective_order_info(state),
     )
     return output
 
@@ -883,7 +889,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
 
 def route_after_intent(state: AgentState) -> str:
     intent = state.get("intent")
-    order_info = state.get("order_info", {})
+    order_info = build_effective_order_info(state)
     if intent == "cancel_order" or order_info.get("user_cancelled"):
         return "cancel_node"
     if state.get("products") and parse_product_selection(state.get("last_user_message", "")) is not None:
@@ -901,8 +907,7 @@ def route_after_search_product(state: AgentState) -> str:
     if "product_match" in (state.get("missing_info") or []):
         return "ask_node"
     products = state.get("products") or []
-    selected_product = get_selected_product(products, state.get("selected_product_code"), default_to_first=False)
-    if products and not selected_product:
+    if products and not get_order_items(state):
         return "ask_node"
     return "coverage_node"
 
@@ -914,7 +919,7 @@ def route_after_validation(state: AgentState) -> str:
 
 
 def route_after_confirm(state: AgentState) -> str:
-    order_info = state.get("order_info", {})
+    order_info = build_effective_order_info(state)
     if order_info.get("user_confirmed"):
         return "submit_node"
     return END
@@ -1135,7 +1140,7 @@ async def stream_agent_events(
             step=final_state.get("step"),
             intent=final_state.get("intent"),
             service_type=final_state.get("service_type"),
-            order_info=final_state.get("order_info"),
+            order_info=build_effective_order_info(final_state),
             missing_info=final_state.get("missing_info"),
         )
 
@@ -1220,7 +1225,7 @@ async def run_agent(
         step=result.get("step"),
         intent=result.get("intent"),
         service_type=result.get("service_type"),
-        order_info=result.get("order_info"),
+        order_info=build_effective_order_info(result),
         missing_info=result.get("missing_info"),
     )
 

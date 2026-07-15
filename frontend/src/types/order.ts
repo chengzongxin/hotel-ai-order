@@ -62,22 +62,11 @@ export interface ProductOption {
   score?: number | null
   rank?: number
   is_recommended?: boolean
-  is_selected?: boolean
-}
-
-export interface ProductSection {
-  status?: string | null
-  query?: string | null
-  feedback?: string | null
-  selected_code?: string | null
-  selection_rejected?: boolean
-  items?: ProductOption[]
 }
 
 export interface OrderCardField {
   key: string
   label: string
-  value?: unknown
   required?: boolean
   source?: string
   editable?: boolean
@@ -90,23 +79,6 @@ export interface OrderForm {
   fields?: OrderCardField[]
 }
 
-export interface WorkflowValidation {
-  ready?: boolean
-  missing_fields?: string[]
-}
-
-export interface WorkflowCapabilities {
-  select_product?: boolean
-  reject_products?: boolean
-  update_order?: boolean
-  confirm_order?: boolean
-  cancel_order?: boolean
-  retry_submission?: boolean
-  add_order_item?: boolean
-  update_order_item?: boolean
-  remove_order_item?: boolean
-}
-
 export interface OrderItem {
   id: string
   code: string
@@ -116,24 +88,10 @@ export interface OrderItem {
   unit?: string | null
   price?: string | null
   fault?: string | null
-  area?: string | null
-  second_area?: string | null
-  second_area_id?: string | null
+  coverage?: Record<string, unknown>
+  errors?: string[]
   can_edit?: boolean
   can_remove?: boolean
-}
-
-export interface OrderItemsSection {
-  items?: OrderItem[]
-  total_quantity?: number
-}
-
-export interface CoverageSection {
-  checked?: boolean
-  covered?: boolean | null
-  reason?: string | null
-  effective_service_type?: string | null
-  hosting_card_name?: string | null
 }
 
 export interface CoverageNotice {
@@ -181,29 +139,47 @@ export interface OrderPreview {
   service_type_display?: string | null
   effective_service_type?: string | null
   effective_service_type_display?: string | null
-  order_info?: {
+  product_request?: {
     room_number?: string | null
     product?: string | null
     fault?: string | null
     area?: string | null
     second_area?: string | null
+    second_area_id?: string | null
+    managed_repair_scope?: string | null
+    available_second_areas?: string[]
+    available_second_area_options?: Array<Record<string, unknown>>
+    second_area_needs_confirmation?: boolean
+  }
+  order?: {
+    room_number?: string | null
+    area?: string | null
+    second_area?: string | null
+    second_area_id?: string | null
+    managed_repair_scope?: string | null
+    available_second_areas?: string[]
+    available_second_area_options?: Array<Record<string, unknown>>
+    second_area_needs_confirmation?: boolean
     urgency?: UrgencyLevel | null
     expected_start_time?: string | null
     goods_arrival_status?: string | null
-    product_quantity?: number | null
+    contacts?: string | null
+    phone?: string | null
+    remark?: string | null
+    special_requirement?: string | null
+    total_fee?: string | null
+    user_confirmed?: boolean
+    user_cancelled?: boolean
+    items?: OrderItem[]
   }
-  products?: ProductSection
-  order_items?: OrderItemsSection
+  products?: ProductOption[]
   form?: OrderForm
-  validation?: WorkflowValidation
-  capabilities?: WorkflowCapabilities
-  coverage?: CoverageSection
+  errors?: string[]
+  actions?: string[]
   submission?: {
     state?: SubmissionState | string
     order_no?: string | null
-    failure_code?: string | null
-    failure_message?: string | null
-    missing_fields?: string[]
+    message?: string | null
   }
   submitted_order?: SubmittedOrder | null
 }

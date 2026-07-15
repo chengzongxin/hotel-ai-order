@@ -135,5 +135,5 @@ async def test_intent_node_clears_old_products_when_service_type_changes(monkeyp
 
     assert update["service_type"] == "单次测量"
     assert update["products"] == []
-    assert update["selected_product_code"] is None
+    assert update["order"]["items"] == []
     assert update["effective_service_type"] is None

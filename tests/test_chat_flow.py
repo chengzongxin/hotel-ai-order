@@ -91,7 +91,22 @@ def answer_text(result: dict[str, Any]) -> str:
 
 
 def info(result: dict[str, Any]) -> dict[str, Any]:
-    return (maybe_preview(result) or {}).get("order_info") or {}
+    preview = maybe_preview(result) or {}
+    request = preview.get("product_request") or {}
+    common = preview.get("order") or {}
+    items = common.get("items") or []
+    primary = items[0] if items else {}
+    return {
+        **request,
+        **common,
+        **({
+            "room_number": primary.get("room_number"),
+            "product": primary.get("name"),
+            "fault": primary.get("fault"),
+            "area": primary.get("area"),
+            "second_area": primary.get("second_area"),
+        } if primary else {}),
+    }
 
 
 def phase(result: dict[str, Any]) -> str | None:
@@ -99,18 +114,16 @@ def phase(result: dict[str, Any]) -> str | None:
 
 
 def missing(result: dict[str, Any]) -> list[str]:
-    validation = (maybe_preview(result) or {}).get("validation") or {}
-    return validation.get("missing_fields") or []
+    return (maybe_preview(result) or {}).get("errors") or []
 
 
 def products(result: dict[str, Any]) -> list[dict[str, Any]]:
-    section = (maybe_preview(result) or {}).get("products") or {}
-    return section.get("items") or []
+    return (maybe_preview(result) or {}).get("products") or []
 
 
 def selected_code(result: dict[str, Any]) -> str | None:
-    section = (maybe_preview(result) or {}).get("products") or {}
-    return section.get("selected_code")
+    items = ((maybe_preview(result) or {}).get("order") or {}).get("items") or []
+    return items[0].get("code") if items else None
 
 
 def order_card_fields(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -135,11 +148,12 @@ def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "answer": answer_text(result),
         "phase": data.get("phase"),
-        "order_info": data.get("order_info"),
+        "product_request": data.get("product_request"),
+        "order": data.get("order"),
         "service_type": data.get("service_type"),
         "effective_service_type": data.get("effective_service_type"),
-        "missing_info": (data.get("validation") or {}).get("missing_fields"),
-        "selected_code": (data.get("products") or {}).get("selected_code"),
+        "missing_info": data.get("errors"),
+        "selected_code": (((data.get("order") or {}).get("items") or [{}])[0]).get("code"),
         "products": [
             {
                 "code": item.get("code"),
@@ -147,7 +161,7 @@ def summarize_result(result: dict[str, Any]) -> dict[str, Any]:
                 "service_type": item.get("service_type"),
                 "score": item.get("score"),
             }
-            for item in ((data.get("products") or {}).get("items") or [])
+            for item in (data.get("products") or [])
         ],
     }
 

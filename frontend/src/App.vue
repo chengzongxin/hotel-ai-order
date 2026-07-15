@@ -80,7 +80,6 @@ const {
   orderInfo,
   effectiveServiceTypeDisplay,
   productFeedback,
-  selectedProductCode,
   selectedProduct,
   orderItems,
   showDraftOrderCard,
@@ -99,7 +98,6 @@ const {
   filledCount,
   totalFieldCount,
   orderCompleteness,
-  isProductSelected,
 } = preview
 
 const chatApi = useChatApi({
@@ -112,7 +110,6 @@ const chatApi = useChatApi({
   selectingProductCode,
   isUpdatingOrderInfo,
   updatingFieldKey,
-  selectedProductCode,
   apiParams,
   appendMessage,
   setMessageContent,
@@ -120,7 +117,6 @@ const chatApi = useChatApi({
   upsertMessageToolCall,
   upsertConversationMessages,
   replacePendingTurn,
-  isProductSelected,
   canConfirmOrder,
 })
 

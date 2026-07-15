@@ -80,7 +80,6 @@ function handleAddItem(productCode: string) {
     <ProductSelectionCard
       :items="context.productItems.value"
       :feedback="context.productFeedback.value"
-      :selected-code="context.selectedProductCode.value"
       :selecting-code="active ? selectingProductCode : null"
       :is-awaiting-selection="active && context.isAwaitingProductSelection.value"
       :is-selecting="active && isSelectingProduct"

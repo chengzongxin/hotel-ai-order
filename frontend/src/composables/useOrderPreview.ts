@@ -52,7 +52,18 @@ export function useOrderPreview(
   isSending: Ref<boolean>,
   isUpdatingOrderInfo: Ref<boolean>,
 ) {
-  const orderInfo = computed(() => orderPreview.value?.order_info ?? {})
+  const orderInfo = computed(() => {
+    const preview = orderPreview.value
+    const item = preview?.order?.items?.[0]
+    return {
+      ...(preview?.product_request ?? {}),
+      ...(preview?.order ?? {}),
+      ...(item ? {
+        product: item.name,
+        fault: item.fault,
+      } : {}),
+    }
+  })
   const phase = computed(() => orderPreview.value?.phase ?? null)
   const submission = computed(() => orderPreview.value?.submission ?? {})
   const submittedOrder = computed(() => orderPreview.value?.submitted_order ?? null)
@@ -66,31 +77,25 @@ export function useOrderPreview(
       ?? serviceTypeDisplay.value
       ?? null,
   )
-  const validation = computed(() => orderPreview.value?.validation ?? {})
-  const capabilities = computed(() => orderPreview.value?.capabilities ?? {})
-  const missingInfo = computed(() => validation.value.missing_fields ?? [])
-  const coverage = computed(() => orderPreview.value?.coverage ?? {})
-  const productItems = computed(() => orderPreview.value?.products?.items ?? [])
-  const productFeedback = computed(() => orderPreview.value?.products?.feedback ?? null)
-  const selectedProductCode = computed(() => orderPreview.value?.products?.selected_code ?? null)
-  const productSelectionRejected = computed(() => Boolean(orderPreview.value?.products?.selection_rejected))
+  const actions = computed(() => orderPreview.value?.actions ?? [])
+  const missingInfo = computed(() => orderPreview.value?.errors ?? [])
+  const productItems = computed(() => orderPreview.value?.products ?? [])
+  const productFeedback = computed(() => null)
+  const productSelectionRejected = computed(() => false)
   const formFields = computed(() => orderPreview.value?.form?.fields ?? [])
-  const orderItems = computed(() => orderPreview.value?.order_items?.items ?? [])
+  const orderItems = computed(() => orderPreview.value?.order?.items ?? [])
+  const coverage = computed(() => orderItems.value[0]?.coverage ?? {})
   const isProductSelectionPhase = computed(() => phase.value === 'product_selection')
   const isPreOrderPhase = computed(() => phase.value === 'pre_order')
   const hasProductOptions = computed(() => productItems.value.length > 0)
 
-  const isProductSelected = (item: ProductOption): boolean => {
-    const activeCode = selectedProductCode.value
-    return Boolean(item.is_selected || (item.code && item.code === activeCode))
-  }
-
-  const selectedProduct = computed(
-    () => productItems.value.find(isProductSelected) ?? null,
-  )
+  const selectedProduct = computed<ProductOption | null>(() => {
+    const item = orderItems.value[0]
+    return item ? { code: item.code, name: item.name, service_type: item.service_type ?? undefined, price: item.price } : null
+  })
 
   const isAwaitingProductSelection = computed(
-    () => isProductSelectionPhase.value && hasProductOptions.value && !selectedProductCode.value && !productSelectionRejected.value,
+    () => isProductSelectionPhase.value && hasProductOptions.value && !productSelectionRejected.value,
   )
   const showDraftOrderCard = computed(
     () => isPreOrderPhase.value && formFields.value.length > 0,
@@ -98,20 +103,20 @@ export function useOrderPreview(
   const submittedOrderId = computed(() => submittedOrder.value?.order_no || submission.value.order_no || null)
   const submissionState = computed(() => submission.value.state ?? 'not_attempted')
   const isSubmittingOrder = computed(() => submissionState.value === 'submitting' || (isSending.value && isPreOrderPhase.value))
-  const submissionMissingFields = computed(() => submission.value.missing_fields ?? [])
+  const submissionMissingFields = computed(() => [] as string[])
   const hasSubmissionFailure = computed(() => submissionState.value === 'failed' || submissionState.value === 'disabled')
-  const submissionFailureMessage = computed(() => submission.value.failure_message || '')
+  const submissionFailureMessage = computed(() => submission.value.message || '')
 
-  const canSubmit = computed(() => Boolean(capabilities.value.confirm_order))
+  const canSubmit = computed(() => actions.value.includes('confirm_order'))
   const canSelectProduct = computed(
-    () => Boolean(capabilities.value.select_product) && !isSending.value,
+    () => actions.value.includes('select_product') && !isSending.value,
   )
   const canRejectProducts = computed(
-    () => Boolean(capabilities.value.reject_products) && !isSending.value,
+    () => actions.value.includes('reject_products') && !isSending.value,
   )
-  const canAddOrderItem = computed(() => Boolean(capabilities.value.add_order_item) && !isUpdatingOrderInfo.value)
-  const canUpdateOrderItem = computed(() => Boolean(capabilities.value.update_order_item) && !isUpdatingOrderInfo.value)
-  const canRemoveOrderItem = computed(() => Boolean(capabilities.value.remove_order_item) && !isUpdatingOrderInfo.value)
+  const canAddOrderItem = computed(() => actions.value.includes('add_item') && !isUpdatingOrderInfo.value)
+  const canUpdateOrderItem = computed(() => actions.value.includes('update_item') && !isUpdatingOrderInfo.value)
+  const canRemoveOrderItem = computed(() => actions.value.includes('remove_item') && !isUpdatingOrderInfo.value)
 
   const isOrderSubmitted = computed(() => phase.value === 'submitted' || submissionState.value === 'succeeded')
 
@@ -128,7 +133,7 @@ export function useOrderPreview(
   )
 
   const canCancelOrder = computed(
-    () => Boolean(capabilities.value.cancel_order) && !isSending.value,
+    () => actions.value.includes('cancel_order') && !isSending.value,
   )
 
   const missingInfoText = computed(() =>
@@ -141,7 +146,7 @@ export function useOrderPreview(
 
   const coverageNotice = computed<CoverageNotice | null>(() => {
     const data = coverage.value
-    if (!data.checked || !data.reason) return null
+    if (!data.checked || typeof data.reason !== 'string' || !data.reason) return null
     const tone: CoverageNotice['tone'] = data.covered === false ? 'warning' : 'ok'
     return {
       tone,
@@ -167,18 +172,29 @@ export function useOrderPreview(
       key: field.key,
       icon: iconForOrderField(field.key),
       label: field.label,
-      value: formatOrderFieldValue(field.value),
+      value: formatOrderFieldValue((() => {
+        const common = orderPreview.value?.order ?? {}
+        const item = orderItems.value[0] ?? {}
+        if (field.key === 'area_room') return common.room_number || common.area
+        if (field.key === 'second_area') return common.second_area_id || common.second_area
+        if (field.key === 'expected_time') return common.expected_start_time
+        if (field.key === 'product_quantity') return item.quantity
+        return (common as Record<string, unknown>)[field.key] ?? (item as unknown as Record<string, unknown>)[field.key]
+      })()),
       required: Boolean(field.required),
-      editable: field.editable !== false && Boolean(capabilities.value.update_order),
+      editable: field.editable !== false && actions.value.includes('update_order'),
       inputType: field.input_type || 'text',
       options: field.options || [],
       hint: field.hint ?? null,
       }))
   })
 
-  const filledCount = computed(() => orderFields.value.filter((field) => Boolean(field.value)).length)
-  const totalFieldCount = computed(() => Math.max(orderFields.value.length, 1))
-  const orderCompleteness = computed(() => Math.round((filledCount.value / totalFieldCount.value) * 100))
+  const requiredFields = computed(() => orderFields.value.filter((field) => field.required))
+  const filledCount = computed(() => requiredFields.value.filter((field) => Boolean(field.value)).length)
+  const totalFieldCount = computed(() => requiredFields.value.length)
+  const orderCompleteness = computed(() => (
+    totalFieldCount.value === 0 ? 100 : Math.round((filledCount.value / totalFieldCount.value) * 100)
+  ))
 
   const progressR = 32
   const progressCircumference = computed(() => +(2 * Math.PI * progressR).toFixed(2))
@@ -197,7 +213,6 @@ export function useOrderPreview(
     coverage,
     productItems,
     productFeedback,
-    selectedProductCode,
     productSelectionRejected,
     selectedProduct,
     orderItems,
@@ -232,7 +247,6 @@ export function useOrderPreview(
     orderCompleteness,
     progressCircumference,
     progressOffset,
-    isProductSelected,
   }
 }
 

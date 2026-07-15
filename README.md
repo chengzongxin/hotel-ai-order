@@ -103,7 +103,7 @@ sequenceDiagram
 
     U->>FE: 点选商品
     FE->>API: POST /api/chat/{session_id}/select-product
-    API->>G: 读取 checkpoint 并更新 selected_product_code
+    API->>G: 读取 checkpoint 并创建首个 order.items 明细
     G->>R: 托管维修范围校验 + 下单上下文加载
     G-->>API: 新增 human/ai conversation_messages
     API-->>FE: 消息内商品选中态 + 预下单卡片
@@ -158,7 +158,7 @@ flowchart TD
 | 节点 | 主要职责 | 关键输入/输出 |
 | --- | --- | --- |
 | `intent_node` | 调用结构化 LLM，识别 `intent` 并抽取 `order_info`。提交成功后的新订单只看最新用户输入，避免旧订单被重新抽取。 | 输入 `messages`、`last_order`、`phase`；输出 `intent`、`order_info`、`phase`、`last_user_message` |
-| `search_product_node` | 根据 `product + fault + 用户原文` 生成检索 query，调用 `search_product_tool` 取 Top3；也处理用户输入"1/2/3/以上都不符合"。 | 输出 `products`、`selected_product_code`、`service_type`、`phase` |
+| `search_product_node` | 根据 `product + fault + 用户原文` 生成检索 query，调用 `search_product_tool` 取 Top3；也处理用户输入"1/2/3/以上都不符合"。 | 输出候选 `products`；选中后创建 `order.items` |
 | `coverage_node` | 托管维修商品校验维保卡覆盖范围；非托管维修跳过；范围外时 `effective_service_type` 可降级为单次维修。 | 输出 `coverage_result`、`effective_service_type` |
 | `prepare_order_context_node` | 读取维保卡、用户资料、地址、全局配置等默认值，并由 `graph/order_fields.py` 生成前端卡片字段。 | 输出 `order_context`、`order_card_fields`、`phase=pre_order` |
 | `validate_order_node` | 按最终服务类型校验必填字段，合并卡片必填项，决定继续追问还是进入确认。 | 输出 `missing_info`、`phase=pre_order` |
@@ -224,9 +224,9 @@ not_attempted → submitting → succeeded
 | `user_id` | 当前会话所属用户，用于越权校验 |
 | `intent` | 本轮意图：`create_order`、`confirm_order`、`cancel_order`、`smalltalk`、`unknown` |
 | `phase` | 订单主流程阶段：`idle`、`collecting`、`product_selection`、`pre_order`、`submitted`、`cancelled` |
-| `order_info` | LLM 抽取和前端卡片编辑后合并的订单信息 |
+| `product_request` | 商品选择前由 LLM 抽取的房号、商品、故障和区域需求；选中商品后清空 |
+| `order` | 与前端一致的订单对象；房号、区域、联系人、预约时间等共用字段在顶层，商品编码、数量和故障位于 `items` |
 | `products` | 商品检索结果 Top3 |
-| `selected_product_code` | 当前选中的标准商品编码；未选中时为空 |
 | `service_type` | 当前订单对话确定的服务类型：安装词 → `单次安装`，测量词 → `单次测量`，其他下单需求 → `托管维修` |
 | `effective_service_type` | 最终用于字段校验和提交的服务类型，托管维修范围外可能降级 |
 | `coverage_result` | 维保范围校验结果 |
@@ -305,7 +305,6 @@ Prompt 都放在 `prompts/`，业务策略优先改 Prompt 文件，不要把长
 | `order_info` | 从用户输入中抽取出的订单信息 |
 | `missing_info` | 仍需追问的订单信息字段 |
 | `products` | 商品检索结果（按相似度排序） |
-| `selected_product_code` | 当前选中的商品编码；未指定时默认 Top1 |
 | `last_order` | 最近一次已提交订单 |
 | `off_topic_count` | 用户偏离当前下单任务的次数 |
 
@@ -570,12 +569,16 @@ curl -X POST http://localhost:8000/api/chat \
       "role": "ai",
       "content": "请确认订单信息...",
       "order_preview": {
+        "schema_version": 4,
         "phase": "pre_order",
-        "order_info": {
-          "room_number": "B栋 301",
-          "product": "门锁",
-          "fault": "打不开"
-        }
+        "product_request": {},
+        "order": {
+          "urgency": "medium",
+          "items": [{"id": "...", "code": "FWSP01537", "name": "门锁维修", "room_number": "B栋 301", "fault": "打不开", "quantity": 1}]
+        },
+        "products": [],
+        "errors": [],
+        "actions": ["update_order", "confirm_order", "cancel_order"]
       }
     }
   ]
@@ -841,10 +844,10 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 | `phase` | `activeMessage.orderPreview.phase` | 判断展示商品选择、预下单、成功还是取消状态 |
 | `submissionState` | `activeMessage.orderPreview.submission.state` | 判断提交中、提交成功、提交失败或真实提交关闭 |
 | `productItems` | `message.orderPreview.products.items` | 在对应消息下渲染候选商品 |
-| `selectedProductCode` | `activeMessage.orderPreview.products.selected_code` | 判断当前选中商品 |
+| `orderItems` | `activeMessage.orderPreview.order.items` | 展示和编辑最终下单商品 |
 | `orderFields` | `message.orderPreview.form.fields` | 渲染后端定义的数据字段，具体控件由前端决定 |
 | `missingInfoText` | `message.orderPreview.validation.missing_fields` | 展示缺失字段 |
-| `canConfirmOrder` | `activeMessage.orderPreview.capabilities.confirm_order` | 控制确认按钮，不在前端重复实现业务校验 |
+| `canConfirmOrder` | `activeMessage.orderPreview.actions.includes('confirm_order')` | 控制确认按钮，不在前端重复实现业务校验 |
 | `coverageNotice` | `message.orderPreview.coverage` | 展示维保范围提示 |
 | `submittedOrderId` | `message.orderPreview.submission.order_no` / `submitted_order.order_no` | 展示真实单号 |
 
@@ -860,8 +863,8 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 
 前端注意事项：
 
-- 不要在前端自己推断服务类型、必填字段或允许执行的业务操作。前端根据 `phase` 选择组件，根据 `capabilities` 控制操作。
-- 商品卡片必须使用后端返回的 `selected_code` 判断选中态，不要按数组下标保存选择。
+- 不要在前端自己推断服务类型、必填字段或允许执行的业务操作。前端根据 `phase` 选择组件，根据 `actions` 控制操作。
+- 候选商品只在选择阶段展示；选择成功后，以 `order.items` 为准。
 - 卡片编辑后必须调用后端更新 checkpoint，否则真实提交会继续使用旧字段。
 - 确认按钮不要再发送普通聊天消息，应该调用确定性 `/confirm` 接口。
 - 提交成功后后端会清空活跃订单字段，前端如果看到 `phase=submitted` 或 `submission.state=succeeded`，只展示成功卡片和 `submitted_order` 快照，不应继续展示可编辑预下单卡。
@@ -887,7 +890,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 - 修改订单字段时，要同步 `graph/order_fields.py`、`schemas/order_preview.py`、`frontend/src/types/order.ts`。
 - 修改内部状态字段时，只需同步 `graph/state.py` 和 `services/workflow_projection.py`；前端不依赖 `AgentState`。
 - 对外契约是 `order_preview.form.fields`，内部仍用 `order_card_fields` 保存表单状态；字段 `key` 一旦发布要谨慎修改。
-- `submit_order_from_state()` 成功后必须清空 `products`、`selected_product_code`、`order_info` 等活跃订单字段，但要保留 `submission` 和内部唯一的 `last_order`；对外再投影为 `submitted_order`。
+- `submit_order_from_state()` 成功后必须清空 `products`、`product_request`、`order` 等活跃订单字段，但要保留 `submission` 和内部唯一的 `last_order`；对外再投影为 `submitted_order`。
 - `last_order` 用来回答"刚才那个订单"这类追问，不等于当前活跃订单。
 - 所有会话读取和更新前都要调用 `ensure_session_access()`，避免用户访问别人的 checkpoint。
 - 确定性接口更新 checkpoint 时要重新生成 `order_card_fields` 和 `missing_info`，否则前端会看到旧卡片或旧缺字段提示。
@@ -899,7 +902,7 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 | --- | --- |
 | LLM 没抽出房号/商品/时间 | `logs/agent_llm_YYYYMMDD.log` 中 `llm.call.payload/response`，以及 `prompts/intent/intent.md` |
 | 商品匹配不对 | `build_product_search_query()`、`tools/product_search.py`、`docs/product_hybrid_search.md`、`PRODUCT_SEARCH_THRESHOLD` |
-| 前端点选商品后没进入预下单 | `/select-product` 响应、`selected_product_code` 是否在当前 `products` 内、`coverage_result` 是否异常 |
+| 前端点选商品后没进入预下单 | `/select-product` 响应是否创建 `order.items`、逐项 coverage/errors 是否异常 |
 | 卡片编辑后提交仍用旧值 | `PATCH /order-info` 是否成功、`normalize_order_card_update()` 是否映射了该字段 |
 | 确认按钮无效或失败 | `/confirm` 响应里的 `submission.failure_code`、`missing_fields`，以及后端 trace 中的内部请求参数 |
 | 真实下单没单号 | `tools/order_submit.py` 返回和后端 trace 中的外部接口响应；原始 payload 不对前端暴露 |

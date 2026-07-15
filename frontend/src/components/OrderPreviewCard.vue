@@ -81,7 +81,7 @@ function updateQuantity(item: OrderItem, event: Event) {
       <div class="min-w-0 flex-1">
         <p class="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Draft Order</p>
         <h2 class="mt-0.5 text-sm font-semibold text-slate-800">预下单卡片</h2>
-        <p class="mt-1 text-xs text-slate-500">已填写 <span class="font-semibold text-slate-700">{{ filledCount }}</span> / {{ totalFieldCount }} 项</p>
+        <p class="mt-1 text-xs text-slate-500">必填项 <span class="font-semibold text-slate-700">{{ filledCount }}</span> / {{ totalFieldCount }} 已完成</p>
         <p v-if="effectiveServiceTypeDisplay" class="mt-1 truncate text-xs text-slate-500">
           服务类型：<span class="font-semibold text-indigo-600">{{ effectiveServiceTypeDisplay }}</span>
         </p>
@@ -90,8 +90,14 @@ function updateQuantity(item: OrderItem, event: Event) {
 
     <div v-else class="rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
       <p class="text-[13px] font-semibold text-slate-800">预下单卡片</p>
-      <p class="mt-1 text-[11px] text-slate-500">
-        已填写 <span class="font-semibold text-slate-700">{{ filledCount }}</span> / {{ totalFieldCount }} 项，可直接修改后确认下单。
+      <p v-if="missingInfoText" class="mt-1 text-[11px] text-amber-700">
+        还需补充必填信息：{{ missingInfoText }}。
+      </p>
+      <p v-else-if="canConfirmOrder" class="mt-1 text-[11px] text-emerald-700">
+        必填信息已完整，可以确认下单；其他未填写项为可选信息。
+      </p>
+      <p v-else class="mt-1 text-[11px] text-slate-500">
+        必填项已完成 {{ filledCount }} / {{ totalFieldCount }}，请检查订单信息。
       </p>
       <p v-if="effectiveServiceTypeDisplay" class="mt-1 text-[11px] text-slate-600">
         服务类型：<span class="font-semibold text-indigo-600">{{ effectiveServiceTypeDisplay }}</span>
@@ -133,6 +139,15 @@ function updateQuantity(item: OrderItem, event: Event) {
               </label>
               <button v-if="canRemoveOrderItem && item.can_remove !== false" type="button" class="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-50" @click="emit('removeItem', item.id)">删除</button>
             </div>
+            <div class="mt-2 grid gap-2">
+              <label class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                故障/服务说明
+                <input class="mt-1 w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-normal normal-case text-slate-700 outline-none focus:border-indigo-300" :value="item.fault || ''" :disabled="!canUpdateOrderItem" @change="emit('updateItem', item.id, { fault: ($event.target as HTMLInputElement).value })" />
+              </label>
+            </div>
+            <p v-if="item.errors?.length" class="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-700">
+              该商品仍需补充：{{ item.errors.join('、') }}
+            </p>
           </div>
         </div>
       </section>

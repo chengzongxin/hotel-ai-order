@@ -290,7 +290,7 @@ Step 6  排序 + 截断 + 阈值
 
 1. `search_product_node` 拿到 Top3，写入 state `products`。
 2. `phase` 变为 `product_selection`，前端展示商品卡片。
-3. **不会自动选中 Top1**；`selected_product_code` 为空时进入 `ask_node` 引导选择。
+3. **不会自动选中 Top1**；`order.items` 为空时进入 `ask_node` 引导选择。
 4. 用户点选卡片（`/select-product`）或输入「选1/2/3」后，才进入 `coverage_node` → 预下单。
 5. `service_type` 已在检索前由对话规则确定，商品候选不能覆盖它。
 

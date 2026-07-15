@@ -4,6 +4,7 @@ These commands update the same LangGraph checkpoint as conversational turns,
 but they never ask an LLM to reinterpret an already explicit button click.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -28,11 +29,27 @@ from services.conversation_service import (
     build_conversation_turn,
     update_active_conversation_preview,
 )
-from services.order_items import add_or_merge_order_item, find_order_item, get_order_items
+from services.order_items import (
+    add_or_merge_order_item,
+    build_effective_order_info,
+    build_order_info_for_item,
+    build_order_state,
+    find_order_item,
+    get_order_items,
+    get_order_common,
+    split_order_info,
+    strip_item_fields,
+    sync_primary_item_from_order_info,
+    validate_order_items,
+)
+from tools.order_payload_managed import align_order_second_area_with_spu
 from services.order_normalizer import normalize_order_defaults
 from services.order_workflow import OrderWorkflowService
+from services.order_state import assert_order_state_invariants
 from services.session_access import ensure_session_access
 from rag.spu_loader import SpuExcelLoader
+
+_SESSION_COMMAND_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 
 @asynccontextmanager
@@ -43,16 +60,19 @@ async def _order_session(
     """Load and authorize one session while keeping its checkpoint open."""
 
     active_user = require_user(user)
-    async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer)
-        config = get_graph_config(active_user, session_id)
-        snapshot = await graph.aget_state(config)
-        state = snapshot.values or {}
-        if not state:
-            raise SessionAccessError("会话不存在或尚未开始对话")
-        ensure_session_access(state, active_user)
-        yield active_user, graph, config, state
+    lock_key = (str(active_user.user_id), session_id)
+    lock = _SESSION_COMMAND_LOCKS.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        async with ReadableAsyncSqliteSaver.from_conn_string(str(checkpoint_path())) as checkpointer:
+            await checkpointer.setup()
+            graph = build_graph(checkpointer)
+            config = get_graph_config(active_user, session_id)
+            snapshot = await graph.aget_state(config)
+            state = snapshot.values or {}
+            if not state:
+                raise SessionAccessError("会话不存在或尚未开始对话")
+            ensure_session_access(state, active_user)
+            yield active_user, graph, config, state
 
 
 async def select_product_in_session(
@@ -153,6 +173,28 @@ async def update_order_info_in_session(
             service_type=service_type,
             user=active_user,
         )
+        if state.get("service_type") == "托管维修" and any(
+            key in updates for key in ("area_room", "second_area", "room_number", "area", "fault")
+        ):
+            merged = {**state, **update}
+            items = get_order_items(merged)
+            primary = items[0]
+            coverage_result = await OrderWorkflowService().check_hosting_product_coverage(
+                order_info=build_order_info_for_item(get_order_common(merged), primary),
+                matched_product=primary.get("product_snapshot") or {},
+                user=active_user,
+                last_user_message=str(state.get("last_user_message") or ""),
+            )
+            coverage_data = coverage_result.get("data") or {}
+            effective_type = coverage_data.get("effective_service_type") or state.get("service_type")
+            if len(items) > 1 and effective_type != state.get("service_type"):
+                raise ValueError("修改后部分商品不在维保范围内，多商品订单不能混合托管和单次维修")
+            primary["coverage"] = coverage_data
+            update.update({
+                "order": build_order_state(get_order_common(merged), items),
+                "coverage_result": coverage_data,
+                "effective_service_type": effective_type,
+            })
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
         merged_state = {**state, **update}
         conversation_message = update_active_conversation_preview(
@@ -193,13 +235,41 @@ async def add_order_item_in_session(
             raise ValueError(f"只能添加同为【{expected_type}】的商品")
         if get_effective_service_type(state) != expected_type:
             raise ValueError("维保范围外已转为单次订单，暂不能与托管维修商品合并下单")
+        item_info = build_effective_order_info(state)
+        if expected_type == "托管维修":
+            coverage_result = await OrderWorkflowService().check_hosting_product_coverage(
+                order_info=item_info,
+                matched_product=product,
+                user=user,
+                last_user_message=str(state.get("last_user_message") or ""),
+            )
+            coverage_data = coverage_result.get("data") or {}
+            if coverage_data.get("effective_service_type") != "托管维修":
+                raise ValueError("该商品不在当前维保范围内，不能加入此托管维修订单")
+            spu_detail = coverage_data.get("spu_detail") if isinstance(coverage_data.get("spu_detail"), dict) else {}
+            if spu_detail:
+                item_info, area_match = align_order_second_area_with_spu(
+                    item_info, spu_detail, source_text=str(state.get("last_user_message") or "")
+                )
+                coverage_data = {**coverage_data, "area_match": area_match}
+        else:
+            coverage_data = {
+                "checked": False,
+                "covered": None,
+                "reason": "非托管维修商品，无需校验维保卡范围",
+                "effective_service_type": expected_type,
+            }
         order_items = add_or_merge_order_item(
             get_order_items(state),
             product,
-            state.get("order_info") or {},
+            item_info,
             quantity,
         )
-        update = {"order_items": order_items, "submission": empty_submission()}
+        added = next(item for item in order_items if item.get("product_code") == product_code)
+        added["coverage"] = coverage_data
+        order_items, _ = validate_order_items(get_effective_service_type(state), get_order_common(state), order_items)
+        update = {"order": build_order_state(get_order_common(state), order_items), "submission": empty_submission()}
+        assert_order_state_invariants({**state, **update})
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
         message = update_active_conversation_preview(
             messages=state.get("conversation_messages") or [],
@@ -227,7 +297,25 @@ async def update_order_item_in_session(
             item["quantity"] = max(int(updates["quantity"]), 1)
         if "fault" in updates:
             item["fault"] = str(updates.get("fault") or "").strip() or None
-        update = {"order_items": items, "submission": empty_submission()}
+        if state.get("service_type") == "托管维修" and "fault" in updates:
+            coverage_result = await OrderWorkflowService().check_hosting_product_coverage(
+                order_info=build_order_info_for_item(get_order_common(state), item),
+                matched_product=item.get("product_snapshot") or {},
+                user=user,
+                last_user_message=str(state.get("last_user_message") or ""),
+            )
+            item["coverage"] = coverage_result.get("data") or {}
+        items, _ = validate_order_items(get_effective_service_type(state), get_order_common(state), items)
+        for validated in items:
+            coverage = validated.get("coverage") if isinstance(validated.get("coverage"), dict) else {}
+            if state.get("service_type") == "托管维修" and coverage.get("covered") is not True:
+                validation = validated.get("validation") or {}
+                missing = list(validation.get("missing_fields") or [])
+                if "coverage" not in missing:
+                    missing.append("coverage")
+                validated["validation"] = {"valid": False, "missing_fields": missing}
+        update = {"order": build_order_state(get_order_common(state), items), "submission": empty_submission()}
+        assert_order_state_invariants({**state, **update})
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
         message = update_active_conversation_preview(
             messages=state.get("conversation_messages") or [], state={**state, **update}, fallback_content="已更新预下单商品。"
@@ -249,7 +337,13 @@ async def remove_order_item_in_session(
             raise ValueError("订单至少需要保留一个商品")
         if not find_order_item(items, item_id):
             raise ValueError("订单商品不存在")
-        update = {"order_items": [item for item in items if str(item.get("id")) != item_id], "submission": empty_submission()}
+        remaining, _ = validate_order_items(
+            get_effective_service_type(state),
+            get_order_common(state),
+            [item for item in items if str(item.get("id")) != item_id],
+        )
+        update = {"order": build_order_state(get_order_common(state), remaining), "submission": empty_submission()}
+        assert_order_state_invariants({**state, **update})
         await graph.aupdate_state(config, update, as_node="prepare_order_context_node")
         message = update_active_conversation_preview(
             messages=state.get("conversation_messages") or [], state={**state, **update}, fallback_content="已更新预下单商品。"
@@ -273,14 +367,17 @@ async def confirm_order_in_session(
         order_info = normalize_order_defaults(
             service_type=service_type,
             order_info={
-                **(state.get("order_info") or {}),
+                **build_effective_order_info(state),
                 "user_confirmed": True,
                 "user_cancelled": False,
             },
             last_user_message=state.get("last_user_message", ""),
         )
+        updated_items = sync_primary_item_from_order_info(get_order_items(state), order_info)
+        updated_items, item_missing = validate_order_items(service_type, strip_item_fields(order_info), updated_items)
         confirmed_state_patch = {
-            "order_info": order_info,
+            **split_order_info(order_info, keep_product_request=False),
+            "order": build_order_state(strip_item_fields(order_info), updated_items),
             "phase": PHASE_PRE_ORDER,
         }
         missing_info = collect_missing_order_info(
@@ -288,6 +385,7 @@ async def confirm_order_in_session(
             order_info,
             state.get("order_card_fields") or [],
         )
+        missing_info.extend(field for field in item_missing if field not in missing_info)
         if missing_info:
             answer = build_missing_info_fallback_question(missing_info)
             update = {
@@ -318,6 +416,9 @@ async def confirm_order_in_session(
             **confirmed_state_patch,
             "missing_info": [],
         }
+        submitting = {**empty_submission(), "attempted": True, "state": "submitting"}
+        await graph.aupdate_state(config, {"submission": submitting}, as_node="confirm_node")
+        confirmed_state["submission"] = submitting
         submit_update = await submit_order_from_state(
             confirmed_state,
             active_user,
