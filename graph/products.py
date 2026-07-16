@@ -154,14 +154,14 @@ def build_product_selection_feedback(products: list[dict[str, Any]], search_quer
 def derive_product_section_fields(state: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
     """从 state 推导 API products 区块的 status / query / feedback。"""
     products = state.get("products") or []
-    from services.order_items import build_effective_order_info
+    from services.order_items import build_effective_order_info, product_from_order_item
 
     order_info = build_effective_order_info(state)
     search_query = build_product_search_query(order_info, state.get("service_type"))
     status = infer_product_search_status(products, search_query)
 
     first_item = next((item for item in ((state.get("order") or {}).get("items") or []) if isinstance(item, dict)), {})
-    selected = first_item.get("product_snapshot") if isinstance(first_item.get("product_snapshot"), dict) else {}
+    selected = product_from_order_item(first_item)
     service_type = state.get("service_type")
     feedback = (
         build_product_search_feedback(order_info, selected, service_type, state.get("coverage_result") or {})

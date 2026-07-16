@@ -22,6 +22,12 @@ ORDER_COMMON_KEYS = {
     "user_confirmed", "user_cancelled", "address", "house_number", "ide_name",
 }
 
+PRODUCT_METADATA_KEYS = (
+    "product_type", "category", "raw_service_type", "price_status", "shelf_status",
+    "repair_category", "related_category", "related_area", "fault_phenomenon",
+    "display_order", "remark",
+)
+
 
 def build_order_item(
     product: JsonDict,
@@ -31,7 +37,7 @@ def build_order_item(
     item_id: str | None = None,
 ) -> JsonDict:
     resolved_quantity = quantity or order_info.get("product_quantity") or 1
-    return {
+    item = {
         "id": item_id or str(uuid4()),
         "product_code": str(product.get("service_product_code") or product.get("code") or ""),
         "product_name": str(product.get("service_product_name") or product.get("name") or ""),
@@ -40,10 +46,11 @@ def build_order_item(
         "unit": product.get("unit"),
         "price": product.get("price"),
         "fault": order_info.get("fault") or product.get("fault_phenomenon"),
-        "product_snapshot": dict(product),
         "coverage": {},
         "validation": {"valid": True, "missing_fields": []},
     }
+    item.update({key: product.get(key) for key in PRODUCT_METADATA_KEYS})
+    return item
 
 
 def get_order_items(state: JsonDict) -> list[JsonDict]:
@@ -66,10 +73,24 @@ def get_primary_order_item(state: JsonDict) -> JsonDict | None:
     return items[0] if items else None
 
 
+def product_from_order_item(item: JsonDict | None) -> JsonDict:
+    """Build the product-tool view from the canonical flattened order item."""
+
+    if not item:
+        return {}
+    product = {
+        "service_product_code": item.get("product_code"),
+        "service_product_name": item.get("product_name"),
+        "service_order_type": item.get("service_type"),
+        "unit": item.get("unit"),
+        "price": item.get("price"),
+    }
+    product.update({key: item.get(key) for key in PRODUCT_METADATA_KEYS})
+    return {key: value for key, value in product.items() if value is not None}
+
+
 def get_primary_order_product(state: JsonDict) -> JsonDict:
-    item = get_primary_order_item(state) or {}
-    product = item.get("product_snapshot")
-    return dict(product) if isinstance(product, dict) else {}
+    return product_from_order_item(get_primary_order_item(state))
 
 
 def build_effective_order_info(state: JsonDict) -> JsonDict:

@@ -37,6 +37,7 @@ from services.order_items import (
     find_order_item,
     get_order_items,
     get_order_common,
+    product_from_order_item,
     split_order_info,
     strip_item_fields,
     sync_primary_item_from_order_info,
@@ -181,7 +182,7 @@ async def update_order_info_in_session(
             primary = items[0]
             coverage_result = await OrderWorkflowService().check_hosting_product_coverage(
                 order_info=build_order_info_for_item(get_order_common(merged), primary),
-                matched_product=primary.get("product_snapshot") or {},
+                matched_product=product_from_order_item(primary),
                 user=active_user,
                 last_user_message=str(state.get("last_user_message") or ""),
             )
@@ -300,7 +301,7 @@ async def update_order_item_in_session(
         if state.get("service_type") == "托管维修" and "fault" in updates:
             coverage_result = await OrderWorkflowService().check_hosting_product_coverage(
                 order_info=build_order_info_for_item(get_order_common(state), item),
-                matched_product=item.get("product_snapshot") or {},
+                matched_product=product_from_order_item(item),
                 user=user,
                 last_user_message=str(state.get("last_user_message") or ""),
             )

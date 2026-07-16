@@ -6,7 +6,13 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from graph.products import format_service_type_display
-from services.order_items import build_effective_order_info, build_order_state, get_order_common, get_order_items
+from services.order_items import (
+    build_effective_order_info,
+    build_order_state,
+    get_order_common,
+    get_order_items,
+    product_from_order_item,
+)
 from services.order_state import assert_order_state_invariants, reset_active_order_state
 from graph.prompts import render_prompt
 from graph.state import AgentState
@@ -141,7 +147,7 @@ async def submit_order_from_state(
     order_items = get_order_items(state)
     if not order_items:
         raise ValueError("提交订单前必须至少选择一个商品")
-    selected_product = (order_items[0].get("product_snapshot") or {}) if order_items else {}
+    selected_product = product_from_order_item(order_items[0])
     order_info = build_effective_order_info(state)
     submit_params = {
         "order_info": order_info,

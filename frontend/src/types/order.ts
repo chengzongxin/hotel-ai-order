@@ -87,6 +87,12 @@ export interface OrderItem {
   quantity: number
   unit?: string | null
   price?: string | null
+  category?: string | null
+  repair_category?: string | null
+  related_category?: string | null
+  related_area?: string | null
+  fault_phenomenon?: string | null
+  remark?: string | null
   fault?: string | null
   coverage?: Record<string, unknown>
   errors?: string[]

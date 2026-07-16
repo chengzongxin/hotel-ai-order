@@ -33,6 +33,7 @@ from tools.order_submit_common import (
     resolve_product_quantity,
 )
 from tools.protocol import ToolErrorCode, ToolResult, error_response
+from services.order_items import product_from_order_item
 
 # 兼容旧 import 路径（facade re-export）
 _clean_text = clean_text
@@ -72,12 +73,20 @@ async def submit_real_order(
         )
     order_context = await load_managed_repair_order_context(active_user)
 
-    source_items = order_items or [{"product_snapshot": matched_product, "quantity": order_info.get("product_quantity") or 1}]
+    source_items = order_items or [{
+        "product_code": matched_product.get("service_product_code") or matched_product.get("code"),
+        "product_name": matched_product.get("service_product_name") or matched_product.get("name"),
+        "service_type": matched_product.get("service_order_type") or matched_product.get("service_type"),
+        "quantity": order_info.get("product_quantity") or 1,
+        **{key: value for key, value in matched_product.items() if key not in {
+            "service_product_code", "service_product_name", "service_order_type",
+        }},
+    }]
     resolved_items: list[JsonDict] = []
     spu: JsonDict = {}
     spu_query_error: str | None = None
     for index, item in enumerate(source_items):
-        product = item.get("product_snapshot") or matched_product
+        product = product_from_order_item(item)
         item_spu: JsonDict = {}
         try:
             result = await query_spu_detail(product, active_user)

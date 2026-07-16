@@ -41,7 +41,17 @@ class OrderItemState(TypedDict, total=False):
     fault: str | None
     unit: str | None
     price: str | None
-    product_snapshot: dict[str, Any]
+    product_type: str | None
+    category: str | None
+    raw_service_type: str | None
+    price_status: str | None
+    shelf_status: str | None
+    repair_category: str | None
+    related_category: str | None
+    related_area: str | None
+    fault_phenomenon: str | None
+    display_order: str | None
+    remark: str | None
     coverage: dict[str, Any]
     validation: dict[str, Any]
 

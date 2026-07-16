@@ -27,13 +27,14 @@ def test_derive_product_section_fields_from_products():
                 }
             ],
             "order": {"items": [{
-                "product_name": "门锁",
+                "product_code": "FWSP01537",
+                "product_name": "门锁损坏（困客人）",
+                "service_type": "托管维修",
                 "fault": "打不开",
-                "product_snapshot": {"service_product_code": "FWSP01537", "service_product_name": "门锁损坏（困客人）", "service_order_type": "托管维修"},
             }]},
             "service_type": "托管维修",
         }
     )
     assert status == "success"
-    assert query == "门锁 打不开"
+    assert query == "门锁损坏（困客人） 打不开"
     assert feedback and "门锁损坏" in feedback
