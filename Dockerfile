@@ -1,8 +1,12 @@
 FROM python:3.12-slim
 
+ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/app/.venv/bin:$PATH"
+ENV PIP_INDEX_URL="${PYPI_INDEX_URL}"
+ENV UV_INDEX_URL="${PYPI_INDEX_URL}"
 
 WORKDIR /app
 
