@@ -456,11 +456,9 @@ async def test_coverage_node_auto_selects_single_product_second_area(monkeypatch
 
     assert update["order"]["second_area"] == "客房区域"
     assert update["order"]["second_area_id"] == "1545054022"
-    assert update["order"]["available_second_areas"] == ["客房区域", "洗衣房", "健身房"]
+    assert update["order"]["available_second_areas"] == ["客房区域"]
     assert [item["label"] for item in update["order"]["available_second_area_options"]] == [
         "客房区域（客房）",
-        "洗衣房（公区）",
-        "健身房（公区）",
     ]
     assert update["coverage_result"]["area_match"]["matched"] is True
     assert update["coverage_result"]["area_match"]["match_source"] == "single_option"

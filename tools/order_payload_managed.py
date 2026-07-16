@@ -186,8 +186,10 @@ def align_order_second_area_with_spu(
     area_scope = clean_text(normalized.get("managed_repair_scope") or normalized.get("area"))
     second_area = clean_text(normalized.get("second_area"))
     second_area_id = clean_text(normalized.get("second_area_id"))
-    options = list_spu_second_area_options(area_list)
-    option_details = list_spu_second_area_option_details(area_list)
+    # 用户已明确一级区域时，只能在该区域的二级区域中选择；否则卡片会
+    # 同时展示客房和公区选项，且可能把当前订单切换到另一种范围。
+    options = list_spu_second_area_options(area_list, area_scope)
+    option_details = list_spu_second_area_option_details(area_list, area_scope)
     result: JsonDict = {
         "checked": bool(area_list),
         "matched": None,

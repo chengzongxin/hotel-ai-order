@@ -45,11 +45,9 @@ def test_managed_repair_infers_second_area_from_single_product_scope():
 
     assert normalized["second_area"] == "客房区域"
     assert normalized["second_area_id"] == "1545054022"
-    assert normalized["available_second_areas"] == ["客房区域", "洗衣房", "健身房"]
+    assert normalized["available_second_areas"] == ["客房区域"]
     assert [item["label"] for item in normalized["available_second_area_options"]] == [
         "客房区域（客房）",
-        "洗衣房（公区）",
-        "健身房（公区）",
     ]
     assert area_match["matched"] is True
     assert area_match["match_source"] == "single_option"
@@ -88,6 +86,26 @@ def test_managed_repair_matches_second_area_inside_product_scope_from_message():
     assert aligned["second_area"] == "电梯"
     assert aligned["second_area_id"] == "2"
     assert area_match["match_source"] == "source_text"
+
+
+def test_second_area_options_stay_with_the_confirmed_public_scope():
+    normalized, area_match = align_order_second_area_with_spu(
+        {"area": "公区", "managed_repair_scope": "公区", "room_number": "/"},
+        {
+            "areaList": [
+                {"managedRepairAreaId": 1, "managedRepairAreaName": "客房区域", "managedRepairAreaParentName": "客房"},
+                {"managedRepairAreaId": 2, "managedRepairAreaName": "仓库", "managedRepairAreaParentName": "公区"},
+                {"managedRepairAreaId": 3, "managedRepairAreaName": "大堂", "managedRepairAreaParentName": "公区"},
+            ]
+        },
+    )
+
+    assert area_match["matched"] is False
+    assert normalized["available_second_areas"] == ["仓库", "大堂"]
+    assert [item["label"] for item in normalized["available_second_area_options"]] == [
+        "仓库（公区）",
+        "大堂（公区）",
+    ]
 
 
 def test_validation_rules_delegate_service_required_fields():
@@ -210,6 +228,5 @@ async def test_select_product_builds_second_area_dropdown_from_spu_detail():
     assert second_area_field["value"] == "1545054022"
     assert second_area_field["options"] == [
         {"label": "客房区域（客房）", "value": "1545054022"},
-        {"label": "洗衣房（公区）", "value": "1545054019"},
     ]
     assert update["coverage_result"]["area_match"]["match_source"] == "single_option"

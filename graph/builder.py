@@ -176,6 +176,29 @@ def get_product_search_feedback(state: AgentState) -> str | None:
     )
 
 
+def is_product_change_requested(
+    *,
+    last_user_message: str,
+    detected_product_name: str,
+    current_product_names: set[str],
+) -> bool:
+    """Only replace a selected product when this turn explicitly mentions a new one.
+
+    The intent extractor may repeat a product from conversation history while the
+    user is merely filling an area, contact or time field.  History-derived
+    values must never clear an already selected order item.
+    """
+
+    detected = detected_product_name.strip()
+    message = last_user_message.strip()
+    if not detected or not message or detected not in message:
+        return False
+    return not any(
+        name and (detected in name or name in detected)
+        for name in current_product_names
+    )
+
+
 def get_extractor_history(state: AgentState) -> str:
     """提交后的新订单默认只看最新输入，避免已提交订单被重新抽取。"""
 
@@ -299,13 +322,10 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         str(primary_product.get("service_product_name") or "").strip(),
         str((get_order_items(state)[0] if get_order_items(state) else {}).get("product_name") or "").strip(),
     }
-    product_change_requested = bool(
-        get_order_items(state)
-        and detected_product_name
-        and not any(
-            name and (detected_product_name in name or name in detected_product_name)
-            for name in current_product_names
-        )
+    product_change_requested = bool(get_order_items(state)) and is_product_change_requested(
+        last_user_message=last_user_message,
+        detected_product_name=detected_product_name,
+        current_product_names=current_product_names,
     )
     output: dict[str, object] = {
         "intent": intent,

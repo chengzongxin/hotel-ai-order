@@ -4,6 +4,7 @@ from graph.products import (
     derive_product_section_fields,
     find_product_by_code,
 )
+from graph.text_parsing import build_selected_product_text
 
 
 def test_find_product_by_code():
@@ -38,3 +39,10 @@ def test_derive_product_section_fields_from_products():
     assert status == "success"
     assert query == "门锁损坏（困客人） 打不开"
     assert feedback and "门锁损坏" in feedback
+
+
+def test_selected_product_text_does_not_repeat_inconsistent_repair_category():
+    text = build_selected_product_text(
+        {"service_product_name": "门五金(小修)", "repair_category": "中修"}
+    )
+    assert text == "好的，已为您选择【门五金(小修)】，正在生成预下单卡片。"

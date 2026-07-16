@@ -174,13 +174,7 @@ def build_product_recommendation_text(products: list[dict[str, object]]) -> str:
 
 def build_selected_product_text(selected_product: dict[str, object]) -> str:
     name = selected_product.get("service_product_name") or "该商品"
-    repair_level = (
-        selected_product.get("repair_category")
-        or selected_product.get("product_type")
-        or selected_product.get("service_order_type")
-        or "待确认"
-    )
-    return f"好的，已为您选择【{name}（{repair_level}）】，正在生成预下单卡片。"
+    return f"好的，已为您选择【{name}】，正在生成预下单卡片。"
 
 
 def is_public_area_text(text: str | None) -> bool:

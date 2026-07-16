@@ -7,6 +7,7 @@ from graph.order_fields import collect_missing_order_info
 
 from graph.builder import (
     build_missing_info_fallback_question,
+    is_product_change_requested,
     normalize_order_card_update,
     route_after_search_product,
     search_product_node,
@@ -14,6 +15,22 @@ from graph.builder import (
 )
 from schemas.user import UserContext
 from services.workflow_projection import build_order_preview
+
+
+def test_history_derived_product_does_not_replace_selected_item_when_filling_area():
+    assert is_product_change_requested(
+        last_user_message="客房",
+        detected_product_name="门合页",
+        current_product_names={"门五金(小修)"},
+    ) is False
+
+
+def test_explicit_new_product_still_replaces_selected_item():
+    assert is_product_change_requested(
+        last_user_message="改成报修空调不制冷",
+        detected_product_name="空调",
+        current_product_names={"门五金(小修)"},
+    ) is True
 
 
 @pytest.mark.asyncio
@@ -280,7 +297,6 @@ def test_order_preview_rebuilds_stale_second_area_text_field_from_spu_detail():
     assert "value" not in second_area_field
     assert second_area_field["options"] == [
         {"label": "客房区域（客房）", "value": "1545054022"},
-        {"label": "洗衣房（公区）", "value": "1545054019"},
     ]
 
 
