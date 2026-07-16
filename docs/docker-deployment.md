@@ -23,10 +23,10 @@ docker compose version
 ## 2. 配置环境变量
 
 ```bash
-cp .env.production.example .env.production
+cp .env.production.example .env
 ```
 
-编辑 `.env.production`，至少替换：
+编辑 `.env`，至少替换：
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL` 与 `OPENAI_MODEL`
@@ -36,12 +36,12 @@ cp .env.production.example .env.production
 
 首次联调建议保持 `USER_APP_SUBMIT_ENABLED=false`，避免误下真实订单；确认完整流程后再改为 `true`。
 
-不要提交 `.env.production`，也不要把它复制到前端目录。`VITE_*` 环境变量会被打包进浏览器 JS，不适合存放长期密钥。
+不要提交 `.env`，也不要把它复制到前端目录。`VITE_*` 环境变量会被打包进浏览器 JS，不适合存放长期密钥。
 
 ## 3. 构建并启动
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+docker compose up -d --build
 ```
 
 首次构建需要下载 Python、Node、Nginx、PostgreSQL 和 Redis 镜像，并安装前后端依赖，耗时取决于服务器网络。
@@ -51,8 +51,8 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 查看状态和日志：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml ps
-docker compose --env-file .env.production -f docker-compose.prod.yml logs -f --tail=200 api web
+docker compose ps
+docker compose logs -f --tail=200 api web
 ```
 
 默认使用 `8080` 端口：
@@ -67,7 +67,7 @@ curl http://127.0.0.1:8080/health
 {"status":"ok","service":"Hotel AI Order Agent"}
 ```
 
-浏览器访问 `http://测试服务器IP:8080/`，接口文档访问 `http://测试服务器IP:8080/docs`。如果需改端口，修改 `.env.production` 中的 `WEB_PORT`，并在服务器安全组或防火墙中只开放该端口。
+浏览器访问 `http://测试服务器IP:8080/`，接口文档访问 `http://测试服务器IP:8080/docs`。如果需改端口，修改 `.env` 中的 `WEB_PORT`，并在服务器安全组或防火墙中只开放该端口。
 
 ## 4. 更新版本
 
@@ -75,7 +75,7 @@ curl http://127.0.0.1:8080/health
 
 ```bash
 git pull
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+docker compose up -d --build
 ```
 
 ## 5. 停止与清理
@@ -83,13 +83,13 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 停止服务但保留数据：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml down
+docker compose down
 ```
 
 只有明确要删除全部测试数据时才使用下面的命令：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml down -v
+docker compose down -v
 ```
 
 ## 常见问题
@@ -99,7 +99,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml down -v
 先查看日志：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=300 api postgres
+docker compose logs --tail=300 api postgres
 ```
 
 常见原因是模型 Key 无效、PostgreSQL 密码与旧 volume 中初始化密码不一致，或测试服务器无法访问模型/业务接口。

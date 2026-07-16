@@ -926,7 +926,9 @@ async for chunk in get_llm().astream(messages, config=get_llm_run_config()):
 ├── tests/                       # 集成测试（pytest + pytest-asyncio）
 ├── tools/                       # LangChain Tool 和工具协议
 ├── .env.example                 # 环境变量示例
-├── docker-compose.yml
+├── compose.yaml                 # 测试服务器默认 Docker Compose 入口
+├── docker-compose.yaml          # 本地开发 Docker Compose 配置
+├── docker-compose.prod.yaml     # 显式生产/测试 Docker Compose 配置
 ├── langgraph.json               # LangGraph Studio 配置
 ├── pyproject.toml
 └── uv.lock
