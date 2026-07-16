@@ -47,6 +47,9 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        NODE_IMAGE: ${FRONTEND_NODE_IMAGE:-docker.m.daocloud.io/library/node:20-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     ports:
       - "${WEB_PORT:-8080}:80"
     depends_on:
