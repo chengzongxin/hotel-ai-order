@@ -419,11 +419,11 @@ async def test_submit_node_keeps_pre_order_when_real_submit_disabled(monkeypatch
             },
         }
 
-    async def fake_emit_token_text(*args, **kwargs):
+    async def fake_emit_text_chunk(*args, **kwargs):
         return None
 
     monkeypatch.setattr("graph.submission.submit_real_order", fake_submit_real_order)
-    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("graph.builder.emit_text_chunk", fake_emit_text_chunk)
     monkeypatch.setattr(
         "graph.builder.user_from_runtime_config",
         lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
@@ -468,11 +468,11 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
             },
         }
 
-    async def fake_emit_token_text(*args, **kwargs):
+    async def fake_emit_text_chunk(*args, **kwargs):
         return None
 
     monkeypatch.setattr("graph.submission.submit_real_order", fake_submit_real_order)
-    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("graph.builder.emit_text_chunk", fake_emit_text_chunk)
     monkeypatch.setattr(
         "graph.builder.user_from_runtime_config",
         lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),

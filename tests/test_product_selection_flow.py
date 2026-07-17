@@ -191,10 +191,10 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
     assert rejected_preview["products"] == []
     assert route_after_search_product(state) == "ask_node"
 
-    async def fake_emit_token_text(*args, **kwargs):
+    async def fake_emit_text_chunk(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("graph.builder.emit_text_chunk", fake_emit_text_chunk)
     answer = await ask_node(state)
     trace_step("ask_node output after rejection", answer=answer)
     assert "再详细描述商品和故障现象" in answer["messages"][0].content
@@ -255,10 +255,10 @@ async def test_no_product_match_asks_for_more_precise_product(monkeypatch, trace
     assert no_match_preview["errors"] == ["product_match"]
     assert route_after_search_product(state) == "ask_node"
 
-    async def fake_emit_token_text(*args, **kwargs):
+    async def fake_emit_text_chunk(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("graph.builder.emit_token_text", fake_emit_token_text)
+    monkeypatch.setattr("graph.builder.emit_text_chunk", fake_emit_text_chunk)
     answer = await ask_node(state)
 
     assert "商品库没检索到这个商品" in answer["messages"][0].content

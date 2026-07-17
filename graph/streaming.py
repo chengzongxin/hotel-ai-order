@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 import re
@@ -250,16 +249,13 @@ def message_chunk_to_text(content: object) -> str:
     return ""
 
 
-async def emit_token_text(text: str, step: str, chunk_size: int = 4, delay_seconds: float = 0.015) -> None:
-    writer = get_optional_stream_writer()
-    if not writer:
-        return
+async def emit_text_chunk(text: str, step: str) -> None:
+    """Emit one appendable text event without artificial slicing or delay."""
 
-    for index in range(0, len(text), chunk_size):
-        token = text[index : index + chunk_size]
-        if token:
-            writer({"type": "token", "step": step, "content": token})
-            await asyncio.sleep(delay_seconds)
+    writer = get_optional_stream_writer()
+    if not writer or not text:
+        return
+    writer({"type": "token", "step": step, "content": text})
 
 
 async def stream_llm_text(messages: list[BaseMessage], step: str) -> str:
@@ -269,5 +265,5 @@ async def stream_llm_text(messages: list[BaseMessage], step: str) -> str:
         if not token:
             continue
         parts.append(token)
-        await emit_token_text(token, step=step, chunk_size=4, delay_seconds=0)
+        await emit_text_chunk(token, step=step)
     return "".join(parts).strip()

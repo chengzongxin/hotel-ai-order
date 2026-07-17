@@ -24,7 +24,7 @@ from utils.logger_handler import trace_logger
 PHASE_PRE_ORDER = "pre_order"
 PHASE_SUBMITTED = "submitted"
 
-EmitTokenText = Callable[..., Awaitable[None]]
+EmitTextChunk = Callable[[str, str], Awaitable[None]]
 
 SUBMISSION_NOT_ATTEMPTED = "not_attempted"
 SUBMISSION_SUCCEEDED = "succeeded"
@@ -139,7 +139,7 @@ async def submit_order_from_state(
     user: UserContext,
     *,
     emit: bool = True,
-    emit_token_text: EmitTokenText | None = None,
+    emit_text_chunk: EmitTextChunk | None = None,
 ) -> dict[str, object]:
     """根据当前状态提交订单。"""
 
@@ -251,8 +251,8 @@ async def submit_order_from_state(
             f"{missing_line}"
             f"{address_hint}"
         )
-    if emit and emit_token_text:
-        await emit_token_text(answer, step="submit_node")
+    if emit and emit_text_chunk:
+        await emit_text_chunk(answer, "submit_node")
 
     output = {
         "messages": [AIMessage(content=answer)],

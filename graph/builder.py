@@ -72,7 +72,7 @@ from graph.constants import (
 )
 from graph.streaming import (
     emit_status,
-    emit_token_text,
+    emit_text_chunk,
     message_chunk_to_text,
     run_traced_tool_call,
     stream_llm_text,
@@ -759,7 +759,7 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     # 商品拒绝由意图模型在商品选择阶段识别，优先提示补充描述。
     if state.get("product_selection_rejected"):
         question = "好的，请您再详细描述商品和故障现象，我再帮您推荐服务商品。"
-        await emit_token_text(question, step="ask_node")
+        await emit_text_chunk(question, step="ask_node")
     # 闲聊/天气等偏离输入必须先走话题边界回复。尤其在商品选择阶段，
     # products 仍然存在；如果先判断 products，会反复返回固定的商品推荐话术，
     # 用户听不到简短回应，也无法自然回到当前下单步骤。
@@ -768,20 +768,20 @@ async def ask_node(state: AgentState) -> dict[str, object]:
         off_topic_count += 1
     elif products and not selected_product:
         question = build_product_recommendation_text(products)
-        await emit_token_text(question, step="ask_node")
+        await emit_text_chunk(question, step="ask_node")
     elif selected_product and selected_by_text and missing_info:
         prefix = build_selected_product_text(selected_product)
         question = f"{prefix}\n{build_missing_info_fallback_question(missing_info)}"
-        await emit_token_text(question, step="ask_node")
+        await emit_text_chunk(question, step="ask_node")
     elif retry_count > MAX_RETRY_COUNT:
         question = render_prompt(
             "ask/missing_info_retry.md",
             missing_info=", ".join(missing_info),
         )
-        await emit_token_text(question, step="ask_node")
+        await emit_text_chunk(question, step="ask_node")
     elif product_search_feedback and missing_info:
         question = f"{product_search_feedback}\n{build_missing_info_fallback_question(missing_info)}"
-        await emit_token_text(question, step="ask_node")
+        await emit_text_chunk(question, step="ask_node")
     else:
         question = await build_missing_info_question(state)
 
@@ -837,7 +837,7 @@ async def assist_node(state: AgentState) -> dict[str, object]:
             token = message_chunk_to_text(getattr(message_chunk, "content", ""))
             if token:
                 answer_parts.append(token)
-                await emit_token_text(token, step="assist_node", chunk_size=4, delay_seconds=0)
+                await emit_text_chunk(token, step="assist_node")
         elif part_type == "updates" and isinstance(data, dict):
             for node_update in data.values():
                 if isinstance(node_update, dict) and isinstance(node_update.get("messages"), list):
@@ -847,7 +847,7 @@ async def assist_node(state: AgentState) -> dict[str, object]:
     if not answer:
         answer_message = get_latest_ai_message(latest_messages)
         answer = str(answer_message.content) if answer_message else "如果需要下单，请告诉我房号、商品和问题。"
-        await emit_token_text(answer, step="assist_node")
+        await emit_text_chunk(answer, step="assist_node")
 
     trace_logger(
         "node.assist.output",
@@ -902,7 +902,7 @@ async def confirm_node(state: AgentState) -> dict[str, object]:
             product_name=selected_product.get("service_product_name") or "未匹配到标准商品",
             product_code=selected_product.get("service_product_code") or "无",
         )
-    await emit_token_text(confirmation_text, step="confirm_node")
+    await emit_text_chunk(confirmation_text, step="confirm_node")
 
     trace_logger(
         "node.confirm.output",
@@ -921,7 +921,7 @@ async def cancel_node(state: AgentState) -> dict[str, object]:
     """取消当前预下单，避免旧订单继续参与后续对话。"""
 
     answer = render_prompt("cancel/cancel.md")
-    await emit_token_text(answer, step="cancel_node")
+    await emit_text_chunk(answer, step="cancel_node")
     output = {
         **reset_active_order_state(),
         "messages": [AIMessage(content=answer)],
@@ -948,7 +948,7 @@ async def submit_node(state: AgentState) -> dict[str, object]:
         state,
         user_from_runtime_config(),
         emit=True,
-        emit_token_text=emit_token_text,
+        emit_text_chunk=emit_text_chunk,
     )
 
 
