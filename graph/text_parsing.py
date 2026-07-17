@@ -8,7 +8,6 @@ from graph.constants import (
     CANCEL_ORDER_KEYWORDS,
     GUEST_ROOM_KEYWORDS,
     GUEST_SECOND_AREA_KEYWORDS,
-    PRODUCT_NONE_SELECTIONS,
     PUBLIC_AREA_KEYWORDS,
     PUBLIC_SECOND_AREA_KEYWORDS,
 )
@@ -105,12 +104,12 @@ def is_cancel_request(text: str) -> bool:
 
 
 def parse_product_selection(text: str | None) -> int | None:
-    """解析用户对候选商品的序号选择；0 表示“以上都不符合”。"""
+    """解析用户对候选商品的明确序号选择；候选拒绝由大模型结合上下文识别。"""
 
     if not text:
         return None
     normalized = text.strip().lower()
-    if normalized in PRODUCT_NONE_SELECTIONS or "以上都不符合" in normalized:
+    if normalized == "0":
         return 0
 
     mapping = {

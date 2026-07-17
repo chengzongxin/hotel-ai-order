@@ -106,9 +106,11 @@ class IntentResult(BaseModel):
     goods_arrival_status: str | None = None
     contacts: str | None = None
     phone: str | None = None
+    product_quantity: int | None = None
     managed_repair_scope: str | None = None
     user_confirmed: bool = False
     user_cancelled: bool = False
+    product_selection_rejected: bool = False
 
 
 def format_messages(messages: list[BaseMessage]) -> str:
@@ -236,9 +238,19 @@ async def intent_node(state: AgentState) -> dict[str, object]:
 
     last_user_message = get_last_human_message(state["messages"])
     user_cancelled = result.user_cancelled or (has_active_order(state) and is_cancel_request(last_user_message))
+    has_product_quantity_update = bool(
+        has_active_order(state) and (result.product_quantity or 0) > 0
+    )
+    product_selection_rejected = bool(
+        state.get("phase") == PHASE_PRODUCT_SELECTION
+        and state.get("products")
+        and result.product_selection_rejected
+    )
     intent = "cancel_order" if user_cancelled else result.intent
     detected_service_type = detect_service_type(last_user_message)
     if detected_service_type and intent in {"smalltalk", "unknown"}:
+        intent = "create_order"
+    if has_product_quantity_update and intent in {"smalltalk", "unknown"}:
         intent = "create_order"
     emit_status("intent_node", f"已识别意图：{intent}")
 
@@ -262,6 +274,7 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         "goods_arrival_status": normalize_goods_arrival_status(result.goods_arrival_status),
         "contacts": result.contacts,
         "phone": result.phone,
+        "product_quantity": result.product_quantity if (result.product_quantity or 0) > 0 else None,
         "managed_repair_scope": result.managed_repair_scope
         if result.managed_repair_scope in VALID_MANAGED_REPAIR_SCOPES
         else None,
@@ -330,10 +343,16 @@ async def intent_node(state: AgentState) -> dict[str, object]:
     output: dict[str, object] = {
         "intent": intent,
         "phase": phase,
-        **split_order_info(order_info, keep_product_request=not bool(get_order_items(state))),
+        # 已选商品后，用户又明确描述了另一项商品时，需要在清理旧商品的同时
+        # 保留本轮的新商品需求，供商品检索节点生成候选；否则会出现空检索后误入维保校验。
+        **split_order_info(
+            order_info,
+            keep_product_request=not bool(get_order_items(state)) or product_change_requested,
+        ),
         "step": "intent_node",
         "last_user_message": last_user_message,
         "product_change_requested": product_change_requested,
+        "product_selection_rejected": product_selection_rejected,
     }
     if get_order_items(state) and intent in {"create_order", "confirm_order"} and not service_type_changed and not product_change_requested:
         output["order"] = build_order_state(
@@ -363,7 +382,7 @@ async def search_product_node(state: AgentState) -> dict[str, object]:
     existing_products = state.get("products") or []
     last_msg = state.get("last_user_message", "")
     selection = parse_product_selection(last_msg)
-    if existing_products and selection == 0:
+    if existing_products and (selection == 0 or state.get("product_selection_rejected")):
         output = workflow.reject_products(service_type=state.get("service_type"))
         trace_logger("node.search_product.rejected", **output)
         return output
@@ -454,7 +473,8 @@ async def coverage_node(state: AgentState) -> dict[str, object]:
     """托管维修商品下单前，校验当前用户维保卡是否覆盖该商品。"""
 
     selected_product = get_primary_order_product(state)
-    if (state.get("products") or []) and not selected_product:
+    # 维保范围只能针对已选中的标准商品校验，绝不能对空商品调用外部校验接口。
+    if not selected_product:
         return {
             "effective_service_type": None,
             "coverage_result": {},
@@ -681,12 +701,29 @@ async def build_missing_info_question(state: AgentState) -> str:
     return question or build_missing_info_fallback_question(missing_info)
 
 
+def build_order_resume_question(state: AgentState) -> str:
+    """根据真实工作流阶段生成偏离话题后的拉回问题。"""
+
+    phase = state.get("phase")
+    products = state.get("products") or []
+    selected_product = get_primary_order_product(state)
+    missing_info = state.get("missing_info") or []
+
+    if phase == PHASE_PRODUCT_SELECTION or (products and not selected_product):
+        return "请在下方卡片中选择您要下单的服务商品。"
+    if state.get("product_selection_rejected"):
+        return "请再详细描述一下商品和故障现象，我重新为您推荐。"
+    if missing_info:
+        return build_missing_info_fallback_question(missing_info)
+    if phase == PHASE_PRE_ORDER and selected_product:
+        return "请确认是否提交订单？"
+    return "请继续补充下单所需信息。"
+
+
 async def build_topic_boundary_response(state: AgentState) -> str:
     missing_info = state.get("missing_info", [])
     active_order = has_active_order(state)
-    next_question = build_missing_info_fallback_question(missing_info) if active_order else ""
-    if active_order and not missing_info and not build_effective_order_info(state):
-        next_question = "请说房号和故障。"
+    next_question = build_order_resume_question(state) if active_order else ""
     prompt = render_prompt(
         "ask/off_topic.md",
         last_user_message=get_last_human_message(state.get("messages", [])),
@@ -719,9 +756,16 @@ async def ask_node(state: AgentState) -> dict[str, object]:
     last_user_message = get_last_human_message(state.get("messages", []))
     selected_by_text = parse_product_selection(last_user_message) in {1, 2, 3}
 
+    # 商品拒绝由意图模型在商品选择阶段识别，优先提示补充描述。
     if state.get("product_selection_rejected"):
         question = "好的，请您再详细描述商品和故障现象，我再帮您推荐服务商品。"
         await emit_token_text(question, step="ask_node")
+    # 闲聊/天气等偏离输入必须先走话题边界回复。尤其在商品选择阶段，
+    # products 仍然存在；如果先判断 products，会反复返回固定的商品推荐话术，
+    # 用户听不到简短回应，也无法自然回到当前下单步骤。
+    elif is_topic_deviation:
+        question = await build_topic_boundary_response(state)
+        off_topic_count += 1
     elif products and not selected_product:
         question = build_product_recommendation_text(products)
         await emit_token_text(question, step="ask_node")
@@ -729,9 +773,6 @@ async def ask_node(state: AgentState) -> dict[str, object]:
         prefix = build_selected_product_text(selected_product)
         question = f"{prefix}\n{build_missing_info_fallback_question(missing_info)}"
         await emit_token_text(question, step="ask_node")
-    elif is_topic_deviation:
-        question = await build_topic_boundary_response(state)
-        off_topic_count += 1
     elif retry_count > MAX_RETRY_COUNT:
         question = render_prompt(
             "ask/missing_info_retry.md",
@@ -916,7 +957,10 @@ def route_after_intent(state: AgentState) -> str:
     order_info = build_effective_order_info(state)
     if intent == "cancel_order" or order_info.get("user_cancelled"):
         return "cancel_node"
-    if state.get("products") and parse_product_selection(state.get("last_user_message", "")) is not None:
+    if state.get("products") and (
+        state.get("product_selection_rejected")
+        or parse_product_selection(state.get("last_user_message", "")) is not None
+    ):
         return "search_product_node"
     if intent in {"create_order", "confirm_order"}:
         return "search_product_node"
@@ -930,8 +974,7 @@ def route_after_search_product(state: AgentState) -> str:
         return "ask_node"
     if "product_match" in (state.get("missing_info") or []):
         return "ask_node"
-    products = state.get("products") or []
-    if products and not get_order_items(state):
+    if not get_order_items(state):
         return "ask_node"
     return "coverage_node"
 

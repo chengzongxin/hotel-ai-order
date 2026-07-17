@@ -58,8 +58,6 @@ GUEST_SECOND_AREA_KEYWORDS = {
     "客房区域": ("客房区域", "客房", "房间", "房里", "屋内", "住客区", "维修房", "客房楼层"),
 }
 VALID_MANAGED_REPAIR_SCOPES = {"客房", "公区"}
-PRODUCT_NONE_SELECTIONS = {"0", "以上都不符合", "都不符合", "不符合", "没有合适", "没有匹配"}
-
 PHASE_IDLE = "idle"
 PHASE_PRODUCT_SELECTION = "product_selection"
 PHASE_PRE_ORDER = "pre_order"

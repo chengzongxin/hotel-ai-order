@@ -21,9 +21,11 @@
 - goods_arrival_status：货物是否到场，仅安装订单需要，可为 未到场、已到场、已到物流站 或 null
 - contacts：联系人姓名
 - phone：联系电话
+- product_quantity：当前已选商品的数量，必须是大于 0 的整数；未明确说明时为 null
 - managed_repair_scope：托管维修范围，可为 客房、公区 或 null
 - user_confirmed：用户是否明确确认提交订单
 - user_cancelled：用户是否明确取消当前订单
+- product_selection_rejected：仅在当前状态为 product_selection 时使用；用户是否在否定当前展示的全部商品候选，而不是要选择其中一个。
 
 判断和抽取规则：
 1. 判断意图时优先看用户最新输入，但字段抽取可以结合对话历史。
@@ -35,7 +37,7 @@
 6.1 用户只是询问“我的维保范围”“当前维保卡包含什么”“哪些商品在维保内”等查询类问题，属于 smalltalk，不要当作 create_order。
 7. 如果当前订单状态是 submitted，表示上一张订单已经提交完成；除非用户最新输入明确提出新的下单需求，否则不要从历史已提交订单里重新抽取字段。
 8. 字段缺失时必须输出 null，不要编造。
-8.1 如果当前订单状态是 collecting、product_selection 或 pre_order，用户最新输入是在补充房号、区域、联系人、电话、时间、货物到场状态等缺失字段，应视为 create_order，并只更新用户本次明确补充的字段。
+8.1 如果当前订单状态是 collecting、product_selection 或 pre_order，用户最新输入是在补充房号、区域、联系人、电话、时间、货物到场状态、商品数量等字段，应视为 create_order，并只更新用户本次明确补充的字段。
 9. urgency 只能是 low、medium、high、urgent 或 null。
 10. 紧急关键词包括"很急、马上、立刻、紧急、现在就修、快点、加急、尽快、速度"，命中时 urgency 输出 urgent；没有紧急关键词时 urgency 输出 null，不要主动编造。
 11. 用户说了房号，例如“201房间”“301号”“888房”“房间201”，必须抽取 room_number，area 输出 客房，managed_repair_scope 输出 客房。
@@ -49,8 +51,10 @@
 18. 当前订单已在收集时间且用户最新输入只是补充时刻或日期时，只更新 expected_start_time，不要清空已收集的 product、fault 等字段。
 19. 安装订单需要抽取 goods_arrival_status：货没到、还没到、在路上 输出 未到场；货到了、已收到、货物在酒店 输出 已到场；到物流站了、在物流点、待配送 输出 已到物流站。
 20. 用户补充“联系人李四”“找张三”“电话13600000000”“手机号是...”时，抽取 contacts 和 phone；没有明确说时输出 null，不要编造。
-21. 不要输出 Markdown。
-22. 不要输出解释。
+20.1 当前订单状态为 pre_order，且用户说“5个”“要5个”“5个商品”“数量改成5”等是在修改当前已选商品数量时，product_quantity 输出 5；此时不要把该数字当房号或时间。没有“个/件/数量”等数量语义时，不要猜测。
+21. 当前订单状态是 product_selection，且用户表达当前候选商品都不对、不合适、不是想要的、希望换一批或重新推荐时，product_selection_rejected 输出 true。必须结合上下文理解，不要依赖固定措辞；用户只是询问、闲聊或选择某一个候选时输出 false。
+22. 不要输出 Markdown。
+23. 不要输出解释。
 
 输出 JSON 格式：
 {
@@ -64,9 +68,11 @@
   "goods_arrival_status": null,
   "contacts": null,
   "phone": null,
+  "product_quantity": null,
   "managed_repair_scope": null,
   "user_confirmed": false,
-  "user_cancelled": false
+  "user_cancelled": false,
+  "product_selection_rejected": false
 }
 
 对话历史：

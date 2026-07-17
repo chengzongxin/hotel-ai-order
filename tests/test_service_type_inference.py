@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import HumanMessage
 
-from graph.builder import intent_node
-from graph.text_parsing import detect_service_type, infer_service_type
+from graph.builder import intent_node, route_after_intent
+from graph.text_parsing import detect_service_type, infer_service_type, parse_product_selection
 
 
 @pytest.mark.parametrize(
@@ -46,6 +46,11 @@ def test_infer_service_type_preserves_current_type_when_supplementing_info():
     assert infer_service_type("明天下午", "单次安装") == "单次安装"
 
 
+def test_product_selection_only_parses_explicit_numeric_selection():
+    assert parse_product_selection("0") == 0
+    assert parse_product_selection("这些都不是") is None
+
+
 class _FakeStructuredLlm:
     def __init__(self, result):
         self.result = result
@@ -69,9 +74,11 @@ def _intent_result(**overrides):
         "goods_arrival_status": None,
         "contacts": None,
         "phone": None,
+        "product_quantity": None,
         "managed_repair_scope": None,
         "user_confirmed": False,
         "user_cancelled": False,
+        "product_selection_rejected": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -108,6 +115,99 @@ async def test_intent_node_preserves_install_type_for_followup(monkeypatch):
     )
 
     assert update["service_type"] == "单次安装"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["5个", "5个商品"])
+async def test_intent_node_updates_selected_product_quantity(monkeypatch, message):
+    fake_llm = _FakeStructuredLlm(
+        _intent_result(intent="smalltalk", product_quantity=5)
+    )
+    monkeypatch.setattr("graph.builder.get_llm", lambda: fake_llm)
+
+    update = await intent_node(
+        {
+            "messages": [HumanMessage(content=message)],
+            "phase": "pre_order",
+            "service_type": "单次维修服务",
+            "products": [{"service_product_code": "AC001"}],
+            "order": {
+                "expected_start_time": "明天上午",
+                "items": [
+                    {
+                        "id": "item-1",
+                        "product_code": "AC001",
+                        "product_name": "空调维修",
+                        "service_type": "单次维修服务",
+                        "quantity": 1,
+                        "fault": "不制冷",
+                        "product_snapshot": {"service_product_code": "AC001"},
+                    }
+                ],
+            },
+        }
+    )
+
+    assert update["order"]["items"][0]["quantity"] == 5
+    assert update["intent"] == "create_order"
+
+
+@pytest.mark.asyncio
+async def test_intent_node_uses_llm_rejection_for_product_candidates(monkeypatch):
+    fake_llm = _FakeStructuredLlm(
+        _intent_result(intent="smalltalk", product_selection_rejected=True)
+    )
+    monkeypatch.setattr("graph.builder.get_llm", lambda: fake_llm)
+
+    update = await intent_node(
+        {
+            "messages": [HumanMessage(content="这几项都不是我想要的，换一批吧")],
+            "phase": "product_selection",
+            "products": [
+                {
+                    "service_product_code": "AC001",
+                    "service_product_name": "空调维修",
+                }
+            ],
+            "order": {"items": []},
+        }
+    )
+
+    assert update["product_selection_rejected"] is True
+    assert route_after_intent({**update, "products": [{"service_product_code": "AC001"}]}) == "search_product_node"
+
+
+@pytest.mark.asyncio
+async def test_intent_node_preserves_new_product_request_when_replacing_selected_product(monkeypatch):
+    fake_llm = _FakeStructuredLlm(
+        _intent_result(product="门把手", fault="坏了", area="公区", managed_repair_scope="公区")
+    )
+    monkeypatch.setattr("graph.builder.get_llm", lambda: fake_llm)
+
+    update = await intent_node(
+        {
+            "messages": [HumanMessage(content="大堂门把手坏了")],
+            "phase": "pre_order",
+            "service_type": "托管维修",
+            "products": [{"service_product_code": "OLD001", "service_product_name": "淋浴龙头维修"}],
+            "order": {
+                "items": [
+                    {
+                        "id": "item-1",
+                        "product_code": "OLD001",
+                        "product_name": "淋浴龙头维修",
+                        "service_type": "托管维修",
+                        "quantity": 1,
+                        "fault": "漏水",
+                    }
+                ]
+            },
+        }
+    )
+
+    assert update["product_change_requested"] is True
+    assert update["product_request"]["product"] == "门把手"
+    assert update["product_request"]["fault"] == "坏了"
 
 
 @pytest.mark.asyncio

@@ -174,8 +174,9 @@ async def test_reject_products_then_describe_more_and_recommend_again(monkeypatc
         state,
         {
             "intent": "confirm_order",
-            "last_user_message": "0",
-            "messages": [HumanMessage(content="0")],
+            "last_user_message": "这些都不是",
+            "messages": [HumanMessage(content="这些都不是")],
+            "product_selection_rejected": True,
         },
     )
     trace_step("search_product_node input: reject products", state=state)

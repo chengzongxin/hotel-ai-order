@@ -6,13 +6,16 @@ from graph.order_fields import build_order_card_fields
 from graph.order_fields import collect_missing_order_info
 
 from graph.builder import (
+    ask_node,
     build_missing_info_fallback_question,
+    build_order_resume_question,
     is_product_change_requested,
     normalize_order_card_update,
     route_after_search_product,
     search_product_node,
     submit_node,
 )
+from langchain_core.messages import HumanMessage
 from schemas.user import UserContext
 from services.workflow_projection import build_order_preview
 
@@ -137,6 +140,79 @@ def test_route_after_search_product_stops_at_product_selection():
     }
 
     assert route_after_search_product(state) == "ask_node"
+
+
+def test_route_after_search_product_never_runs_coverage_without_selected_product():
+    assert route_after_search_product(
+        {"products": [], "order": {"items": []}, "missing_info": ["product_match"]}
+    ) == "ask_node"
+
+
+def test_off_topic_resume_question_uses_product_selection_phase_even_without_missing_info():
+    question = build_order_resume_question(
+        {
+            "phase": "product_selection",
+            "products": [{"service_product_code": "AC001"}],
+            "order": {"items": []},
+            "missing_info": [],
+        }
+    )
+
+    assert question == "请在下方卡片中选择您要下单的服务商品。"
+
+
+def test_off_topic_resume_question_only_confirms_complete_pre_order():
+    question = build_order_resume_question(
+        {
+            "phase": "pre_order",
+            "products": [{"service_product_code": "AC001"}],
+            "order": {
+                "items": [
+                    {
+                        "id": "item-1",
+                        "product_code": "AC001",
+                        "product_name": "空调维修",
+                        "product_snapshot": {"service_product_code": "AC001"},
+                    }
+                ]
+            },
+            "missing_info": [],
+        }
+    )
+
+    assert question == "请确认是否提交订单？"
+
+
+@pytest.mark.asyncio
+async def test_ask_node_handles_off_topic_before_repeating_product_recommendation(monkeypatch):
+    async def fake_topic_boundary_response(state):
+        return "暂时查不了实时天气。咱们继续下单，请在下方卡片中选择合适的服务商品。"
+
+    monkeypatch.setattr(
+        "graph.builder.build_topic_boundary_response",
+        fake_topic_boundary_response,
+    )
+    result = await ask_node(
+        {
+            "intent": "smalltalk",
+            "phase": "product_selection",
+            "messages": [HumanMessage(content="今天天气怎么样？")],
+            "products": [
+                {
+                    "service_product_code": "AC001",
+                    "service_product_name": "空调维修",
+                    "service_order_type": "托管维修",
+                }
+            ],
+            "order": {"items": []},
+            "missing_info": [],
+            "off_topic_count": 0,
+        }
+    )
+
+    assert result["messages"][0].content.startswith("暂时查不了实时天气")
+    assert "选择合适的服务商品" in result["messages"][0].content
+    assert result["off_topic_count"] == 1
 
 
 def test_expected_start_time_missing_prompt_is_explicit():
