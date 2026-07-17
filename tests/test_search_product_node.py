@@ -504,3 +504,54 @@ async def test_submit_node_marks_submitted_only_after_real_success(monkeypatch):
     assert preview["phase"] == "submitted"
     assert preview["submission"]["state"] == "succeeded"
     assert preview["submitted_order"]["order_no"] == "SO123"
+
+
+@pytest.mark.asyncio
+async def test_submit_node_returns_upstream_api_error_message_verbatim(monkeypatch):
+    async def fake_submit_real_order(**kwargs):
+        return {
+            "status": "error",
+            "error_code": "UPSTREAM_ERROR",
+            "message": "managed repair order api returned no order number",
+            "data": {
+                "request_payload": {"serviceProductCode": "A"},
+                "missing_fields": [],
+                "submit_enabled": True,
+                "submitted": False,
+                "parent_order_no": None,
+                "create_response": {"code": -1, "data": None, "msg": "套餐卡已失效"},
+            },
+        }
+
+    async def fake_emit_text_chunk(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("graph.submission.submit_real_order", fake_submit_real_order)
+    monkeypatch.setattr("graph.builder.emit_text_chunk", fake_emit_text_chunk)
+    monkeypatch.setattr(
+        "graph.builder.user_from_runtime_config",
+        lambda: UserContext(user_id="u1", tenant_id="t1", access_token="token"),
+    )
+
+    result = await submit_node(
+        {
+            "service_type": "托管维修",
+            "effective_service_type": "托管维修",
+            "order": {
+                "items": [
+                    {
+                        "id": "item-1",
+                        "product_code": "A",
+                        "product_name": "门锁",
+                        "service_type": "托管维修",
+                        "quantity": 1,
+                        "fault": "打不开",
+                    }
+                ]
+            },
+        }
+    )
+
+    assert result["submission"]["failure_code"] == "api_error"
+    assert result["submission"]["failure_message"] == "套餐卡已失效"
+    assert result["messages"][0].content == "套餐卡已失效"

@@ -178,6 +178,42 @@ async def test_intent_node_uses_llm_rejection_for_product_candidates(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_intent_node_keeps_selected_product_for_active_order_smalltalk(monkeypatch):
+    fake_llm = _FakeStructuredLlm(_intent_result(intent="smalltalk"))
+    monkeypatch.setattr("graph.builder.get_llm", lambda: fake_llm)
+    state = {
+        "messages": [HumanMessage(content="你好慢呀")],
+        "phase": "pre_order",
+        "service_type": "托管维修",
+        "order_card_fields": [{"key": "second_area", "value": "1545054016"}],
+        "order": {
+            "area": "公区",
+            "second_area": "大堂",
+            "second_area_id": "1545054016",
+            "items": [
+                {
+                    "id": "item-1",
+                    "product_code": "DOOR_HANDLE",
+                    "product_name": "门五金(小修)",
+                    "service_type": "托管维修",
+                    "quantity": 1,
+                    "fault": "坏了",
+                }
+            ],
+        },
+    }
+
+    update = await intent_node(state)
+
+    # LangGraph 对未出现在 patch 中的状态保留原值；闲聊不能触碰订单实体。
+    assert "order" not in update
+    assert "product_request" not in update
+    merged = {**state, **update}
+    assert merged["order"]["items"][0]["product_name"] == "门五金(小修)"
+    assert merged["order"]["second_area"] == "大堂"
+
+
+@pytest.mark.asyncio
 async def test_intent_node_preserves_new_product_request_when_replacing_selected_product(monkeypatch):
     fake_llm = _FakeStructuredLlm(
         _intent_result(product="门把手", fault="坏了", area="公区", managed_repair_scope="公区")

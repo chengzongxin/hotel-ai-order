@@ -68,6 +68,21 @@ def empty_submission() -> dict[str, object]:
     }
 
 
+def extract_upstream_error_message(submit_data: dict[str, Any]) -> str | None:
+    """提取创建订单接口返回的原始错误信息，供用户直接查看。"""
+
+    for key in ("create_response", "check_response"):
+        response = submit_data.get(key)
+        if not isinstance(response, dict):
+            continue
+        message = first_text(response.get("msg"), response.get("message"))
+        code = response.get("code")
+        failed = code not in (None, 0, "0", 200, "200") or response.get("success") is False
+        if failed and message:
+            return message
+    return None
+
+
 def build_submission_result(
     *,
     submit_result: dict[str, Any],
@@ -94,7 +109,15 @@ def build_submission_result(
         base["response_payload"] = {}
         return base
 
-    if submit_data.get("submit_enabled") is False:
+    upstream_error_message = extract_upstream_error_message(submit_data)
+    if upstream_error_message:
+        base.update(
+            {
+                "failure_code": "api_error",
+                "failure_message": upstream_error_message,
+            }
+        )
+    elif submit_data.get("submit_enabled") is False:
         base.update(
             {
                 "state": SUBMISSION_DISABLED,
@@ -226,31 +249,8 @@ async def submit_order_from_state(
             matched_product=selected_product,
         )
     else:
-        missing_text = "、".join(str(item) for item in missing_fields)
-        diagnostics = submit_data.get("diagnostics") or {}
-        address_diagnostics = diagnostics.get("default_address") if isinstance(diagnostics, dict) else {}
-        address_hint = ""
-        address_api_code = address_diagnostics.get("address_api_code") if isinstance(address_diagnostics, dict) else None
-        if address_api_code and address_api_code != 200:
-            address_hint = (
-                "\n默认地址补齐失败："
-                f"地址接口返回 {address_api_code}"
-                f"（{address_diagnostics.get('address_api_message') or '无错误信息'}）。"
-                "请更新用户端登录 token，或确认维保卡接口可返回酒店地址与联系人信息。"
-            )
-        if submit_data.get("submit_enabled") is False:
-            lead = "已根据用户端 App 的下单逻辑生成真实下单参数，但当前关闭了线上创建订单开关。"
-        elif missing_fields:
-            lead = "已根据用户端 App 的下单逻辑生成真实下单参数，但仍有必填参数缺失，暂未提交。"
-        else:
-            lead = "已调用创建订单接口，但没有返回可识别的订单号，暂未标记为下单成功。"
-        missing_line = f"还需补齐：{missing_text}。" if missing_text else "订单参数已补齐，请确认接口返回或稍后重试。"
-        answer = (
-            f"{lead}\n"
-            f"原因：{submit_result.get('message')}。\n"
-            f"{missing_line}"
-            f"{address_hint}"
-        )
+        # 订单接口已给出失败信息时，必须原样回复，避免通用话术掩盖业务原因。
+        answer = str(submission.get("failure_message") or submit_result.get("message") or "调用下单接口失败。")
     if emit and emit_text_chunk:
         await emit_text_chunk(answer, "submit_node")
 

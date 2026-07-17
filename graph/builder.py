@@ -340,20 +340,24 @@ async def intent_node(state: AgentState) -> dict[str, object]:
         detected_product_name=detected_product_name,
         current_product_names=current_product_names,
     )
+    preserve_active_order = has_active_order(state) and intent in {"smalltalk", "unknown"}
     output: dict[str, object] = {
         "intent": intent,
         "phase": phase,
-        # 已选商品后，用户又明确描述了另一项商品时，需要在清理旧商品的同时
-        # 保留本轮的新商品需求，供商品检索节点生成候选；否则会出现空检索后误入维保校验。
-        **split_order_info(
-            order_info,
-            keep_product_request=not bool(get_order_items(state)) or product_change_requested,
-        ),
         "step": "intent_node",
         "last_user_message": last_user_message,
         "product_change_requested": product_change_requested,
         "product_selection_rejected": product_selection_rejected,
     }
+    if not preserve_active_order:
+        # 已选商品后，用户又明确描述了另一项商品时，需要在清理旧商品的同时
+        # 保留本轮的新商品需求，供商品检索节点生成候选；否则会出现空检索后误入维保校验。
+        output.update(
+            split_order_info(
+                order_info,
+                keep_product_request=not bool(get_order_items(state)) or product_change_requested,
+            )
+        )
     if get_order_items(state) and intent in {"create_order", "confirm_order"} and not service_type_changed and not product_change_requested:
         output["order"] = build_order_state(
             strip_item_fields(order_info),

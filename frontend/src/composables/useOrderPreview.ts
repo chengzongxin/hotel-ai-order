@@ -176,7 +176,11 @@ export function useOrderPreview(
         const common = orderPreview.value?.order ?? {}
         const item = orderItems.value[0] ?? {}
         if (field.key === 'area_room') return common.room_number || common.area
-        if (field.key === 'second_area') return common.second_area_id || common.second_area
+        if (field.key === 'second_area') {
+          const secondAreaId = common.second_area_id
+          const hasMatchingOption = (field.options ?? []).some((option) => option.value === secondAreaId)
+          return hasMatchingOption ? secondAreaId : common.second_area || secondAreaId
+        }
         if (field.key === 'expected_time') return common.expected_start_time
         if (field.key === 'product_quantity') return item.quantity
         return (common as Record<string, unknown>)[field.key] ?? (item as unknown as Record<string, unknown>)[field.key]
