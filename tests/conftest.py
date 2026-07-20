@@ -43,6 +43,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="运行需要 Qwen embedding 与 chroma_db 的商品召回评测。",
     )
+    parser.addoption(
+        "--run-real-submit",
+        action="store_true",
+        default=False,
+        help="运行会真实创建订单的端到端测试。",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -53,20 +59,25 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "llm: requires real Chat LLM API")
     config.addinivalue_line("markers", "embedding: requires Qwen embedding + chroma_db")
     config.addinivalue_line("markers", "e2e: full run_agent integration")
+    config.addinivalue_line("markers", "real_submit: creates a real order through the configured order API")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     run_llm = config.getoption("--run-llm")
     run_embedding = config.getoption("--run-embedding")
+    run_real_submit = config.getoption("--run-real-submit")
 
     skip_llm = pytest.mark.skip(reason="需要 --run-llm 才运行真实 LLM 集成测试")
     skip_embedding = pytest.mark.skip(reason="需要 --run-embedding 才运行商品召回 embedding 评测")
+    skip_real_submit = pytest.mark.skip(reason="需要 --run-real-submit 才运行会真实创建订单的测试")
 
     for item in items:
         if "llm" in item.keywords and not run_llm:
             item.add_marker(skip_llm)
         if "embedding" in item.keywords and not run_embedding:
             item.add_marker(skip_embedding)
+        if "real_submit" in item.keywords and not run_real_submit:
+            item.add_marker(skip_real_submit)
 
 
 def _trace_enabled(config: pytest.Config) -> bool:

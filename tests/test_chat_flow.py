@@ -346,3 +346,37 @@ class TestCurrentServiceTypeFlow:
             assert service_types == {"单次安装"}
         finally:
             await clear_session(sid)
+
+
+@pytest.mark.real_submit
+async def test_real_toilet_blockage_order_submission(trace_step):
+    """真实下单冒烟测试：会调用 LLM、商品库及已配置的订单接口，并创建真实订单。"""
+    sid = new_session()
+    sid = "2c3f67e4-4a18-4266-afc3-1b2abcbb26d5"
+    try:
+        # 第 1 轮：真实 LLM 抽取报修信息，真实商品库返回候选商品。
+        first = await chat(
+            sid,
+            "1208房间马桶阻塞，明天上午维修，联系人测试，电话13800138000。",
+            trace_step,
+        )
+        assert_product_selection(first)
+        assert len(products(first)) >= 3
+
+        # 第 2 轮：真实对话输入“1”，选择第一个候选商品。
+        selected = await chat(sid, "1", trace_step)
+        assert phase(selected) == "pre_order"
+        assert selected_code(selected) == first_product_code(first)
+        assert not missing(selected), f"预下单仍缺少字段：{missing(selected)}"
+
+        # 第 3 轮：调用真实订单提交接口；此操作会实际创建订单。
+        submitted = await confirm_order_in_session(session_id=sid, user=TEST_USER)
+        submitted_preview = preview(submitted)
+        trace_step("confirm real order", result=submitted_preview)
+
+        assert submitted_preview["phase"] == "submitted"
+        assert submitted_preview["submission"]["state"] == "succeeded"
+        assert submitted_preview["submitted_order"]["order_no"]
+    finally:
+        # 只清理本地测试会话；不会取消已经真实创建的订单。
+        await clear_session(sid)

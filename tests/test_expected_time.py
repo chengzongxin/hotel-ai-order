@@ -38,3 +38,13 @@ def test_parse_tomorrow_morning():
     start, end = parse_expected_time_to_range("明天上午", now=fixed_now)
     assert start == "2026-06-04 08:00:00"
     assert end == "2026-06-04 12:00:00"
+
+
+def test_parse_tomorrow_at_1530():
+    """用户指定具体时刻时，预约窗口应从该时刻开始并持续两小时。"""
+    fixed_now = datetime(2026, 6, 3, 10, 0, 0)
+
+    start, end = parse_expected_time_to_range("明天 15:30", now=fixed_now)
+
+    assert start == "2026-06-04 15:30:00"
+    assert end == "2026-06-04 17:30:00"
